@@ -1,0 +1,22 @@
+{
+  "name": "MorphGate custom rules",
+  "description": "MorphGate (Pro and above), variant ONLY for zones with NO rate limiting rule protecting /__mg/: additionally skips http_ratelimit. Skipping http_ratelimit disables every rate limiting rule for /__mg/*, including a /__mg/ flood rule. Default: waf-skip.mg.json. Template: adapters/cloudflare/README.md.",
+  "kind": "zone",
+  "phase": "http_request_firewall_custom",
+  "rules": [
+    {
+      "ref": "mg_skip_mg_paths",
+      "description": "MorphGate: /__mg/* skips SBFM, rate limiting rules, Browser Integrity Check and Security Level. Only for zones without a /__mg/ flood rate limiting rule.",
+      "expression": "starts_with(http.request.uri.path, \"/__mg/\")",
+      "action": "skip",
+      "action_parameters": {
+        "phases": ["http_request_sbfm", "http_ratelimit"],
+        "products": ["bic", "securityLevel"]
+      },
+      "logging": {
+        "enabled": true
+      },
+      "enabled": true
+    }
+  ]
+}

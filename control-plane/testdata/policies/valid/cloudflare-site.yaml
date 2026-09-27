@@ -1,0 +1,29 @@
+# A site behind Cloudflare (docs/08 §2). With `profile:` declared, the compiler
+# warns about unguarded reads of fields Cloudflare never supplies (tls.*,
+# http.header_order); this file has none, so it checks without warnings.
+profile: cloudflare
+policies:
+  # The has() pattern from docs/06 §2: JA4 where the profile has it, the
+  # weaker Cloudflare cipher-list hash otherwise.
+  - id: bad-tls-fingerprints
+    phase: protocol
+    expr: 'has(tls.ja4) ? tls.ja4.value in list("bad_ja4") : edge_tls.ciphers_sha1 in list("bad_cf_ciphers")'
+    action: challenge
+    params: { type: pow }
+
+  - id: secret-header-only-upstream
+    phase: protocol
+    expr: upstream.authenticated && upstream.auth_method == "secret_header"
+    action: tag
+    params: { label: weak_upstream_auth }
+
+  # Cloudflare's verified-bot category only corroborates MorphGate's own verification.
+  - id: verified-search-crawlers
+    phase: identity
+    expr: identity.crawler.verified && identity.crawler.purpose == "search" && identity.crawler.cf_vbot_cat == "Search Engine Crawler"
+    action: allow
+
+  - id: edge-tls-shadow-log
+    phase: bot
+    expr: edge_tls.ext_sha1 != "" && edge_tls.hello_len < 200 && http.version == "HTTP/1.1"
+    action: log

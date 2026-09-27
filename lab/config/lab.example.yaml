@@ -1,0 +1,37 @@
+# Validation Lab target allowlist (lab/internal/guard).
+#
+# Anything not listed here is denied. Every connection is checked again after
+# DNS resolution, so a listed name that resolves somewhere unexpected is still
+# refused. Keep this list to the owner's own machines.
+
+# Exact host names. May only resolve to loopback or private (RFC 1918 / ULA)
+# addresses, e.g. localhost or a docker compose service name.
+allow_hosts:
+  - localhost
+
+# Label-aligned suffixes. Same address rule as allow_hosts. ICANN public
+# suffixes such as ".com" are rejected.
+allow_suffixes:
+  - .test
+  - .localhost
+
+# URLs whose host is an IP literal must fall inside one of these. Never
+# accepted, here or as a DNS answer: link-local (including 169.254.169.254),
+# multicast, "this network", IPv6 transition prefixes that reach arbitrary IPv4
+# hosts (NAT64 64:ff9b::/96 and 64:ff9b:1::/48, 6to4, Teredo) and cloud
+# metadata endpoints outside link-local (AWS fd00:ec2::254, GCP fd20:ce::254,
+# Alibaba Cloud 100.100.100.200, Oracle 192.0.0.192). Public ranges must be
+# /24 (IPv4) or /48 (IPv6) or narrower.
+allow_cidrs:
+  - 127.0.0.0/8
+  - ::1/128
+
+# The owner's own staging hosts on public addresses. Each may only resolve into
+# its expected_cidrs (checked at connect time).
+owner_targets: []
+#  - host: staging.example.com
+#    expected_cidrs: [203.0.113.10/32]
+
+# Requests per second across the whole process (token bucket, burst 1).
+# Default 5, hard maximum 50.
+rate_rps: 5

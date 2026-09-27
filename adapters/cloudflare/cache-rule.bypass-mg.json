@@ -1,0 +1,18 @@
+{
+  "name": "MorphGate cache settings",
+  "description": "MorphGate: never cache per-request /__mg/* responses. Template: adapters/cloudflare/README.md. Deploying with PUT replaces every rule in this phase.",
+  "kind": "zone",
+  "phase": "http_request_cache_settings",
+  "rules": [
+    {
+      "ref": "mg_bypass_mg_paths",
+      "description": "MorphGate: bypass cache for /__mg/* except content-hashed SDK builds under /__mg/s/. Must be the LAST cache rule (last matching rule wins).",
+      "expression": "starts_with(http.request.uri.path, \"/__mg/\") and not starts_with(http.request.uri.path, \"/__mg/s/\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    }
+  ]
+}

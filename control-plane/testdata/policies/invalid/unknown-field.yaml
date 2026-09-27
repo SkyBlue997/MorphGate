@@ -1,0 +1,6 @@
+policies:
+  - id: typo-in-mode
+    phase: bot
+    expr: risk.score >= 90
+    action: block
+    mdoe: dry_run

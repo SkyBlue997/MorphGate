@@ -1,0 +1,25 @@
+policies:
+  - id: Bad_ID
+    phase: bot
+    priority: high
+    expr: risk.score >= 90
+    action: destroy
+    mode: shadow
+    rollout: 150
+    locked: "yes"
+    expires_at: tomorrow
+  - id: missing-required
+    expr: risk.score >= 90
+  - id: bad-challenge-type
+    phase: bot
+    expr: risk.score >= 70
+    action: challenge
+    params: { type: captcha }
+  - id: bad-literals
+    phase: identity
+    expr: ip_in(net.ip, ["10.0.0.0/33"]) || ip_in(net.ip, list(req.host)) || glob(req.path, req.query)
+    action: block
+  - id: bad-literals
+    phase: identity
+    expr: "true"
+    action: log

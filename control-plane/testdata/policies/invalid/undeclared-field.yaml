@@ -1,0 +1,5 @@
+policies:
+  - id: misspelled-field
+    phase: identity
+    expr: identity.crawler.verfied && risk.class == "VERIFIED_CRAWLER"
+    action: allow

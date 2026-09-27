@@ -1,0 +1,30 @@
+{
+  "name": "@morphgate/web-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "MorphGate first-party Web SDK (Phase 0 skeleton): env/automation summaries, quantizers, session-key crypto, response classification.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.23.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=iife --minify --target=es2020 --legal-comments=none --outfile=dist/mg.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "size": "node scripts/size-check.mjs",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run size"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.1",
+    "vitest": "5.0.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+# Validation Lab allowlist inside the isolated compose network
+# (deploy/compose/docker-compose.yml, profile "lab"; mounted at /etc/mglab/lab.yaml).
+#
+# Two layers enforce the same boundary here: this allowlist (lab/internal/guard)
+# and the `lab` network itself, which is `internal: true` (no route off the
+# Docker host) and gives the host no address on it (inhibit_ipv4), so host
+# services are unreachable too. Targets are compose services with a `.lab.test` alias;
+# they resolve to private bridge addresses, which the guard accepts for
+# allow_suffixes matches.
+
+allow_hosts: []
+
+allow_suffixes:
+  - .lab.test
+
+allow_cidrs:
+  - 127.0.0.0/8
+  - ::1/128
+
+owner_targets: []
+
+rate_rps: 5

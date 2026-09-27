@@ -1,0 +1,17 @@
+# mg-edge development configuration (`make edge-run`).
+#
+# Topology in dev and in the recommended deployment:
+#   Cloudflare -> cloudflared (same host) -> mg-edge 127.0.0.1:8080 -> origin
+# The mock origin from deploy/compose listens on 127.0.0.1:8081.
+# Phase 0 accepts loopback `listen` addresses only (no TLS listener yet).
+
+site_id          = "dev"
+listen           = "127.0.0.1:8080"
+origin           = "127.0.0.1:8081"
+upstream_profile = "cloudflare"       # "cloudflare" | "direct_tls"
+metrics_listen   = "127.0.0.1:9901"   # Prometheus text format, scraped by VictoriaMetrics
+
+[server]
+threads                           = 2
+grace_period_seconds              = 1   # quick restarts in dev; production default is 10
+graceful_shutdown_timeout_seconds = 1

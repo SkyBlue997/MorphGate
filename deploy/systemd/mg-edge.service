@@ -1,0 +1,98 @@
+# MorphGate Edge (Pingora) - example systemd unit.
+#
+# Install:
+#   useradd --system --no-create-home --shell /usr/sbin/nologin morphgate
+#   install -m 0755 target/release/mg-edge /usr/local/bin/mg-edge
+#   install -d -m 0750 -o root -g morphgate /etc/morphgate
+#   install -m 0640 -o root -g morphgate deploy/systemd/edge.toml.example /etc/morphgate/edge.toml
+#   (edit site_id / origin / metrics_listen first)
+#   cp deploy/systemd/mg-edge.service /etc/systemd/system/ && systemctl daemon-reload
+#   systemctl enable --now mg-edge
+#
+# Flags: -d/--daemon forks into the background and writes the PID file
+# (Type=forking; requires [server] pid_file); -u/--upgrade takes over the
+# listening sockets of the running process; --check-config validates edge.toml
+# and exits. edge/tests/shipped_configs.rs runs every mg-edge command line below
+# against edge.toml.example, so flags and paths here cannot drift from the binary.
+#
+# Zero-downtime binary/config upgrade (Pingora graceful upgrade):
+#   systemctl reload mg-edge
+# ExecReload sends SIGQUIT to the running process, which hands its listening
+# sockets to the new process started with -u over the upgrade socket, then
+# drains in-flight requests and exits. systemd follows the new main PID through
+# PIDFile. Plain `systemctl restart` drops connections; prefer reload.
+#
+# /etc/morphgate/edge.toml must move Pingora's PID file and upgrade socket out
+# of /tmp (Pingora's defaults), which PrivateTmp= hides from systemd; the
+# example sets both under /run/morphgate (RuntimeDirectory=):
+#   [server]
+#   pid_file     = "/run/morphgate/mg-edge.pid"          # must match PIDFile=
+#   upgrade_sock = "/run/morphgate/mg-edge-upgrade.sock"
+#
+# Topology (docs/adr/0007-lean-deployment.md): mg-edge listens on 127.0.0.1
+# only, behind cloudflared on the same host, so no privileged port or capability
+# is needed. When `direct_tls` needs :443, add
+#   AmbientCapabilities=CAP_NET_BIND_SERVICE
+#   CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Unit]
+Description=MorphGate Edge (Pingora reverse proxy)
+Documentation=https://github.com/cloudflare/pingora/blob/main/docs/user_guide/systemd.md
+Wants=network-online.target
+After=network-online.target
+# If cloudflared runs as a service on this host, start the Edge first so the
+# tunnel never forwards to a closed port:
+# Before=cloudflared.service
+
+[Service]
+Type=forking
+PIDFile=/run/morphgate/mg-edge.pid
+ExecStartPre=/usr/local/bin/mg-edge --check-config --config /etc/morphgate/edge.toml
+ExecStart=/usr/local/bin/mg-edge -d --config /etc/morphgate/edge.toml
+ExecReload=/bin/kill -QUIT $MAINPID
+ExecReload=/usr/local/bin/mg-edge -u -d --config /etc/morphgate/edge.toml
+# SIGTERM = Pingora graceful shutdown (stop accepting, drain, exit).
+KillSignal=SIGTERM
+# Must exceed [server] grace_period_seconds + graceful_shutdown_timeout_seconds.
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=2s
+
+User=morphgate
+Group=morphgate
+RuntimeDirectory=morphgate
+RuntimeDirectoryMode=0750
+ConfigurationDirectory=morphgate
+StateDirectory=morphgate
+UMask=0027
+LimitNOFILE=1048576
+
+# --- Hardening (verify with: systemd-analyze security mg-edge) ---
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

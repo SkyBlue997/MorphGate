@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package morphgate.v1;
+
+import "morphgate/v1/common.proto";
+
+option go_package = "morphgate/control-plane/gen/morphgate/v1;morphgatev1";
+
+// Sealed challenge C (docs/09-interactive-challenge.md §4, ADR-0005):
+//
+//   C  = base64url(prost(SealedChallenge { v, kid, xnonce, ct }))
+//   ct = XChaCha20-Poly1305.seal(k_epoch[kid], xnonce, prost(SealedChallengeClaims),
+//                                aad = host || type || kid)   (aad length-delimited)
+//
+// Only the Rust Edge seals and opens C; the SDK never parses it and signs
+// hash(C) instead. Issuing C writes no state: the nonce is consumed with SET NX
+// on submission, before any external provider call. Unknown `v` is rejected.
+// Sealing and opening are implemented in Phase 1; these messages only fix the
+// encoding (prost is length-delimited, so there is no concatenation ambiguity).
+
+// Outer envelope of C.
+message SealedChallenge {
+  uint32 v = 1;             // envelope format version
+  string kid = 2;           // epoch key id (current or previous epoch only)
+  bytes xnonce = 3;         // 192-bit random XChaCha20-Poly1305 nonce
+  bytes ct = 4;             // ciphertext of SealedChallengeClaims, with tag
+}
+
+// Claims sealed inside C (docs/09 §4.2). Times come from the server clock.
+message SealedChallengeClaims {
+  // PoW parameters, verified server-side.
+  message Pow {
+    string alg = 1;
+    uint32 difficulty = 2;
+  }
+
+  // Binding hashes (docs/04 §5 for phase and strength). Presence-aware: an
+  // unset field is not bound; a set field is checked even if its hash is empty.
+  message Bind {
+    optional bytes uah = 1;   // hash(UA family + major version): hard
+    optional bytes ipp = 2;   // hash(IP /24 or /48): soft (same ASN -> risk; cross ASN / country -> new C)
+    optional bytes jkt = 3;   // Phase 2+: SDK session key thumbprint: hard
+    optional bytes ctp = 4;   // cloudflare only: coarse TLS tuple hash: shadow only
+    optional bytes tfp = 5;   // direct_tls only, after the JA4 spike: JA4 hash: hard
+  }
+
+  uint32 v = 1;                   // claims format version; unknown -> fail
+  string kid = 2;                 // epoch key id; must equal the envelope kid
+  bytes nonce = 3;                // 128-bit random, single use (mg:n:{site}:{nonce})
+  string site = 4;                // site id; must own the request Host
+  string route_class = 5;         // [a-z0-9_-]{1,32}; also the Turnstile action
+  ChallengeType type = 6;         // INVISIBLE | POW | INTERACTIVE; must match the endpoint
+  repeated string providers = 7;  // interactive only: offered provider ids, ordered, first = default;
+                                  // a submitted provider_id outside this set fails (anti-downgrade)
+  string risk_band = 8;           // low | medium | high | very_high: PoW difficulty and scoring prior
+  uint32 attempt_no = 9;          // interactive only: 1-based; > M -> temporary block
+  int64 iat = 10;                 // issued at, Unix epoch milliseconds
+  int64 exp = 11;                 // expires at, Unix epoch milliseconds
+  uint64 ui_seed = 12;            // interactive only: seeds hold duration, button offset, pow_salt
+  Pow pow = 13;
+  bytes ret = 14;                 // hash of the same-site return path (anti open redirect)
+  Bind bind = 15;
+}

@@ -1,0 +1,187 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs (the comment names the
+# release the SHA was taken from); bump SHA and comment together.
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: short
+  # Same protoc release as the committed control-plane/gen code was made with
+  # (its header records the version, so a different protoc shows up as drift).
+  PROTOC_VERSION: "35.1"
+  # SHA-256 of protoc-35.1-linux-x86_64.zip (matches the digest GitHub lists
+  # for the release asset). Update together with PROTOC_VERSION.
+  PROTOC_SHA256: "6930ebf62bd4ea607b98fff052596c6ee564b9835b4ce172c75a3f53ae9d91b7"
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test, wasm, edge smoke)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # wasm-check skips when the target is missing; in CI that must fail instead.
+      MG_REQUIRE_WASM: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@3920daf79df8fb8df1dbef6e64563e2901a73745 # branch 1.91 (installs 1.91.1)
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      # boring-sys compiles BoringSSL from source: cmake, a C/C++ compiler,
+      # libclang for bindgen, and Go for BoringSSL's build-time generators.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: BoringSSL build dependencies
+        run: |
+          if ! command -v cmake >/dev/null || ! command -v clang >/dev/null \
+             || ! ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+          fi
+          cmake --version | head -n1
+          clang --version | head -n1
+          go version
+
+      # Pingora 0.x breaks its API on every minor release (docs/adr/0002).
+      - name: Pingora pinned to =0.9.0
+        run: |
+          grep -Eq '^pingora = \{ *version = "=0\.9\.0"' Cargo.toml \
+            || { echo "::error::Cargo.toml must pin pingora with version = \"=0.9.0\""; exit 1; }
+          drift="$(awk '/^name = "pingora/ { n = $3; next } /^version = / && n { if ($3 != "\"0.9.0\"") print n, $3; n = "" }' Cargo.lock)"
+          if [ -n "$drift" ]; then
+            echo "::error::Cargo.lock has pingora crates other than 0.9.0"
+            echo "$drift"
+            exit 1
+          fi
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: make rust-check
+        run: make rust-check
+
+      - name: make wasm-check
+        run: make wasm-check
+
+      - name: make edge-smoke
+        run: make edge-smoke
+
+  go:
+    name: Go (vet, test, generated code)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache-dependency-path: "*/go.sum"
+
+      - name: Install protoc ${{ env.PROTOC_VERSION }}
+        run: |
+          url="https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/protoc.zip" "$url"
+          echo "${PROTOC_SHA256}  $RUNNER_TEMP/protoc.zip" | sha256sum -c -
+          unzip -q -o "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+
+      - name: make go-check
+        run: make go-check
+
+      - name: Generated code is up to date
+        run: |
+          protoc --version
+          make proto
+          git diff --exit-code -- control-plane/gen
+          untracked="$(git status --porcelain --untracked-files=all -- control-plane/gen)"
+          if [ -n "$untracked" ]; then
+            echo "::error::make proto changed control-plane/gen; run it locally and commit the result"
+            echo "$untracked"
+            exit 1
+          fi
+
+  web:
+    name: Web SDK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+
+      # pnpm version comes from sdk/web/package.json "packageManager" (the
+      # release that wrote pnpm-lock.yaml).
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: sdk/web/package.json
+          cache: true
+          cache_dependency_path: sdk/web/pnpm-lock.yaml
+
+      - name: make web-check
+        run: make web-check
+
+      - name: make adapters-check
+        run: make adapters-check
+
+  compose:
+    name: Compose config and Lab isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: make compose-check
+        run: |
+          docker compose version
+          make compose-check
+
+      # Phase 0 acceptance (docs/07): the Lab allowlist holds at the tool layer
+      # and at the network-egress layer. Traffic stays on the runner.
+      - name: make lab-egress-check
+        run: make lab-egress-check
+
+  docs:
+    name: Docs links and scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Script self-tests and syntax
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          for f in scripts/*.sh; do bash -n "$f"; done
+
+      - name: make docs-check
+        run: make docs-check

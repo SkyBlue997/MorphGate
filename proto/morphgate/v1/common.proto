@@ -1,0 +1,121 @@
+syntax = "proto3";
+
+package morphgate.v1;
+
+option go_package = "morphgate/control-plane/gen/morphgate/v1;morphgatev1";
+
+// Shared enums. Values mirror docs/02-data-flow.md §7 and docs/03-risk-scoring.md §2.
+
+enum Channel {
+  CHANNEL_UNSPECIFIED = 0;
+  CHANNEL_WEB = 1;
+  CHANNEL_API = 2;
+  CHANNEL_MOBILE = 3;
+}
+
+// Where the Edge sits relative to the visitor (docs/08-upstream-and-cloudflare.md).
+enum UpstreamProfileKind {
+  UPSTREAM_PROFILE_KIND_UNSPECIFIED = 0;
+  UPSTREAM_PROFILE_KIND_DIRECT_TLS = 1;      // Edge terminates the visitor's TLS itself
+  UPSTREAM_PROFILE_KIND_CLOUDFLARE = 2;      // behind Cloudflare (Tunnel or AOP)
+  UPSTREAM_PROFILE_KIND_PROXY_PROTOCOL = 3;  // behind an L4 load balancer sending PROXY v1/v2
+  UPSTREAM_PROFILE_KIND_CLOUDFRONT = 4;
+  UPSTREAM_PROFILE_KIND_GCP_ALB = 5;
+  UPSTREAM_PROFILE_KIND_ESA = 6;
+  UPSTREAM_PROFILE_KIND_EDGEONE = 7;
+  UPSTREAM_PROFILE_KIND_ALICDN = 8;
+  UPSTREAM_PROFILE_KIND_TENCENT_CDN = 9;
+  UPSTREAM_PROFILE_KIND_ENVOY = 10;
+  UPSTREAM_PROFILE_KIND_OPENRESTY = 11;
+}
+
+// Provenance of a signal or protocol-layer value such as JA4 (docs/03 §3.1).
+enum SignalSource {
+  SIGNAL_SOURCE_UNSPECIFIED = 0;
+  SIGNAL_SOURCE_SELF = 1;        // computed by MorphGate Edge
+  SIGNAL_SOURCE_CLOUDFLARE = 2;
+  SIGNAL_SOURCE_CLOUDFRONT = 3;
+  SIGNAL_SOURCE_GCP_ALB = 4;
+  SIGNAL_SOURCE_ESA = 5;
+  SIGNAL_SOURCE_ENVOY = 6;
+  SIGNAL_SOURCE_OPENRESTY = 7;
+  SIGNAL_SOURCE_SDK = 8;
+}
+
+// Evidence state of a signal (docs/03-risk-scoring.md §3.1).
+enum SignalState {
+  SIGNAL_STATE_UNSPECIFIED = 0;
+  SIGNAL_STATE_PRESENT = 1;  // the detector had its input and produced a result
+  SIGNAL_STATE_ABSENT = 2;   // the profile can supply the input but this request lacks it:
+                             // value 0, counted in the confidence denominator only
+  SIGNAL_STATE_MISSING = 3;  // the profile cannot supply it, or an upstream-injected header
+                             // did not arrive / has no confirmed source: not counted at all
+}
+
+enum SignalFamily {
+  SIGNAL_FAMILY_UNSPECIFIED = 0;
+  SIGNAL_FAMILY_NETWORK = 1;
+  SIGNAL_FAMILY_TLS = 2;
+  SIGNAL_FAMILY_HTTP = 3;
+  SIGNAL_FAMILY_CLIENT = 4;
+  SIGNAL_FAMILY_BEHAVIOR = 5;
+  SIGNAL_FAMILY_REPUTATION = 6;
+  SIGNAL_FAMILY_RATE = 7;
+  SIGNAL_FAMILY_IDENTITY = 8;
+  SIGNAL_FAMILY_EDGE_TLS = 9;  // coarse TLS profile forwarded by a CDN (x-mg-cf-tls-*)
+  SIGNAL_FAMILY_EXTERNAL = 10; // upstream verdicts used as corroboration only
+}
+
+enum BotClass {
+  BOT_CLASS_UNSPECIFIED = 0;
+  BOT_CLASS_AUTHORIZED_AGENT = 1;
+  BOT_CLASS_VERIFIED_CRAWLER = 2;
+  BOT_CLASS_API_PARTNER = 3;
+  BOT_CLASS_SIGNED_AGENT = 4;
+  BOT_CLASS_DECLARED_AGENT = 5;
+  BOT_CLASS_IMPERSONATOR = 6;
+  BOT_CLASS_SCANNER = 7;
+  BOT_CLASS_AUTOMATION_LIKELY = 8;
+  BOT_CLASS_HUMAN_LIKELY = 9;
+  BOT_CLASS_UNKNOWN = 10;
+}
+
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+  ACTION_ALLOW = 1;
+  ACTION_LOG = 2;
+  ACTION_TAG = 3;
+  ACTION_RATE_LIMIT = 4;
+  ACTION_CHALLENGE = 5;
+  ACTION_TARPIT = 6;
+  ACTION_BLOCK = 7;
+}
+
+enum ChallengeType {
+  CHALLENGE_TYPE_UNSPECIFIED = 0;
+  CHALLENGE_TYPE_INVISIBLE = 1;
+  CHALLENGE_TYPE_POW = 2;
+  CHALLENGE_TYPE_INTERACTIVE = 3;
+  CHALLENGE_TYPE_ATTESTATION = 4;
+  CHALLENGE_TYPE_STEP_UP = 5;
+}
+
+enum EntityType {
+  ENTITY_TYPE_UNSPECIFIED = 0;
+  ENTITY_TYPE_IP = 1;
+  ENTITY_TYPE_PREFIX = 2;
+  ENTITY_TYPE_ASN = 3;
+  ENTITY_TYPE_SESSION = 4;
+  ENTITY_TYPE_DEVICE = 5;
+  ENTITY_TYPE_ACCOUNT = 6;
+  ENTITY_TYPE_FP_CLUSTER = 7;
+  ENTITY_TYPE_AGENT = 8;
+}
+
+enum RouteSensitivity {
+  ROUTE_SENSITIVITY_UNSPECIFIED = 0;
+  ROUTE_SENSITIVITY_LOW = 1;
+  ROUTE_SENSITIVITY_MEDIUM = 2;
+  ROUTE_SENSITIVITY_HIGH = 3;
+  ROUTE_SENSITIVITY_CRITICAL = 4;
+}

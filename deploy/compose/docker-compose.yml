@@ -1,0 +1,297 @@
+# MorphGate development environment (Phase 0).
+#
+#   make dev-up                              core services
+#   COMPOSE_PROFILES=grafana make dev-up     + Grafana
+#   COMPOSE_PROFILES=tunnel make dev-up      + cloudflared (needs TUNNEL_TOKEN)
+#   COMPOSE_PROFILES=lab make dev-up         + Validation Lab isolated network (make lab-egress-check)
+#   make dev-down                            stop everything, keep the named volumes
+#
+# - Every published port is bound to 127.0.0.1. Nothing here is meant to be
+#   reachable from another machine.
+# - mg-edge (`make edge-run`) and mg-control run on the host, not in compose.
+#   VictoriaMetrics scrapes mg-edge through host.docker.internal.
+# - Profile "lab" adds the Validation Lab's isolated network (see the end of
+#   the services list).
+# - Credentials come from deploy/compose/.env (copy .env.example; the file is
+#   git-ignored). The `:-...` fallbacks below are dev-only defaults that keep
+#   `docker compose config` working in CI; never reuse them on a shared host.
+# - Image tags are pinned; bump them deliberately (checked 2026-09-27).
+#
+# Production is not this file: see docs/adr/0007-lean-deployment.md (one "brain"
+# VM for the stateful services, mg-edge + cloudflared under systemd per host).
+
+name: morphgate-dev
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # Rate-limit counters, nonces, verdicts, the near-line stream (docs/02-data-flow.md).
+  valkey:
+    image: valkey/valkey:9.1.2-alpine
+    command:
+      - valkey-server
+      - /usr/local/etc/valkey/valkey.conf
+      - --requirepass
+      - ${VALKEY_PASSWORD:-morphgate-dev}
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:-morphgate-dev}
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - valkey-data:/data
+      - ./valkey/valkey.conf:/usr/local/etc/valkey/valkey.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$$VALKEY_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Control-plane database (Phase 3; SQLite is the alternative).
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-morphgate}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-morphgate-dev}
+      POSTGRES_DB: ${POSTGRES_DB:-morphgate}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # PostgreSQL 18+ images keep PGDATA under /var/lib/postgresql/<major>/,
+      # so the volume is mounted one level up.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Metrics: single node, scrapes mg-edge / mg-control (victoriametrics/scrape.yml).
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.152.0
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=${VM_RETENTION:-31d}
+      - -httpListenAddr=:8428
+      - -promscrape.config=/etc/victoriametrics/scrape.yml
+      - -selfScrapeInterval=15s
+    ports:
+      - "127.0.0.1:8428:8428"
+    volumes:
+      - vm-data:/storage
+      - ./victoriametrics/scrape.yml:/etc/victoriametrics/scrape.yml:ro
+    extra_hosts:
+      # Docker Desktop resolves this name natively; on Linux it maps to the
+      # bridge gateway. See the note at the top of scrape.yml.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8428/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Events as JSON lines until ClickHouse is needed. Retention is per instance,
+  # so there are two (docs/02-data-flow.md, "采样与保留"):
+  #   vl-main  (30d): DecisionEvent, access records, verdict / feedback, audit mirror, app logs
+  #   vl-short (7d):  Challenge / SDK telemetry
+  # No healthchecks: the image is distroless (no shell, no HTTP client). Probe
+  # from the host instead: curl -fsS http://127.0.0.1:9428/health (vl-main),
+  # http://127.0.0.1:9429/health (vl-short).
+  vl-main:
+    image: victoriametrics/victoria-logs:v1.52.0
+    command:
+      - -storageDataPath=/vlogs
+      - -retentionPeriod=${VL_MAIN_RETENTION:-30d}
+      - -httpListenAddr=:9428
+    ports:
+      - "127.0.0.1:9428:9428"
+    volumes:
+      - vl-main-data:/vlogs
+    restart: unless-stopped
+    logging: *default-logging
+
+  vl-short:
+    image: victoriametrics/victoria-logs:v1.52.0
+    command:
+      - -storageDataPath=/vlogs
+      - -retentionPeriod=${VL_SHORT_RETENTION:-7d}
+      - -httpListenAddr=:9428
+    ports:
+      - "127.0.0.1:9429:9428"
+    volumes:
+      - vl-short-data:/vlogs
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Optional dashboards (AGPL-3.0; used unmodified). Built-in vmui (:8428/vmui)
+  # and the VictoriaLogs UIs (:9428 / :9429 /select/vmui) are enough for most work.
+  grafana:
+    image: grafana/grafana:13.2.2
+    profiles: ["grafana"]
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-morphgate-dev}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      # Installed before startup so the provisioned VictoriaLogs datasource resolves.
+      GF_PLUGINS_PREINSTALL_SYNC: victoriametrics-logs-datasource@0.32.0
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Stand-in origin for mg-edge (edge/config/edge.dev.toml: origin = 127.0.0.1:8081).
+  # It echoes the request back, which makes header handling easy to inspect.
+  mock-origin:
+    image: traefik/whoami:v1.12.0
+    command: ["--port", "8081", "--name", "mock-origin"]
+    ports:
+      - "127.0.0.1:8081:8081"
+    # No healthcheck: the image is FROM scratch. It serves GET /health itself:
+    #   curl -fsS http://127.0.0.1:8081/health
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Optional Cloudflare Tunnel connector (profile "tunnel"), for trying the
+  # `cloudflare` UpstreamProfile end to end against one of your own zones.
+  #
+  #   1. Create a remotely-managed tunnel for your own zone in the Cloudflare
+  #      dashboard and put its token in deploy/compose/.env as TUNNEL_TOKEN.
+  #   2. Point the tunnel's public hostname at the Edge on the host:
+  #        Docker Desktop: http://host.docker.internal:8080
+  #        Linux:          uncomment `network_mode: host` below (and drop
+  #                        extra_hosts), then use http://127.0.0.1:8080
+  #   3. COMPOSE_PROFILES=tunnel make dev-up, then make edge-run.
+  #
+  # In production cloudflared runs under systemd on every Edge host, next to
+  # mg-edge, which listens on 127.0.0.1 only and trusts loopback peers only
+  # (docs/08-upstream-and-cloudflare.md). Through Docker Desktop the peer that
+  # mg-edge sees is the VM gateway rather than loopback, so treat this as a
+  # plumbing test, not as a model of the trust rules.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.9.3
+    profiles: ["tunnel"]
+    # The image entrypoint is `cloudflared --no-autoupdate`.
+    command: ["tunnel", "--metrics", "127.0.0.1:20241", "run"]
+    environment:
+      # Read by `cloudflared tunnel run`. Empty by default: the service only
+      # starts when the "tunnel" profile is enabled, and fails fast without it.
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    # network_mode: host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:20241", "ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # --- Validation Lab (profile "lab") -----------------------------------------
+  # Second enforcement layer of the Lab allowlist (docs/07-roadmap.md, Phase 0;
+  # the first is lab/internal/guard): everything below attaches only to the
+  # `lab` network, which is `internal` and gives the host no address on it
+  # (see `networks:` at the end), so Docker gives it no route off this host and
+  # no path to host services. Lab containers reach each other and nothing else.
+  #
+  #   docker compose -f deploy/compose/docker-compose.yml --profile lab up -d lab-origin
+  #   docker compose -f deploy/compose/docker-compose.yml --profile lab run --rm mglab \
+  #     replay -config /etc/mglab/lab.yaml /lab/testdata/scenarios/lab-origin.yaml
+  #   make lab-egress-check      # asserts both layers (needs a Docker daemon)
+  #
+  # mg-edge is not on this network in Phase 0 (it runs on the host and accepts
+  # loopback listeners only); replay against it from the host with the tool
+  # layer alone (lab/README.md).
+
+  # In-network stand-in origin, reachable as origin.lab.test.
+  lab-origin:
+    image: traefik/whoami:v1.12.0
+    profiles: ["lab"]
+    command: ["--port", "8081", "--name", "lab-origin"]
+    networks:
+      lab:
+        aliases: ["origin.lab.test"]
+    logging: *default-logging
+
+  # One-shot Lab CLI: `docker compose ... run --rm mglab <check|replay> ...`.
+  mglab:
+    build:
+      context: ../../lab
+    image: morphgate/mglab:dev
+    profiles: ["lab"]
+    networks: [lab]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ../../lab/config/lab.compose.yaml:/etc/mglab/lab.yaml:ro
+      - ../../lab/testdata:/lab/testdata:ro
+    command: ["help"]
+    logging: *default-logging
+
+  # Plain HTTP client on the lab network that is not mglab (so no guard):
+  # scripts/lab-egress-check.sh uses it to show that the network by itself
+  # blocks a destination outside the lab (a listener the script starts on this
+  # host). It is a test fixture for the egress layer, not a way around it.
+  lab-probe:
+    image: busybox:1.37.0
+    profiles: ["lab"]
+    networks: [lab]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command: ["true"]
+    logging: *default-logging
+
+networks:
+  # No external connectivity: Docker adds no default route for internal networks.
+  # An internal bridge alone still gives the host an address on it (the
+  # gateway), and through that address lab containers reach every host service
+  # bound to 0.0.0.0 (docker network create, "Network internal mode").
+  # inhibit_ipv4 leaves the host without an address on this network; for IPv4
+  # that is what Docker 28's gateway_mode_ipv4=isolated does, and it also works
+  # on older engines. scripts/lab-egress-check.sh verifies it on Linux.
+  lab:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: "true"
+
+volumes:
+  valkey-data:
+  postgres-data:
+  vm-data:
+  vl-main-data:
+  vl-short-data:
+  grafana-data:

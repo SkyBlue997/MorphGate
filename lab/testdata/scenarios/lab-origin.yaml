@@ -1,0 +1,18 @@
+# Benign reachability flow for the isolated compose network (profile "lab"):
+#   docker compose -f deploy/compose/docker-compose.yml --profile lab run --rm mglab \
+#     replay -config /etc/mglab/lab.yaml /lab/testdata/scenarios/lab-origin.yaml
+# lab-origin is traefik/whoami, which answers /health itself.
+name: lab-origin
+description: Health check and one page load of the in-network stand-in origin.
+base_url: http://origin.lab.test:8081
+requests:
+  - name: origin health
+    method: GET
+    path: /health
+    expect_status: 200
+  - name: home page
+    method: GET
+    path: /
+    headers:
+      Accept: text/html
+    expect_status: 200

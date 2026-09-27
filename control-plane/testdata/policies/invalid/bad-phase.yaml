@@ -1,0 +1,5 @@
+policies:
+  - id: wrong-phase
+    phase: botting
+    expr: risk.score >= 90
+    action: block
