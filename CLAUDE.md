@@ -13,9 +13,11 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 
 | Path | Contents |
 |---|---|
-| `Cargo.toml` | Rust workspace (edition 2024, MSRV 1.88): `core`, `edge`, `proto/rust` |
+| `Cargo.toml` | Rust workspace (edition 2024, MSRV 1.88): `core`, `challenge`, `intel`, `edge`, `proto/rust` |
 | `core/` | `mg-core`: pure Decision Core. No I/O, threads, tokio or wall clock (time is passed in); must build for `wasm32-unknown-unknown` |
 | `edge/` | `mg-edge`: Pingora (`=0.9.0`, BoringSSL) binary. All Pingora-specific code stays here. Dev config in `edge/config/edge.dev.toml` |
+| `challenge/` | `mg-challenge` (Phase 1): sealed challenges, epoch keys, SHA-256 PoW, PASETO v4.local clearance tokens. No I/O; time and RNG are injected |
+| `intel/` | `mg-intel` (Phase 1): IP prefix sets, GeoLite2 mmdb lookups, crawler registry + verification (DNS behind a trait), Cloudflare IP ranges |
 | `proto/morphgate/v1/` | Shared protobuf contract. Rust: `proto/rust` (`mg-proto`, protox in build.rs). Go: generated into `control-plane/gen` and committed |
 | `control-plane/` | Go module: `cmd/mgctl`, `cmd/mg-control`, `internal/...` |
 | `lab/` | Go module: Validation Lab (`internal/guard` allowlist, `cmd/mglab`; `Dockerfile` for the isolated compose network) |
@@ -24,6 +26,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `deploy/compose/` | Dev environment: Valkey, PostgreSQL, VictoriaMetrics, VictoriaLogs (`vl-main` 30d, `vl-short` 7d), mock origin; optional profiles `grafana`, `tunnel` (cloudflared) and `lab` (Validation Lab on an internal network) |
 | `deploy/systemd/` | `mg-edge.service` (Pingora graceful upgrade via `systemctl reload`) and `edge.toml.example`, kept in sync by `edge/tests/shipped_configs.rs` |
 | `scripts/` | `gen-proto.sh`, `check_doc_links.py`, `edge-smoke.sh`, `lab-egress-check.sh` |
+| `testdata/` | Cross-component fixtures: `phase1/kat.json` (crypto / PoW known-answer vectors), `policy-ir/` (Go ↔ Rust policy IR conformance) |
 
 ## Commands
 
@@ -43,6 +46,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 ## Design docs
 
 - [README.md](README.md) indexes the design docs `docs/01`–`docs/10` and the ADRs in [docs/adr/](docs/adr/README.md). The threat model is [docs/10](docs/10-threat-model.md); the phase plan is [docs/07](docs/07-roadmap.md). Phase 0 is the skeleton; features start in Phase 1.
+- The Phase 1 implementation spec is [docs/impl/phase1-spec.md](docs/impl/phase1-spec.md): work packages, file ownership and every cross-component contract. Change a contract there first, then in code.
 - Other docs link to heading anchors, so keep heading text stable or fix every link (`make docs-check` catches breakage).
 
 ## Conventions

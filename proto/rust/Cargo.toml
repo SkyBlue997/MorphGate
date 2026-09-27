@@ -7,6 +7,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Wire <-> native conversions (src/ir.rs: policy IR -> mg-core evaluator types).
+mg-core.workspace = true
 prost.workspace = true
 
 [build-dependencies]
@@ -14,7 +16,6 @@ prost-build.workspace = true
 protox.workspace = true
 
 [dev-dependencies]
-mg-core.workspace = true
 serde_json.workspace = true
 
 [lints]

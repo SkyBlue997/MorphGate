@@ -178,11 +178,13 @@ fn signed_bundle_round_trip() {
                 id: "login".into(),
                 name: "login".into(),
                 hosts: vec!["blog.example.com".into()],
-                path_glob: "/login".into(),
+                paths: vec!["/login".into(), "/api/login".into()],
                 methods: vec!["POST".into()],
                 channel: v1::Channel::Web as i32,
                 sensitivity: v1::RouteSensitivity::Critical as i32,
                 fail_closed: true,
+                require_clearance: true,
+                ..Default::default()
             }],
             rules: vec![v1::CompiledRule {
                 id: "r1".into(),
@@ -572,6 +574,7 @@ fn claims_to_proto(c: &mg_core::SealedChallengeClaims) -> v1::SealedChallengeCla
         jkt,
         ctp,
         tfp,
+        ipa,
     } = bind;
     v1::SealedChallengeClaims {
         v: *v,
@@ -597,6 +600,7 @@ fn claims_to_proto(c: &mg_core::SealedChallengeClaims) -> v1::SealedChallengeCla
             jkt: jkt.clone(),
             ctp: ctp.clone(),
             tfp: tfp.clone(),
+            ipa: ipa.clone(),
         }),
     }
 }
@@ -631,6 +635,7 @@ fn claims_from_proto(p: v1::SealedChallengeClaims) -> Option<mg_core::SealedChal
             jkt: bind.jkt,
             ctp: bind.ctp,
             tfp: bind.tfp,
+            ipa: bind.ipa,
         },
     })
 }
@@ -666,6 +671,7 @@ fn sealed_challenge_claims_round_trip_with_binding_presence() {
             jkt: Some(vec![]), // bound to an (empty) value: must stay distinguishable
             ctp: Some(vec![4; 32]),
             tfp: None,
+            ipa: Some(vec![5; 16]),
         },
     };
     assert_eq!(claims.check(1_790_000_000_500), Ok(()));
@@ -700,6 +706,6 @@ fn sealed_challenge_envelope_round_trip() {
     assert_eq!(proto_fields("morphgate.v1.SealedChallengeClaims").len(), 15);
     assert_eq!(
         proto_fields("morphgate.v1.SealedChallengeClaims.Bind").len(),
-        5
+        6
     );
 }

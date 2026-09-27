@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"morphgate/control-plane/internal/cli"
 )
 
 func TestPlannedChecks(t *testing.T) {
@@ -41,5 +43,19 @@ func TestPrintPlanAndRun(t *testing.T) {
 	}
 	if err := Run(); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("Run() = %v, want ErrNotImplemented", err)
+	}
+}
+
+func TestRunCLIStub(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := RunCLI(nil, cli.Env{Stdout: &out, Stderr: &errb})
+	if code != cli.ExitUsage {
+		t.Fatalf("exit %d, want %d", code, cli.ExitUsage)
+	}
+	if !strings.Contains(out.String(), "[bot_fight_mode]") {
+		t.Errorf("plan not printed: %q", out.String())
+	}
+	if !strings.Contains(errb.String(), "not implemented until Phase 1") {
+		t.Errorf("unexpected stderr %q", errb.String())
 	}
 }

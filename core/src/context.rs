@@ -372,6 +372,9 @@ wire_enum! {
     pub enum BindResult {
         Match => "match",
         Mismatch => "mismatch",
+        /// Soft binding only (`ipp`): the IP prefix changed within the same
+        /// ASN. A risk signal, not a failure (docs/04 §5).
+        SoftMismatch => "soft_mismatch",
     }
 }
 

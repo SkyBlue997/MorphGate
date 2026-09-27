@@ -45,6 +45,10 @@ pub struct ChallengeBind {
     pub ctp: Option<Vec<u8>>,
     /// JA4 hash: `direct_tls` only, after the JA4 spike, hard.
     pub tfp: Option<Vec<u8>>,
+    /// `hash(ASN)` of the client IP at issuance. Decides the soft `ipp`
+    /// result: prefix changed within the same ASN is a risk signal, a changed
+    /// (or unknown) ASN needs a new challenge. `None` when the ASN is unknown.
+    pub ipa: Option<Vec<u8>>,
 }
 
 /// Claims inside a sealed challenge (docs/09 §4.2). Times are Unix epoch
