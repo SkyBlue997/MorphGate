@@ -8,6 +8,20 @@
 - 贯穿全文的安全约束：**客户端 IP 未知时，Edge 从不比 IP 已知时更宽松**（§9.3.2）；**配置或信任出错时不静默放开**（§9.10）；**攻击者可控的输入大小不能让规则失效**（§5.3、§9.3.1）。
 - 两轮评审的逐条处置见 §20。
 
+## 集成者裁决（2026-09-28，优先于正文）
+
+以下裁决覆盖正文中对应的 D 条目与 §0.3 的"待集成者决定"项。WP-D1 把它们同步到设计文档，各 WP 以此为准。
+
+| 编号 | 裁决 | 覆盖 |
+|---|---|---|
+| I-1 | 采纳 18 个 WP 的结构（新增 `edge-core/` = mg-edge-core，C1–C4 并入 stage 1，E1 拆为顺序执行的 E1a–E1d）；采纳已预先落地的共享代码（`core/src/paths.rs`、`core/src/gcra.rs`、`Net::entity_of`、`CheckedRule.Lists`、proto 字段改动） | §2、§0.4 |
+| I-2 | **协议输入上限只在 enforce 下拒绝**。站点处于 monitor（全局或站点级）或 `bootstrap = "open"` 时，超限请求**不拒绝**：跳过策略求值、原样转发，事件记 `rule_id = "hard.oversize_skipped"`，计 `mg_oversize_total{site, kind="path"\|"query"\|"header_value"\|"header_count"\|"method", mode}`。enforce 下仍按 D-26 返回 414 / 431 / 400。求值代价上界不受影响（超限请求根本不进入求值）；monitor 的承诺是"不改变流量"。 | D-26、§9.3.1 |
+| I-3 | `lkg_invalid` 默认仍为 503（fail-closed），但 `edge.toml` 站点可设 `on_lkg_invalid = "closed" \| "open"`（缺省 `closed`）；`open` 时按 bootstrap-open 处理（全部放行并记录，`rule_id = "lkg_invalid_open"`），同时 `mg_site_state` 告警照常触发。`mg-edge --check-config` 在 LKG 不可用时无论该值如何都返回失败。 | D-21、§9.10、§8.1 |
+| I-4 | `edge.toml` 站点增加可选 `bootstrap_owner_zones = [...]`，仅在尚无配置包时用于判断 `CF-Worker` 是否属于所有者；首个配置包生效后以配置包中的 `owner_zones` 为准（两者不一致时 `--check-config` 给出警告）。未配置时保持正文行为（bootstrap 下任何 `CF-Worker` 视为外部）。 | §9.3.2、§9.4 第 4 步 |
+| I-5 | 接受 D-27 的 Challenge 初值（失败时 risk_band +1、invisible 固定 `pow_bits.low`、凭证证据 −0.4），monitor 周后按数据复核。接受 D-04 改写（出站 TLS 用 reqwest 的 rustls / aws-lc-rs）。接受在 `testdata/phase1/keys` 提交测试密钥材料（RFC 8032 测试向量与确定性字节，仅测试用途，README 注明）。接受 CI 新增 msrv 与 lab-e2e 任务。 | D-27、D-04、§16 |
+| I-6 | WP-G2 保持单一实现者；若其 stage-1 耗时明显超过其他 WP，由集成者拆出 `keys` 子包给第二位实现者，文件所有权另行指定。 | §2 |
+| I-7 | 所有 WP：出站请求一律使用 User-Agent `morphgate-dev-tooling`，**不得**携带所有者邮箱或其他身份信息；测试只访问本机或 fake server。 | 全文 |
+
 ## 0. 范围、决定与已落地文件
 
 ### 0.1 范围
