@@ -136,8 +136,9 @@ type Route struct {
 	Channel          Channel          `protobuf:"varint,6,opt,name=channel,proto3,enum=morphgate.v1.Channel" json:"channel,omitempty"`
 	Sensitivity      RouteSensitivity `protobuf:"varint,7,opt,name=sensitivity,proto3,enum=morphgate.v1.RouteSensitivity" json:"sensitivity,omitempty"`
 	FailClosed       bool             `protobuf:"varint,8,opt,name=fail_closed,json=failClosed,proto3" json:"fail_closed,omitempty"`                    // behaviour when dependencies are unavailable (spec §9.9)
-	Paths            []string         `protobuf:"bytes,9,rep,name=paths,proto3" json:"paths,omitempty"`                                                 // glob patterns (policy glob syntax) matched against the normalized path
+	Paths            []string         `protobuf:"bytes,9,rep,name=paths,proto3" json:"paths,omitempty"`                                                 // glob patterns (policy glob syntax) matched against every path view (spec §9.4)
 	RequireClearance bool             `protobuf:"varint,10,opt,name=require_clearance,json=requireClearance,proto3" json:"require_clearance,omitempty"` // CHALLENGE unless a valid clearance token is presented
+	RedactPath       bool             `protobuf:"varint,11,opt,name=redact_path,json=redactPath,proto3" json:"redact_path,omitempty"`                   // events and access records log "/<route name>" instead of the path (tokenized URLs)
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -238,6 +239,13 @@ func (x *Route) GetPaths() []string {
 func (x *Route) GetRequireClearance() bool {
 	if x != nil {
 		return x.RequireClearance
+	}
+	return false
+}
+
+func (x *Route) GetRedactPath() bool {
+	if x != nil {
+		return x.RedactPath
 	}
 	return false
 }
@@ -815,22 +823,23 @@ type SiteBundle struct {
 	MonitorOnly  bool                   `protobuf:"varint,9,opt,name=monitor_only,json=monitorOnly,proto3" json:"monitor_only,omitempty"`  // global monitor switch: record decisions, enforce nothing
 	// Optional activation delay for sensitive changes (docs/02 §6): the Edge
 	// swaps to this bundle atomically at or after this time. 0 = immediately.
-	NotBeforeMs      int64                 `protobuf:"varint,10,opt,name=not_before_ms,json=notBeforeMs,proto3" json:"not_before_ms,omitempty"`
-	SchemaVersion    uint32                `protobuf:"varint,11,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`         // 1; the Edge rejects bundles with a schema_version it does not know
-	Hosts            []string              `protobuf:"bytes,12,rep,name=hosts,proto3" json:"hosts,omitempty"`                                               // every hostname of the site: lower-case, no port, no trailing dot
-	AllowedListeners []string              `protobuf:"bytes,13,rep,name=allowed_listeners,json=allowedListeners,proto3" json:"allowed_listeners,omitempty"` // edge.toml listener names that may serve this site
-	Challenge        *ChallengeConfig      `protobuf:"bytes,14,opt,name=challenge,proto3" json:"challenge,omitempty"`
-	Clearance        *ClearanceConfig      `protobuf:"bytes,15,opt,name=clearance,proto3" json:"clearance,omitempty"`
-	Scoring          *ScoringConfig        `protobuf:"bytes,16,opt,name=scoring,proto3" json:"scoring,omitempty"`
-	CrawlerPolicy    *CrawlerPolicy        `protobuf:"bytes,17,opt,name=crawler_policy,json=crawlerPolicy,proto3" json:"crawler_policy,omitempty"`
-	Events           *EventConfig          `protobuf:"bytes,18,opt,name=events,proto3" json:"events,omitempty"`
-	Lists            map[string]*NamedList `protobuf:"bytes,19,rep,name=lists,proto3" json:"lists,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // named lists for list("name") and ip_in(); name [a-z0-9][a-z0-9_.-]{0,63}
-	Cloudflare       *CloudflareSiteConfig `protobuf:"bytes,20,opt,name=cloudflare,proto3" json:"cloudflare,omitempty"`                                                                 // set iff upstream.kind == CLOUDFLARE
-	OriginHeaders    *OriginHeaderConfig   `protobuf:"bytes,21,opt,name=origin_headers,json=originHeaders,proto3" json:"origin_headers,omitempty"`
-	ShareIpVerdicts  bool                  `protobuf:"varint,22,opt,name=share_ip_verdicts,json=shareIpVerdicts,proto3" json:"share_ip_verdicts,omitempty"` // also read/write IP / prefix / ASN verdicts under site "all" (docs/01 §10)
-	SourceDigest     string                `protobuf:"bytes,23,opt,name=source_digest,json=sourceDigest,proto3" json:"source_digest,omitempty"`             // sha256 over the site YAML and policy files it was built from (audit)
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	NotBeforeMs          int64                 `protobuf:"varint,10,opt,name=not_before_ms,json=notBeforeMs,proto3" json:"not_before_ms,omitempty"`
+	SchemaVersion        uint32                `protobuf:"varint,11,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`         // 1; the Edge rejects bundles with a schema_version it does not know
+	Hosts                []string              `protobuf:"bytes,12,rep,name=hosts,proto3" json:"hosts,omitempty"`                                               // every hostname of the site: lower-case, no port, no trailing dot
+	AllowedListeners     []string              `protobuf:"bytes,13,rep,name=allowed_listeners,json=allowedListeners,proto3" json:"allowed_listeners,omitempty"` // edge.toml listener names that may serve this site
+	Challenge            *ChallengeConfig      `protobuf:"bytes,14,opt,name=challenge,proto3" json:"challenge,omitempty"`
+	Clearance            *ClearanceConfig      `protobuf:"bytes,15,opt,name=clearance,proto3" json:"clearance,omitempty"`
+	Scoring              *ScoringConfig        `protobuf:"bytes,16,opt,name=scoring,proto3" json:"scoring,omitempty"`
+	CrawlerPolicy        *CrawlerPolicy        `protobuf:"bytes,17,opt,name=crawler_policy,json=crawlerPolicy,proto3" json:"crawler_policy,omitempty"`
+	Events               *EventConfig          `protobuf:"bytes,18,opt,name=events,proto3" json:"events,omitempty"`
+	Lists                map[string]*NamedList `protobuf:"bytes,19,rep,name=lists,proto3" json:"lists,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // named lists for list("name") and ip_in(); name [a-z0-9][a-z0-9_.-]{0,63}
+	Cloudflare           *CloudflareSiteConfig `protobuf:"bytes,20,opt,name=cloudflare,proto3" json:"cloudflare,omitempty"`                                                                 // set iff upstream.kind == CLOUDFLARE
+	OriginHeaders        *OriginHeaderConfig   `protobuf:"bytes,21,opt,name=origin_headers,json=originHeaders,proto3" json:"origin_headers,omitempty"`
+	ShareIpVerdicts      bool                  `protobuf:"varint,22,opt,name=share_ip_verdicts,json=shareIpVerdicts,proto3" json:"share_ip_verdicts,omitempty"`                // also read/write IP / prefix / ASN verdicts under site "all" (docs/01 §10)
+	SourceDigest         string                `protobuf:"bytes,23,opt,name=source_digest,json=sourceDigest,proto3" json:"source_digest,omitempty"`                            // sha256 over the site YAML and policy files it was built from (audit)
+	CaseInsensitivePaths bool                  `protobuf:"varint,24,opt,name=case_insensitive_paths,json=caseInsensitivePaths,proto3" json:"case_insensitive_paths,omitempty"` // route patterns and path views compared lower-cased (spec §9.4)
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *SiteBundle) Reset() {
@@ -1024,17 +1033,24 @@ func (x *SiteBundle) GetSourceDigest() string {
 	return ""
 }
 
+func (x *SiteBundle) GetCaseInsensitivePaths() bool {
+	if x != nil {
+		return x.CaseInsensitivePaths
+	}
+	return false
+}
+
 type ChallengeConfig struct {
 	state          protoimpl.MessageState   `protogen:"open.v1"`
 	TtlS           uint32                   `protobuf:"varint,1,opt,name=ttl_s,json=ttlS,proto3" json:"ttl_s,omitempty"`                      // lifetime of invisible / pow C, <= 120
 	PowBits        *ChallengeConfig_PowBits `protobuf:"bytes,2,opt,name=pow_bits,json=powBits,proto3" json:"pow_bits,omitempty"`              // SHA-256 hashcash difficulty (leading zero bits) per risk band
 	FallbackRet    string                   `protobuf:"bytes,3,opt,name=fallback_ret,json=fallbackRet,proto3" json:"fallback_ret,omitempty"`  // return path for challenged non-GET navigations, e.g. "/"
-	MaxFailures    uint32                   `protobuf:"varint,4,opt,name=max_failures,json=maxFailures,proto3" json:"max_failures,omitempty"` // failed submissions per ipp per failure_window_s before 429
+	MaxFailures    uint32                   `protobuf:"varint,4,opt,name=max_failures,json=maxFailures,proto3" json:"max_failures,omitempty"` // failed submissions per ip entity per failure_window_s before 429 (x4 per ipp)
 	FailureWindowS uint32                   `protobuf:"varint,5,opt,name=failure_window_s,json=failureWindowS,proto3" json:"failure_window_s,omitempty"`
 	SubmitRate     uint32                   `protobuf:"varint,6,opt,name=submit_rate,json=submitRate,proto3" json:"submit_rate,omitempty"` // built-in limiter mg.c.submit (per ipp)
 	SubmitPeriodS  uint32                   `protobuf:"varint,7,opt,name=submit_period_s,json=submitPeriodS,proto3" json:"submit_period_s,omitempty"`
 	SubmitBurst    uint32                   `protobuf:"varint,8,opt,name=submit_burst,json=submitBurst,proto3" json:"submit_burst,omitempty"`
-	IssuePerIpp    uint32                   `protobuf:"varint,9,opt,name=issue_per_ipp,json=issuePerIpp,proto3" json:"issue_per_ipp,omitempty"`  // built-in limiter mg.clr.issue (signal only) per ipp ...
+	IssuePerIpp    uint32                   `protobuf:"varint,9,opt,name=issue_per_ipp,json=issuePerIpp,proto3" json:"issue_per_ipp,omitempty"`  // clearance issuance quota (enforced: 429) per ipp ...
 	IssuePerAsn    uint32                   `protobuf:"varint,10,opt,name=issue_per_asn,json=issuePerAsn,proto3" json:"issue_per_asn,omitempty"` // ... and per ASN, per issue_period_s
 	IssuePeriodS   uint32                   `protobuf:"varint,11,opt,name=issue_period_s,json=issuePeriodS,proto3" json:"issue_period_s,omitempty"`
 	unknownFields  protoimpl.UnknownFields
@@ -1152,7 +1168,7 @@ type ClearanceConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TtlInvisibleS uint32                 `protobuf:"varint,1,opt,name=ttl_invisible_s,json=ttlInvisibleS,proto3" json:"ttl_invisible_s,omitempty"` // lvl invisible
 	TtlPowS       uint32                 `protobuf:"varint,2,opt,name=ttl_pow_s,json=ttlPowS,proto3" json:"ttl_pow_s,omitempty"`                   // lvl pow
-	SessionMaxS   uint32                 `protobuf:"varint,3,opt,name=session_max_s,json=sessionMaxS,proto3" json:"session_max_s,omitempty"`       // reuse the previous token's sub for re-issuance within this age
+	SessionMaxS   uint32                 `protobuf:"varint,3,opt,name=session_max_s,json=sessionMaxS,proto3" json:"session_max_s,omitempty"`       // reuse the previous token's sub while now - sst <= session_max_s (spec §6.5)
 	CtpShadow     bool                   `protobuf:"varint,4,opt,name=ctp_shadow,json=ctpShadow,proto3" json:"ctp_shadow,omitempty"`               // compute and record bind.ctp (cloudflare only, never enforced)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1744,7 +1760,7 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\x12secret_header_refs\x18\x05 \x03(\tR\x10secretHeaderRefs\x12.\n" +
 	"\x13trusted_proxy_cidrs\x18\x06 \x03(\tR\x11trustedProxyCidrs\x124\n" +
 	"\x16proxy_protocol_version\x18\a \x01(\rR\x14proxyProtocolVersion\x12#\n" +
-	"\rexpected_mask\x18\b \x01(\rR\fexpectedMask\"\xcf\x02\n" +
+	"\rexpected_mask\x18\b \x01(\rR\fexpectedMask\"\xf0\x02\n" +
 	"\x05Route\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -1757,7 +1773,9 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"failClosed\x12\x14\n" +
 	"\x05paths\x18\t \x03(\tR\x05paths\x12+\n" +
 	"\x11require_clearance\x18\n" +
-	" \x01(\bR\x10requireClearance\"\xcb\x03\n" +
+	" \x01(\bR\x10requireClearance\x12\x1f\n" +
+	"\vredact_path\x18\v \x01(\bR\n" +
+	"redactPath\"\xcb\x03\n" +
 	"\fCompiledRule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05phase\x18\x02 \x01(\tR\x05phase\x12\x1a\n" +
@@ -1820,7 +1838,7 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\x03uri\x18\x02 \x01(\tR\x03uri\x12\x16\n" +
 	"\x06sha256\x18\x03 \x01(\tR\x06sha256\x12\x18\n" +
 	"\aversion\x18\x04 \x01(\tR\aversion\x12\x12\n" +
-	"\x04size\x18\x05 \x01(\x04R\x04size\"\xbb\t\n" +
+	"\x04size\x18\x05 \x01(\x04R\x04size\"\xf1\t\n" +
 	"\n" +
 	"SiteBundle\x12\x17\n" +
 	"\asite_id\x18\x01 \x01(\tR\x06siteId\x12\x18\n" +
@@ -1848,7 +1866,8 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"cloudflare\x12G\n" +
 	"\x0eorigin_headers\x18\x15 \x01(\v2 .morphgate.v1.OriginHeaderConfigR\roriginHeaders\x12*\n" +
 	"\x11share_ip_verdicts\x18\x16 \x01(\bR\x0fshareIpVerdicts\x12#\n" +
-	"\rsource_digest\x18\x17 \x01(\tR\fsourceDigest\x1aQ\n" +
+	"\rsource_digest\x18\x17 \x01(\tR\fsourceDigest\x124\n" +
+	"\x16case_insensitive_paths\x18\x18 \x01(\bR\x14caseInsensitivePaths\x1aQ\n" +
 	"\n" +
 	"ListsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +

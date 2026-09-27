@@ -1,0 +1,43 @@
+[package]
+name = "mg-edge-core"
+description = "MorphGate Edge components that do not depend on Pingora: upstream trust parsing, request limits, signed bundle client, Valkey state with local fallback, event sinks (Phase 1)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Pre-registered Phase 1 crate (docs/impl/phase1-spec.md §2). Stage-1 work
+# packages WP-C1..WP-C4 each own one module; mg-edge (stage 2) wires them into
+# Pingora. Nothing here may depend on Pingora. Async code runs on whatever
+# tokio runtime the caller provides; mg-edge runs it inside Pingora background
+# services (spec §9.1.1), never on a runtime created before daemonizing.
+[features]
+# Test helpers shared with mg-edge's integration tests: Valkey fixture and
+# fault-injecting TCP forwarder (WP-C3), fake HTTP bundle server (WP-C2),
+# fake VictoriaLogs (WP-C4).
+testkit = []
+
+[dependencies]
+mg-core.workspace = true
+mg-proto.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+tokio.workspace = true
+redis.workspace = true
+reqwest.workspace = true
+ed25519-compact.workspace = true
+getrandom.workspace = true
+prometheus.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+subtle.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+mg-edge-core = { workspace = true, features = ["testkit"] }
+
+[lints]
+workspace = true

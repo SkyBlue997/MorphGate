@@ -1,6 +1,6 @@
 // Package cli is the contract between the mgctl dispatcher (internal/mgctl)
 // and the packages that implement mgctl subcommands in their own Phase 1 work
-// packages (docs/impl/phase1-spec.md §10.1). It has no logic of its own
+// packages (docs/impl/phase1-spec.md §14.1). It has no logic of its own
 // beyond small helpers, so every package can depend on it without depending
 // on the dispatcher.
 package cli

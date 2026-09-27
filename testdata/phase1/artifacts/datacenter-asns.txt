@@ -1,0 +1,6 @@
+# datacenter ASNs (fixture)
+AS16509
+15169
+
+# comment line
+as8075

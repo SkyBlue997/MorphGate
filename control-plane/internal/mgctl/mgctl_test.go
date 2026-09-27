@@ -87,8 +87,14 @@ func TestCompileJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
 		t.Fatalf("stdout is not a JSON array: %v\n%s", err, stdout)
 	}
-	if len(raw) != 6 {
-		t.Fatalf("got %d rules, want 6", len(raw))
+	// docs06-examples.yaml belongs to WP-G1 and may grow; look rules up by id.
+	byID := make(map[string]map[string]any, len(raw))
+	for _, r := range raw {
+		id, _ := r["id"].(string)
+		byID[id] = r
+	}
+	if len(raw) == 0 {
+		t.Fatalf("got no rules")
 	}
 	for _, r := range raw {
 		ir, hasIR := r["expr_ir"].(string)
@@ -106,14 +112,14 @@ func TestCompileJSON(t *testing.T) {
 			t.Errorf("rule %v has a bad cost estimate: %v", r["id"], r["cost"])
 		}
 	}
-	first := raw[0]
-	if first["id"] != "test-env-default-deny" || first["locked"] != true || first["mode"] != "enforce" ||
-		first["rollout_percent"] != float64(100) || !strings.Contains(first["expr_source"].(string), `list("owner_cidrs")`) {
-		t.Errorf("unexpected first rule: %v", first)
+	deny := byID["test-env-default-deny"]
+	if deny == nil || deny["locked"] != true || deny["mode"] != "enforce" ||
+		deny["rollout_percent"] != float64(100) || !strings.Contains(deny["expr_source"].(string), `list("owner_cidrs")`) {
+		t.Errorf("unexpected rule test-env-default-deny: %v", deny)
 	}
-	last := raw[5]
-	if last["mode"] != "dry_run" || last["params"].(map[string]any)["type"] != "interactive" {
-		t.Errorf("unexpected last rule: %v", last)
+	high := byID["login-high-risk"]
+	if high == nil || high["mode"] != "dry_run" || high["params"].(map[string]any)["type"] != "interactive" {
+		t.Errorf("unexpected rule login-high-risk: %v", high)
 	}
 }
 

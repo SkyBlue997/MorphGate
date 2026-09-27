@@ -406,6 +406,25 @@ func TestCostLimit(t *testing.T) {
 	requireDiag(t, diags, `rule "big": expr: estimated worst-case cost`)
 }
 
+// TestReferencedLists: CheckedRule.Lists names every list("...") the
+// expression uses, sorted and unique (docs/impl/phase1-spec.md §8.2).
+func TestReferencedLists(t *testing.T) {
+	src := `policies:
+  - {id: l, phase: bot, expr: 'ip_in(net.ip, list("zeta")) || req.host in list("alpha") || ip_in(net.ip, list("zeta"))', action: log}
+  - {id: n, phase: bot, expr: 'net.tor', action: log}
+`
+	checked, diags := checkSource(t, Options{}, src)
+	if diags.HasErrors() || len(checked) != 2 {
+		t.Fatalf("unexpected diagnostics: %v", diagStrings(diags))
+	}
+	if got := checked[0].Lists; !slices.Equal(got, []string{"alpha", "zeta"}) {
+		t.Errorf("Lists = %q, want [alpha zeta]", got)
+	}
+	if got := checked[1].Lists; len(got) != 0 {
+		t.Errorf("Lists = %q, want none", got)
+	}
+}
+
 func TestReferencedFields(t *testing.T) {
 	src := `policies:
   - {id: f, phase: bot, expr: 'tls.ja4.value != "" && "x" in labels && rate["a"] > 0.5 && [1].all(v, v > 0)', action: log}

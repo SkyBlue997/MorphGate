@@ -140,9 +140,25 @@ impl Net {
         }
     }
 
+    /// The `ip` entity of an address (docs/impl/phase1-spec.md §9.7): the
+    /// address itself for IPv4, the `/64` network for IPv6 (one subscriber
+    /// holds at least a /64 and rotates addresses inside it). Used for `ip`
+    /// verdict keys, `ip`-keyed limiters and `mg:ev` `ipk`; `net.ip` keeps the
+    /// full address. IPv4-mapped IPv6 addresses count as IPv4.
+    pub fn entity_of(ip: IpAddr) -> String {
+        match ip.to_canonical() {
+            IpAddr::V4(v4) => v4.to_string(),
+            IpAddr::V6(v6) => {
+                let s = v6.segments();
+                let net = std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0);
+                format!("{net}/64")
+            }
+        }
+    }
+
     /// The aggregation prefix used for entity keys: `/24` for IPv4, `/48` for IPv6.
     pub fn prefix_of(ip: IpAddr) -> String {
-        match ip {
+        match ip.to_canonical() {
             IpAddr::V4(v4) => {
                 let [a, b, c, _] = v4.octets();
                 format!("{a}.{b}.{c}.0/24")
@@ -848,5 +864,24 @@ mod tests {
             Net::prefix_of("2001:db8:abcd:1234::1".parse().unwrap()),
             "2001:db8:abcd::/48"
         );
+        assert_eq!(
+            Net::prefix_of("::ffff:192.0.2.200".parse().unwrap()),
+            "192.0.2.0/24"
+        );
+    }
+
+    /// Spec §9.7: the `ip` entity is the address for IPv4 and the /64 for IPv6
+    /// (kat.json `ip_entity`).
+    #[test]
+    fn ip_entities() {
+        for (ip, want) in [
+            ("203.0.113.7", "203.0.113.7"),
+            ("::ffff:203.0.113.7", "203.0.113.7"),
+            ("2001:db8:abcd:12:a:b:c:d", "2001:db8:abcd:12::/64"),
+            ("2001:db8::1", "2001:db8::/64"),
+            ("2001:db8:0:0:1::1", "2001:db8::/64"),
+        ] {
+            assert_eq!(Net::entity_of(ip.parse().unwrap()), want, "{ip}");
+        }
     }
 }

@@ -17,6 +17,8 @@ protox.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+# tests/policy_ir_conformance.rs (WP-R1) decodes the base64 IR in testdata/policy-ir/cases.ir.json.
+base64.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "kind": "mg-site-token-keys",
+  "site": "shop",
+  "keys": [
+    {
+      "kid": "shop-t-20260927",
+      "key": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+      "created_at": "2026-09-27T10:00:00Z"
+    }
+  ]
+}
