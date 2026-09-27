@@ -1,0 +1,5 @@
+# Only the Go sources are needed to build mglab (see Dockerfile).
+bin/
+out/
+*.test
+*.out

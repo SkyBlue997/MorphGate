@@ -1,0 +1,22 @@
+{
+  "name": "MorphGate custom rules",
+  "description": "MorphGate (Pro and above): keep Cloudflare bot and security-level challenges off /__mg/*. Rate limiting rules still apply (the /__mg/ flood rule must not be skipped). Template: adapters/cloudflare/README.md.",
+  "kind": "zone",
+  "phase": "http_request_firewall_custom",
+  "rules": [
+    {
+      "ref": "mg_skip_mg_paths",
+      "description": "MorphGate: /__mg/* skips SBFM, Browser Integrity Check and Security Level. Does NOT skip http_ratelimit, so a rate limiting rule against POST /__mg/ floods keeps working.",
+      "expression": "starts_with(http.request.uri.path, \"/__mg/\")",
+      "action": "skip",
+      "action_parameters": {
+        "phases": ["http_request_sbfm"],
+        "products": ["bic", "securityLevel"]
+      },
+      "logging": {
+        "enabled": true
+      },
+      "enabled": true
+    }
+  ]
+}

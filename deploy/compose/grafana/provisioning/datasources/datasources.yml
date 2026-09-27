@@ -1,0 +1,28 @@
+# Grafana datasources for the dev environment (profile "grafana").
+apiVersion: 1
+
+datasources:
+  # VictoriaMetrics speaks the Prometheus query API, so the built-in type works.
+  - name: VictoriaMetrics
+    uid: victoriametrics
+    type: prometheus
+    access: proxy
+    url: http://victoriametrics:8428
+    isDefault: true
+    editable: false
+
+  # Need the victoriametrics-logs-datasource plugin (GF_PLUGINS_PREINSTALL_SYNC).
+  # vl-main: events, access records, audit mirror (30d); vl-short: telemetry (7d).
+  - name: VictoriaLogs vl-main
+    uid: vl-main
+    type: victoriametrics-logs-datasource
+    access: proxy
+    url: http://vl-main:9428
+    editable: false
+
+  - name: VictoriaLogs vl-short
+    uid: vl-short
+    type: victoriametrics-logs-datasource
+    access: proxy
+    url: http://vl-short:9428
+    editable: false

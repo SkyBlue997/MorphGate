@@ -1,0 +1,27 @@
+[package]
+name = "mg-edge"
+description = "MorphGate Edge: Pingora-based reverse proxy that will host the Decision Core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mg-edge"
+path = "src/main.rs"
+
+[dependencies]
+mg-core.workspace = true
+pingora.workspace = true
+pingora-prometheus.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+log.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

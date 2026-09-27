@@ -1,0 +1,44 @@
+# --- Rust ---
+/target/
+**/*.rs.bk
+
+# --- Go ---
+*.test
+*.out
+/control-plane/bin/
+/lab/bin/
+# NOTE: control-plane/gen/ is committed on purpose (CI checks it is up to date).
+
+# --- Python (scripts/) ---
+__pycache__/
+*.pyc
+
+# --- Web / Node ---
+node_modules/
+dist/
+coverage/
+.pnpm-store/
+*.tsbuildinfo
+
+# --- Secrets and local overrides ---
+.env
+.env.*
+!.env.example
+*.local.*
+/secrets/
+
+# --- Local data directories (dev databases, spools, Lab output) ---
+/data/
+/deploy/compose/data/
+/lab/out/
+*.sqlite
+*.sqlite3
+*.db
+
+# --- Logs, editors, OS ---
+*.log
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

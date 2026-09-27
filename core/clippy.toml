@@ -1,0 +1,14 @@
+# mg-core is a pure library: time is passed in, nothing spawns threads or
+# touches the network or filesystem. These calls either panic on
+# wasm32-unknown-unknown or break determinism, so clippy rejects them here.
+disallowed-methods = [
+  { path = "std::time::SystemTime::now", reason = "time is an input (RequestContext::ts_ms / VerifyCtx::now_ms)" },
+  { path = "std::time::Instant::now", reason = "time is an input; Instant::now panics on wasm32-unknown-unknown" },
+  { path = "std::thread::spawn", reason = "mg-core must not spawn threads" },
+  { path = "std::env::var", reason = "configuration is passed in, never read from the environment" },
+]
+disallowed-types = [
+  { path = "std::fs::File", reason = "mg-core performs no I/O" },
+  { path = "std::net::TcpStream", reason = "mg-core performs no I/O; use the injected OutboundHttp" },
+  { path = "std::net::UdpSocket", reason = "mg-core performs no I/O" },
+]

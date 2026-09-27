@@ -1,0 +1,6 @@
+policies:
+  - id: forgot-expiry
+    phase: custom
+    temporary: true
+    expr: req.path == "/promo"
+    action: allow

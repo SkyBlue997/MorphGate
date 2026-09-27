@@ -1,0 +1,249 @@
+syntax = "proto3";
+
+package morphgate.v1;
+
+import "morphgate/v1/common.proto";
+
+option go_package = "morphgate/control-plane/gen/morphgate/v1;morphgatev1";
+
+// Wire and event schema for one request decision (docs/02-data-flow.md §7).
+// Decision Core uses its own native Rust types; these messages are what crosses
+// process boundaries (events, near-line workers, investigation tooling).
+//
+// Field paths match the policy (CEL) fields of docs/06 §2; the one mapping
+// exception is RiskAssessment.bot_class / top_reasons, exposed in CEL as
+// risk.class / risk.reasons. Empty strings, zero numbers and unset messages
+// mean "no value"; whether that value is ABSENT or MISSING (docs/03 §3.1) is
+// recorded per signal in Signal.state and per family in the two masks.
+
+// There is no client_random / client_conn_key field: the per-connection key
+// lives in Edge memory and near-line windows (mg:w:*) only, never in events.
+message RequestContext {
+  string request_id = 1;
+  int64 ts_ms = 2;
+  string site_id = 3;
+  string env = 4;
+  string route_id = 5;
+  Channel channel = 6;
+  UpstreamInfo upstream = 7;
+  Net net = 8;
+  Tls tls = 9;                    // visitor TLS: the Edge itself or an authenticated upstream
+  EdgeTls edge_tls = 10;          // cloudflare only, from x-mg-cf-tls-*
+  Http http = 11;
+  Identity identity = 12;
+  string session_id = 13;         // pseudonymous (clearance sub)
+  uint32 availability_mask = 14;  // bit per SignalFamily: present on this request
+  uint32 expected_mask = 15;      // bit per SignalFamily: expected from this UpstreamProfile
+  ClientSignals client = 16;      // SDK-derived, summarized (optional)
+  repeated EntityVerdict verdicts = 17;  // near-line verdicts fetched for this request
+}
+
+message UpstreamInfo {
+  UpstreamProfileKind profile = 1;
+  bool authenticated = 2;             // loopback peer, origin-pull mTLS, secret header or source CIDR verified
+  string cf_ray = 3;                  // Cf-Ray, logged in every event for correlation with Cloudflare logs
+  string auth_method = 4;             // loopback | origin_mtls | secret_header | src_cidr | none (docs/08 §1.2)
+  bool client_ip_header_missing = 5;  // authenticated but no client IP header (CF-Connecting-IP) -> config alarm
+}
+
+message Net {
+  string ip = 1;                  // may be truncated or hashed per retention policy
+  string ip_prefix = 2;           // /24 (v4) or /48 (v6)
+  string ip_source = 3;           // tcp_peer | cf_connecting_ip | cf_connecting_ipv6 | proxy_v1 | proxy_v2
+                                  // | cloudfront_viewer_address | gcp_alb | esa | edgeone | alicdn
+                                  // | tencent_cdn | gateway
+  uint32 asn = 4;                 // local IP database (authoritative)
+  string as_org = 5;
+  string country = 6;             // ISO 3166-1 alpha-2
+  string conn_type = 7;           // datacenter | residential | mobile | education | unknown
+  bool tor = 8;
+  uint32 upstream_asn = 9;        // x-mg-cf-asn, cross-check only
+  string upstream_country = 10;   // cf-ipcountry, cross-check only
+  string upstream_region = 11;    // cf-region-code, cross-check only
+  string upstream_timezone = 12;  // cf-timezone, weak geo-consistency signal
+  uint32 rtt_ms = 13;             // x-mg-cf-rtt / x-mg-cf-quic-rtt
+}
+
+// TLS family; MISSING under cloudflare.
+message Tls {
+  // JA4 with its provenance (CEL tls.ja4). A value that is not authenticated is
+  // recorded but never scored.
+  message Ja4 {
+    string value = 1;
+    SignalSource source = 2;      // SELF | CLOUDFRONT | GCP_ALB | ESA | ENVOY | OPENRESTY
+    bool authenticated = 3;       // computed by the Edge, or forwarded by an authenticated upstream
+  }
+
+  bool available = 1;             // false whenever the upstream hides the visitor's TLS
+  string version = 2;
+  string sni = 3;
+  string alpn = 4;
+  Ja4 ja4 = 5;
+}
+
+// EDGE_TLS family (CEL edge_tls.*): coarse TLS profile forwarded by Cloudflare
+// as x-mg-cf-tls-*. Low weight, low cap, shadow first. cf.tls_client_random is
+// used in memory only as a per-visitor-connection key and is never written here.
+message EdgeTls {
+  string version = 1;
+  string cipher = 2;
+  string ciphers_sha1 = 3;        // cipher list hash in received order
+  string ext_sha1 = 4;            // ordering / GREASE undocumented: record only, never bind
+  uint32 hello_len = 5;           // bucketed before use; also input of bind.ctp
+}
+
+// No HTTP/2 frame fingerprint field (deferred indefinitely).
+message Http {
+  string version = 1;
+  SignalSource version_source = 2;    // SELF (negotiated by the Edge) or CLOUDFLARE (x-mg-cf-http-version)
+  string method = 3;
+  string host = 4;
+  string path = 5;
+  repeated string query_keys = 6;     // names only, never values
+  repeated string header_order = 7;   // direct_tls HTTP/1 only; empty otherwise
+  repeated string header_names = 8;   // set semantics (x-mg-cf-hdr-names under cloudflare)
+  string user_agent = 9;
+  repeated string cookie_names = 10;  // names only; Cloudflare's own cookies are never evidence
+  uint32 body_size = 11;
+  string content_type = 12;
+  bool early_data = 13;               // Early-Data: 1 -> treat as replayable
+  string priority = 14;               // Tier 1 x-mg-cf-priority (browser HTTP/2 priority), weak
+  string accept_encoding_orig = 15;   // Tier 1 x-mg-cf-accept-encoding (original value)
+}
+
+// Identity layer (CEL identity.*).
+message Identity {
+  // The MorphGate access token presented with the request (docs/04 §5).
+  message Token {
+    // Per-item binding check results: "match" | "mismatch"; empty = not bound or
+    // not checked. ctp is shadow only (recorded, never enforced).
+    message Bind {
+      string uah = 1;
+      string ipp = 2;
+      string jkt = 3;
+      string ctp = 4;
+      string tfp = 5;
+    }
+
+    string status = 1;            // none | valid | expired | invalid | binding_mismatch | replay
+    string level = 2;             // token lvl: invisible | pow | interactive | interactive_a11y
+                                  // | interactive_ext:{provider}   (attested: reserved, mobile later)
+    uint32 age = 3;               // seconds since issuance; 0 without a token
+    Bind bind = 4;
+  }
+
+  // Per-request proof of possession (docs/04 §6.1).
+  message Proof {
+    bool valid = 1;
+    bool replayed = 2;            // jti seen before
+  }
+
+  // Authorised AI agent (docs/05 §3-§4).
+  message Agent {
+    string id = 1;
+    string grant_id = 2;
+    string method = 3;            // how it was authenticated, e.g. web_bot_auth | http_message_signatures | mtls
+  }
+
+  // Crawler verification (docs/05 §3). cf_vbot / cf_vbot_cat are corroboration only.
+  message Crawler {
+    bool claimed = 1;             // the request claims to be a known crawler (UA or signature)
+    string operator = 2;          // claimed operator id from the crawler registry
+    string purpose = 3;           // e.g. search | ai_training | ai_agent
+    bool verified = 4;            // verified by MorphGate (signature, official IP ranges, rDNS)
+    optional bool cf_vbot = 5;    // x-mg-cf-vbot; unset when not forwarded (MISSING)
+    string cf_vbot_cat = 6;       // x-mg-cf-vbot-cat
+  }
+
+  Token token = 1;
+  Proof proof = 2;
+  Agent agent = 3;
+  Crawler crawler = 4;
+}
+
+// CLIENT family summary derived by the Edge from the session's verified SDK
+// telemetry (/__mg/t and the telemetry attached to /__mg/c; docs/03 §3.6,
+// docs/04 §7). Raw telemetry never appears here. Unset: the session has no
+// verified telemetry yet.
+message ClientSignals {
+  uint32 telemetry_age_s = 1;           // seconds since the last verified telemetry batch
+  repeated string automation_flags = 2; // stable ids of automation markers, e.g. "webdriver"
+  repeated string env_mismatches = 3;   // failed consistency checks, e.g. "tz_vs_ip"
+  bool integrity_failed = 4;            // SDK tampering / execution integrity check failed
+  uint32 upstream_challenges = 5;       // cf-mitigated challenges the SDK reported (docs/08 §2.8)
+  string timezone = 6;                  // IANA zone reported by the SDK; weak geo cross-check
+}
+
+message Signal {
+  string id = 1;            // e.g. "edge_tls.family_mismatch"
+  SignalFamily family = 2;
+  float value = 3;          // [-1, 1]; > 0 automation evidence, < 0 human evidence
+  float confidence = 4;     // [0, 1]
+  string reason_code = 5;   // stable, internal only
+  SignalState state = 6;    // PRESENT | ABSENT | MISSING (docs/03 §3.1)
+  SignalSource source = 7;  // where the input came from
+  bool shadow = 8;          // family or detector in shadow: logged, not scored
+}
+
+message RiskAssessment {
+  uint32 score = 1;                 // 0..100, higher = more likely automated / abusive
+  float confidence = 2;             // coverage over the profile's expected signals
+  BotClass bot_class = 3;           // CEL risk.class (docs/03 §2)
+  repeated string labels = 4;       // e.g. "scanner", "delegated"
+  repeated string top_reasons = 5;  // CEL risk.reasons
+  string model_version = 6;
+  string ruleset_version = 7;
+  uint32 shadow_score = 8;          // score including shadow families, never enforced
+}
+
+message Decision {
+  Action action = 1;        // TARPIT: direct_tls only
+  ChallengeType challenge_type = 2;
+  string provider_id = 3;   // self_hold | pow_a11y | turnstile | tencent | aliyun_v2, chosen by Decision Core
+  uint32 status = 4;
+  uint32 retry_after_s = 5;
+  string rule_id = 6;
+  bool dry_run = 7;
+}
+
+// One JSON line in vl-main (kind = decision).
+message DecisionEvent {
+  RequestContext ctx = 1;
+  repeated Signal signals = 2;
+  RiskAssessment risk = 3;
+  Decision decision = 4;
+  uint32 latency_us = 5;
+  float sample_rate = 6;
+  string edge_id = 7;
+  uint64 bundle_version = 8;  // SiteBundle.version in effect
+  bool monitor_only = 9;      // global monitor switch was on
+}
+
+// kind = feedback, emitted by POST /__mg/c.
+message ChallengeResult {
+  string request_id = 1;
+  string site_id = 2;
+  string route_id = 3;
+  ChallengeType type = 4;
+  string provider_id = 5;
+  string outcome = 6;                 // pass | fail | unavailable | misconfigured
+  string lvl = 7;                     // invisible | pow | interactive | interactive_a11y
+                                      // | interactive_ext:{provider}   (attested: reserved, mobile later)
+  uint32 attempt_no = 8;
+  uint32 solve_ms = 9;
+  string risk_band = 10;              // low | medium | high | very_high
+  repeated string reason_codes = 11;  // internal only
+  string cf_ray = 12;
+}
+
+message EntityVerdict {
+  EntityType type = 1;
+  string key = 2;           // hashed where it identifies a person
+  uint32 risk = 3;
+  repeated string labels = 4;
+  repeated string reasons = 5;
+  int64 expires_at_ms = 6;
+  string source = 7;        // detector id, "owner", or intel feed
+  string version = 8;
+  string site_id = 9;       // "all" = shared across the owner's sites (IP / ASN types only)
+}

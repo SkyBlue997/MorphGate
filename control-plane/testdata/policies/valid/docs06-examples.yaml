@@ -1,0 +1,38 @@
+# The examples from docs/06-policy-console-observability.md §2, verbatim.
+policies:
+  - id: test-env-default-deny
+    phase: identity
+    locked: true
+    expr: >
+      route.env in ["staging", "test", "dev"]
+      && risk.class != "AUTHORIZED_AGENT"
+      && (!has(net.ip) || !ip_in(net.ip, list("owner_cidrs")))
+    action: block
+
+  - id: block-impersonators
+    phase: identity
+    expr: risk.class == "IMPERSONATOR"
+    action: block
+
+  - id: deny-ai-training-crawlers
+    phase: identity
+    expr: identity.crawler.verified && identity.crawler.purpose == "ai_training"
+    action: block
+
+  - id: scanner-block
+    phase: protocol
+    expr: '"scanner" in labels'
+    action: block
+
+  - id: login-require-proof
+    phase: bot
+    expr: route.name == "login" && !identity.proof.valid
+    action: challenge
+    params: { type: invisible }
+
+  - id: login-high-risk
+    phase: bot
+    expr: route.name == "login" && risk.score >= 60
+    action: challenge
+    params: { type: interactive }
+    mode: dry_run

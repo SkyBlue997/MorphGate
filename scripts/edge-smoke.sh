@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# End-to-end smoke test for mg-edge (Phase 0 behaviour). Loopback only.
+#
+#   1. Starts a throwaway origin (python3 -m http.server) on 127.0.0.1:18081
+#      serving a temp directory that contains a unique marker file.
+#   2. Builds mg-edge and runs it on 127.0.0.1:18080 with a temp config
+#      (metrics on 127.0.0.1:19901).
+#   3. Asserts that
+#        - GET /__mg/healthz is answered by the Edge itself: 200, body "ok",
+#          Cache-Control containing no-store and private, never seen by the origin;
+#        - GET /smoke/marker.txt is proxied: 200 with the origin's bytes;
+#        - GET /smoke/missing.txt is proxied: the origin's 404 comes back;
+#        - GET /%5F%5Fmg/..%2Fsmoke/marker.txt (a spelling Cloudflare's rules
+#          treat as /__mg/) is answered by the Edge, not proxied;
+#        - the metrics endpoint serves Prometheus text with a request counter >= 1.
+#   4. Stops both processes and removes the temp dir on every exit path.
+#
+# Environment overrides:
+#   MG_EDGE_BIN            use this mg-edge binary instead of `cargo build -p mg-edge`
+#   MG_SMOKE_EDGE_PORT     default 18080
+#   MG_SMOKE_ORIGIN_PORT   default 18081
+#   MG_SMOKE_METRICS_PORT  default 19901
+#   MG_SMOKE_TIMEOUT       seconds to wait for each listener, default 30
+#   MG_SMOKE_KEEP=1        keep the temp dir (config, logs) for debugging
+#
+# Every request goes to 127.0.0.1; the host is not configurable on purpose.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HOST="127.0.0.1"
+EDGE_PORT="${MG_SMOKE_EDGE_PORT:-18080}"
+ORIGIN_PORT="${MG_SMOKE_ORIGIN_PORT:-18081}"
+METRICS_PORT="${MG_SMOKE_METRICS_PORT:-19901}"
+TIMEOUT="${MG_SMOKE_TIMEOUT:-30}"
+
+tmp=""
+edge_pid=""
+origin_pid=""
+
+log() { printf 'edge-smoke: %s\n' "$*" >&2; }
+fail() { log "FAIL: $*"; exit 1; }
+
+for port in "$EDGE_PORT" "$ORIGIN_PORT" "$METRICS_PORT" "$TIMEOUT"; do
+  [[ "$port" =~ ^[0-9]+$ ]] || fail "port/timeout values must be numeric, got '$port'"
+done
+for tool in curl python3; do
+  command -v "$tool" >/dev/null || fail "$tool not found in PATH"
+done
+
+# stop PID NAME SIGNAL: send SIGNAL, then SIGKILL if still alive after 5 s.
+# mg-edge gets SIGINT (Pingora's immediate stop; SIGTERM would wait for the
+# grace period). The origin gets SIGTERM: background jobs of a non-interactive
+# shell start with SIGINT ignored, and Python keeps it ignored.
+stop() {
+  local pid="$1" name="$2" sig="$3" i
+  [[ -n "$pid" ]] || return 0
+  kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null; return 0; }
+  kill "-$sig" "$pid" 2>/dev/null
+  for i in $(seq 1 50); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    log "$name did not exit after SIG$sig; sending SIGKILL"
+    kill -KILL "$pid" 2>/dev/null
+  fi
+  wait "$pid" 2>/dev/null
+  return 0
+}
+
+cleanup() {
+  local rc=$?
+  set +e
+  stop "$edge_pid" mg-edge INT
+  stop "$origin_pid" origin TERM
+  if [[ -n "$tmp" && -d "$tmp" ]]; then
+    if [[ "$rc" -ne 0 ]]; then
+      for f in edge.log origin.log; do
+        [[ -s "$tmp/$f" ]] || continue
+        log "---- last lines of $f ----"
+        tail -n 40 "$tmp/$f" >&2
+      done
+    fi
+    if [[ -n "${MG_SMOKE_KEEP:-}" ]]; then
+      log "kept $tmp"
+    else
+      rm -rf "$tmp"
+    fi
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+port_open() { (exec 3<>"/dev/tcp/$HOST/$1") 2>/dev/null; }
+
+wait_for_port() {
+  local name="$1" port="$2" pid="$3" deadline=$((SECONDS + TIMEOUT))
+  until port_open "$port"; do
+    kill -0 "$pid" 2>/dev/null || fail "$name exited before listening on $HOST:$port"
+    ((SECONDS < deadline)) || fail "timed out after ${TIMEOUT}s waiting for $name on $HOST:$port"
+    sleep 0.2
+  done
+}
+
+# http_get PATH_OR_URL NAME -> prints the status code; headers/body land in
+# $tmp/NAME.headers and $tmp/NAME.body. --noproxy keeps a system HTTP proxy
+# (http_proxy / all_proxy) from intercepting loopback requests.
+http_get() {
+  local url="$1" name="$2"
+  : >"$tmp/$name.headers"
+  : >"$tmp/$name.body"
+  # On connection errors curl still prints 000 for %{http_code}; the caller's
+  # status assertion then fails with a readable message.
+  curl -sS --noproxy '*' --max-time 5 \
+    -D "$tmp/$name.headers" -o "$tmp/$name.body" -w '%{http_code}' "$url" || true
+}
+
+header_value() { # header_value NAME HEADER -> lower-cased value(s), CR stripped
+  grep -i "^$2:" "$tmp/$1.headers" | cut -d: -f2- | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+}
+
+# --- preflight ---------------------------------------------------------------
+for port in "$EDGE_PORT" "$ORIGIN_PORT" "$METRICS_PORT"; do
+  if port_open "$port"; then
+    fail "$HOST:$port is already in use; stop that process or set MG_SMOKE_*_PORT"
+  fi
+done
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/mg-edge-smoke.XXXXXX")"
+mkdir -p "$tmp/www/smoke"
+marker="morphgate-edge-smoke-$$-$RANDOM"
+printf '%s\n' "$marker" >"$tmp/www/smoke/marker.txt"
+
+cat >"$tmp/edge.toml" <<EOF
+# Generated by scripts/edge-smoke.sh; removed on exit.
+listen = "$HOST:$EDGE_PORT"
+origin = "$HOST:$ORIGIN_PORT"
+upstream_profile = "cloudflare"
+metrics_listen = "$HOST:$METRICS_PORT"
+site_id = "edge-smoke"
+EOF
+
+# --- build -------------------------------------------------------------------
+if [[ -n "${MG_EDGE_BIN:-}" ]]; then
+  edge_bin="$MG_EDGE_BIN"
+else
+  log "building mg-edge (cargo build -p mg-edge)"
+  (cd "$ROOT" && cargo build -p mg-edge)
+  target_dir="${CARGO_TARGET_DIR:-target}"
+  [[ "$target_dir" = /* ]] || target_dir="$ROOT/$target_dir"
+  edge_bin="$target_dir/debug/mg-edge"
+fi
+[[ -x "$edge_bin" ]] || fail "mg-edge binary not found at $edge_bin"
+
+# --- start origin and edge -----------------------------------------------------
+python3 -u -m http.server "$ORIGIN_PORT" --bind "$HOST" --directory "$tmp/www" \
+  >"$tmp/origin.log" 2>&1 &
+origin_pid=$!
+wait_for_port origin "$ORIGIN_PORT" "$origin_pid"
+log "origin up on $HOST:$ORIGIN_PORT (pid $origin_pid)"
+
+RUST_LOG="${RUST_LOG:-info}" "$edge_bin" --config "$tmp/edge.toml" >"$tmp/edge.log" 2>&1 &
+edge_pid=$!
+wait_for_port mg-edge "$EDGE_PORT" "$edge_pid"
+wait_for_port "mg-edge metrics" "$METRICS_PORT" "$edge_pid"
+log "mg-edge up on $HOST:$EDGE_PORT, metrics on $HOST:$METRICS_PORT (pid $edge_pid)"
+
+# --- assertions ----------------------------------------------------------------
+base="http://$HOST:$EDGE_PORT"
+
+code="$(http_get "$base/__mg/healthz" healthz)"
+[[ "$code" == 200 ]] || fail "GET /__mg/healthz returned $code, want 200"
+[[ "$(cat "$tmp/healthz.body")" == "ok" ]] || fail "GET /__mg/healthz body is '$(head -c 200 "$tmp/healthz.body")', want 'ok'"
+cache_control="$(header_value healthz cache-control)"
+[[ "$cache_control" == *no-store* && "$cache_control" == *private* ]] \
+  || fail "GET /__mg/healthz Cache-Control is '$cache_control', want no-store and private"
+log "ok: /__mg/healthz -> 200 ok, Cache-Control:$cache_control"
+
+code="$(http_get "$base/smoke/marker.txt" proxied)"
+[[ "$code" == 200 ]] || fail "GET /smoke/marker.txt via mg-edge returned $code, want 200"
+[[ "$(cat "$tmp/proxied.body")" == "$marker" ]] || fail "proxied body does not match the origin's marker file"
+log "ok: /smoke/marker.txt proxied to the origin"
+
+code="$(http_get "$base/smoke/missing.txt" missing)"
+[[ "$code" == 404 ]] || fail "GET /smoke/missing.txt via mg-edge returned $code, want the origin's 404"
+log "ok: origin 404 passed through"
+
+# Cloudflare's rules see this path as /__mg/.. (skip bot checks, bypass cache),
+# while this origin (python http.server) decodes %2F and would serve
+# /smoke/marker.txt. The Edge must answer it itself (edge/src/routes.rs).
+code="$(http_get "$base/%5F%5Fmg/..%2Fsmoke/marker.txt" disguised)"
+[[ "$code" == 404 ]] || fail "GET /%5F%5Fmg/..%2Fsmoke/marker.txt returned $code, want the Edge's 404"
+if grep -q "$marker" "$tmp/disguised.body"; then
+  fail "an encoded /__mg/ path was proxied and the origin served the marker"
+fi
+log "ok: encoded /__mg/ spelling answered by the Edge, not proxied"
+
+# The origin logs every request it serves: the proxied paths must be there, the
+# health check must not (the Edge answers it without an upstream request).
+sleep 0.2
+grep -q "GET /smoke/marker.txt" "$tmp/origin.log" || fail "origin never saw GET /smoke/marker.txt"
+grep -q "GET /smoke/missing.txt" "$tmp/origin.log" || fail "origin never saw GET /smoke/missing.txt"
+if grep -q -i -e "/__mg/" -e "%5F%5Fmg" "$tmp/origin.log"; then
+  fail "a /__mg/ request reached the origin; the Edge must answer it itself"
+fi
+log "ok: origin saw the proxied requests and not /__mg/healthz"
+
+code="$(http_get "http://$HOST:$METRICS_PORT/metrics" metrics)"
+[[ "$code" == 200 ]] || fail "GET /metrics returned $code, want 200"
+# Require a Prometheus counter whose name mentions "request" with a sample >= 1
+# (the requests above must have been counted).
+if ! awk '
+  $1 == "#" && $2 == "TYPE" && $4 == "counter" && tolower($3) ~ /request/ { counters[$3] = 1; next }
+  $1 !~ /^#/ && NF >= 2 {
+    # Sample line: name{labels} value [timestamp]; label values may hold spaces.
+    name = $1; sub(/\{.*/, "", name)
+    rest = $0; sub(/^[^ {]+(\{[^}]*\})?[ \t]+/, "", rest); split(rest, fields, /[ \t]+/)
+    base = name; sub(/_total$/, "", base)
+    if ((name in counters || base in counters) && fields[1] + 0 >= 1) { found = 1 }
+  }
+  END { exit found ? 0 : 1 }
+' "$tmp/metrics.body"; then
+  fail "no Prometheus request counter >= 1 in /metrics (first lines: $(head -c 400 "$tmp/metrics.body" | tr '\n' ' '))"
+fi
+log "ok: /metrics exposes a request counter"
+
+log "PASS"

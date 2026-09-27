@@ -1,0 +1,26 @@
+# /etc/morphgate/edge.toml - mg-edge configuration for deploy/systemd/mg-edge.service.
+#
+# Install: install -m 0640 -o root -g morphgate edge.toml.example /etc/morphgate/edge.toml
+# Validate: mg-edge --check-config --config /etc/morphgate/edge.toml
+# (edge/tests/shipped_configs.rs checks this file against the unit.)
+
+site_id          = "blog"              # 1-64 of [a-z0-9_-]
+listen           = "127.0.0.1:8080"    # cloudflared on this host forwards here (loopback only in Phase 0)
+origin           = "127.0.0.1:8081"    # the site's origin server (plain HTTP)
+upstream_profile = "cloudflare"        # "cloudflare" | "direct_tls" (TLS listener: Phase 1)
+# Prometheus /metrics (no authentication). VictoriaMetrics on the brain VM
+# scrapes it: bind to the private or WireGuard address it uses. mg-edge refuses
+# wildcard (0.0.0.0 / ::) and public addresses here.
+metrics_listen   = "127.0.0.1:9901"
+
+[server]
+threads = 2
+# Pingora defaults both paths to /tmp, which PrivateTmp= hides from systemd.
+# RuntimeDirectory=morphgate creates /run/morphgate; pid_file must match PIDFile=.
+pid_file     = "/run/morphgate/mg-edge.pid"
+upgrade_sock = "/run/morphgate/mg-edge-upgrade.sock"
+# SIGTERM: keep serving in-flight requests this long, then give the runtimes
+# graceful_shutdown_timeout_seconds to stop. Their sum must stay below the
+# unit's TimeoutStopSec.
+grace_period_seconds              = 10
+graceful_shutdown_timeout_seconds = 5

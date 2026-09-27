@@ -1,0 +1,5 @@
+policies:
+  - id: returns-int
+    phase: bot
+    expr: risk.score + 1
+    action: block

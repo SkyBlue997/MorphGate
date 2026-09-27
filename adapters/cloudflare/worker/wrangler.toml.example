@@ -1,0 +1,39 @@
+# MorphGate Tier 1 signal Worker (Free zones). Copy to wrangler.toml, replace
+# example.com, then `wrangler deploy`. Nothing in this repository deploys it.
+#
+# Routes must stay NARROW: HTML pages plus the MorphGate prefix. Workers run
+# before the cache, so every request on a route is billed and counts against
+# the Free plan's 100,000 requests/day, including static assets if you route
+# them. Never use a zone-wide "example.com/*" route.
+#
+# Failure mode: on the Workers Free plan, pick "fail open" for these routes in
+# the dashboard (the route's request-limit failure mode; verify the current
+# setting name). Fail open means requests reach the origin WITHOUT the
+# x-mg-cf-priority / -accept-encoding / -as-org / -t1 headers, and MorphGate
+# records those signals as MISSING: not a failure, not a pass, no alarm.
+
+name = "morphgate-signals"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+workers_dev = false
+preview_urls = false
+
+# MorphGate endpoints (adjust if the site uses a custom path prefix).
+[[routes]]
+pattern = "example.com/__mg/*"
+zone_name = "example.com"
+
+# HTML documents only. List the page paths of your site; do not add
+# /assets/*, /static/*, images, fonts or other cacheable files.
+[[routes]]
+pattern = "example.com/"
+zone_name = "example.com"
+
+[[routes]]
+pattern = "example.com/posts/*"
+zone_name = "example.com"
+
+# To carve static files out of a broader page route, add a route with no
+# Worker for them in the dashboard (a Worker-less route negates less specific
+# patterns), e.g. example.com/posts/assets/* -> None. Route patterns allow only
+# a leading or trailing "*", no infix wildcards.

@@ -1,0 +1,35 @@
+# VictoriaMetrics scrape config (Prometheus-compatible).
+#
+# mg-edge and mg-control run on the host during development, so they are
+# scraped through host.docker.internal:
+# - Docker Desktop (macOS / Windows): works with the default loopback listeners
+#   (mg-edge metrics_listen = "127.0.0.1:9901").
+# - Linux: host.docker.internal maps to the bridge gateway, which cannot reach a
+#   127.0.0.1 listener. Either bind the metrics listeners to the docker0 address
+#   for local testing, or run VictoriaMetrics with `network_mode: host` and
+#   change the targets below to 127.0.0.1.
+#
+# VictoriaMetrics scrapes itself via -selfScrapeInterval (see docker-compose.yml).
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+  external_labels:
+    env: dev
+
+scrape_configs:
+  # MorphGate Edge (Pingora); metrics_listen in edge/config/edge.dev.toml.
+  - job_name: mg-edge
+    static_configs:
+      - targets: ["host.docker.internal:9901"]
+
+  # Go control plane: mg-control has no /metrics until Phase 3 (its Phase 0
+  # stub only serves /healthz on 127.0.0.1:8090). Uncomment then; 9902 is the
+  # port reserved for its metrics listener.
+  # - job_name: mg-control
+  #   static_configs:
+  #     - targets: ["host.docker.internal:9902"]
+
+  - job_name: victorialogs
+    static_configs:
+      - targets: ["vl-main:9428", "vl-short:9428"]

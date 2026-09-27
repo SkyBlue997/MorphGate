@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package morphgate.v1;
+
+import "morphgate/v1/common.proto";
+
+option go_package = "morphgate/control-plane/gen/morphgate/v1;morphgatev1";
+
+// Signed configuration bundle that the Edge pulls from the control plane
+// (docs/02-data-flow.md §6). Key material is never included; only key ids.
+
+message UpstreamProfile {
+  UpstreamProfileKind kind = 1;
+  // How the upstream is authenticated. Exactly the options relevant to `kind` are set.
+  bool tunnel_loopback_only = 2;           // cloudflare via Tunnel: trust 127.0.0.1 / ::1 peer only
+  string origin_pull_ca_ref = 3;           // AOP / origin mTLS client-certificate CA (key ref)
+  string secret_header_name = 4;           // optional rotating shared-secret header
+  repeated string secret_header_refs = 5;  // up to two active secrets (refs, not values)
+  repeated string trusted_proxy_cidrs = 6; // e.g. Cloudflare ranges from the IP sync job
+  uint32 proxy_protocol_version = 7;       // 1 or 2 for PROXY_PROTOCOL
+  // Signal families this upstream is expected to supply (bit per SignalFamily).
+  uint32 expected_mask = 8;
+}
+
+message Route {
+  string id = 1;
+  string name = 2;               // e.g. "login"
+  repeated string hosts = 3;
+  string path_glob = 4;          // e.g. "/api/login"
+  repeated string methods = 5;
+  Channel channel = 6;
+  RouteSensitivity sensitivity = 7;
+  bool fail_closed = 8;          // behaviour when dependencies are unavailable
+}
+
+message CompiledRule {
+  string id = 1;
+  string phase = 2;              // identity | protocol | rate_limit | bot | custom | default
+  int32 priority = 3;
+  string expr_source = 4;        // CEL source, kept for audit and display
+  uint32 ir_version = 5;
+  bytes expr_ir = 6;             // restricted IR produced by the control-plane compiler
+  Action action = 7;
+  map<string, string> params = 8;
+  string mode = 9;               // enforce | dry_run | disabled
+  uint32 rollout_percent = 10;
+  int64 expires_at_ms = 11;
+  bool locked = 12;
+}
+
+message RateLimit {
+  string id = 1;
+  string route_id = 2;
+  repeated string key = 3;       // ip | ip_prefix | asn | session | device | account | api_key | agent | fp_cluster | route
+  string algorithm = 4;          // gcra | sliding_window | concurrency
+  uint32 rate = 5;
+  uint32 period_s = 6;
+  uint32 burst = 7;
+  string on_exceed = 8;          // signal | challenge | rate_limit | block
+  string mode = 9;
+}
+
+message ProviderConfig {
+  string id = 1;                 // self_hold | pow_a11y | turnstile | tencent | aliyun_v2
+  bool enabled = 2;
+  string sitekey = 3;
+  repeated string secret_refs = 4;   // secret references; two during rotation
+  repeated string allowed_countries = 5;
+  repeated string denied_countries = 6; // turnstile: ["CN"]
+  repeated string route_ids = 7;
+  uint32 timeout_ms = 8;
+  string fallback = 9;           // provider id | fail_open_with_signal | fail_closed
+  string mode = 10;              // shadow | enforce
+}
+
+message Environment {
+  string name = 1;               // production | staging | test | dev
+  repeated Route routes = 2;
+  repeated CompiledRule rules = 3;
+  repeated RateLimit rate_limits = 4;
+  bool automation_allowlist_only = 5; // true for staging/test/dev
+}
+
+message ArtifactRef {
+  string name = 1;               // e.g. "geolite2-asn", "cloudflare-ips", "crawler-registry"
+  string uri = 2;
+  string sha256 = 3;
+  string version = 4;
+}
+
+message SiteBundle {
+  string site_id = 1;
+  uint64 version = 2;
+  int64 created_at_ms = 3;
+  UpstreamProfile upstream = 4;
+  repeated Environment environments = 5;
+  repeated ProviderConfig providers = 6;
+  repeated ArtifactRef artifacts = 7;
+  repeated string token_key_ids = 8;
+  bool monitor_only = 9;         // global monitor switch
+  // Optional activation delay for sensitive changes (docs/02 §6): the Edge
+  // swaps to this bundle atomically at or after this time. 0 = immediately.
+  int64 not_before_ms = 10;
+}
+
+// Detached signature over the serialized SiteBundle bytes.
+message SignedBundle {
+  bytes bundle = 1;              // serialized SiteBundle
+  string key_id = 2;
+  bytes ed25519_signature = 3;
+}

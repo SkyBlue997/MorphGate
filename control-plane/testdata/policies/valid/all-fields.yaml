@@ -1,0 +1,59 @@
+# Exercises every rule field and every policy namespace.
+policies:
+  - id: admin-paths-owner-only
+    phase: identity
+    priority: 10
+    expr: glob(req.path, "/admin/**") && !ip_in(net.ip, ["127.0.0.1", "10.0.0.0/8", "fc00::/7"])
+    action: block
+    owner: site-owner
+    description: Admin UI is reachable from owner networks only.
+
+  - id: maintenance-window-tarpit
+    phase: custom
+    priority: -5
+    temporary: true
+    expires_at: 2099-01-01T00:00:00Z
+    expr: req.method == "POST" && req.headers["content-type"].startsWith("multipart/")
+    action: tarpit
+    params: { delay_ms: 2000 }
+    mode: dry_run
+    rollout: 25
+
+  - id: login-rate
+    phase: rate_limit
+    expr: '"login_ip" in rate && rate["login_ip"] > 0.8'
+    action: rate_limit
+    params:
+      limiter: login_ip
+      retry_after_s: 30
+
+  - id: weak-edge-tls-tag
+    phase: bot
+    expr: >
+      upstream.profile == "cloudflare" && upstream.authenticated && upstream.auth_method != "none"
+      && edge_tls.version == "TLSv1.2" && edge_tls.hello_len < 200 && edge_tls.ext_sha1 != ""
+    action: tag
+    params: { label: old_tls_stack }
+
+  - id: direct-tls-ja4-log
+    phase: bot
+    expr: tls.ja4.source == "self" && tls.ja4.value.startsWith("t13d") && size(http.header_order) > 0
+    action: log
+
+  - id: agents-with-grant
+    phase: identity
+    expr: identity.agent.id != "" && identity.agent.grant_id != "" && identity.token.level == "interactive" && identity.token.age < 1800
+    action: allow
+    locked: true
+
+  - id: tor-high-risk
+    phase: bot
+    expr: net.tor && net.asn != 0 && net.country != "" && net.conn_type == "datacenter" && risk.confidence > 0.5 && "dc_asn" in risk.reasons
+    action: challenge
+    params: { type: pow }
+    mode: disabled
+
+  - id: api-channel-sensitive
+    phase: default
+    expr: req.channel == "api" && route.sensitivity == "critical" && req.host.endsWith(".example.test") && req.query.contains("debug=")
+    action: log
