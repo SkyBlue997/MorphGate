@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"morphgate/control-plane/internal/cli"
 )
 
 // ErrNotImplemented is returned by Run until Phase 1.
@@ -60,4 +62,18 @@ func PrintPlan(w io.Writer) error {
 // Run will audit a zone. Until Phase 1 it only returns ErrNotImplemented.
 func Run() error {
 	return ErrNotImplemented
+}
+
+// RunCLI implements `mgctl cf audit <args>` (args exclude "cf audit"). Until
+// work package WP-G3 replaces it (docs/impl/phase1-spec.md §10.4) it prints the
+// planned checks and reports "not implemented".
+func RunCLI(args []string, env cli.Env) int {
+	if err := PrintPlan(env.Stdout); err != nil {
+		return cli.ExitInternal
+	}
+	if err := Run(); errors.Is(err, ErrNotImplemented) {
+		fmt.Fprintf(env.Stderr, "mgctl cf audit: %v\n", err)
+		return cli.ExitUsage
+	}
+	return cli.ExitOK
 }

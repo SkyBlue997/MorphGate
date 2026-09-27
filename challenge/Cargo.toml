@@ -1,0 +1,29 @@
+[package]
+name = "mg-challenge"
+description = "MorphGate challenge cryptography: sealed challenges, epoch keys, SHA-256 PoW, PASETO v4.local clearance tokens (Phase 1)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Pure library: no network or file I/O, no clock reads, no threads. Time is a
+# parameter and randomness comes from the injected `Rng` (docs/impl/phase1-spec.md §6).
+# The one exception is PASETO's internal nonce, which pasetors draws from the OS RNG.
+[dependencies]
+mg-core.workspace = true
+mg-proto.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+pasetors.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+base64.workspace = true
+
+[lints]
+workspace = true

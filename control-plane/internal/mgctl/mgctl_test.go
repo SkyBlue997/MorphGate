@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"morphgate/control-plane/internal/policy"
 )
 
 const (
@@ -40,15 +42,19 @@ func TestCommands(t *testing.T) {
 		{"check bad flag", []string{"policy", "check", "-nope", docsExamples}, ExitUsage, "", "flag provided but not defined"},
 		{"check bad profile", []string{"policy", "check", "-profile", "akamai", docsExamples}, ExitUsage, "", `unknown upstream profile "akamai"`},
 		{"check unchecked profile", []string{"policy", "check", "-profile", "cloudfront", docsExamples}, ExitUsage, "", `upstream profile "cloudfront" has no field-availability table`},
-		{"check valid dir", []string{"policy", "check", validDir}, ExitOK, "ok: 18 rule(s) in 3 file(s), 0 warning(s)", ""},
-		{"check valid with profile", []string{"policy", "check", "-profile", "cloudflare", validDir}, ExitOK, "3 warning(s)", "is always MISSING under the cloudflare profile"},
+		// Warning counts are not pinned here: the policy package (WP-G1) owns
+		// which reads warn; its own tests pin the exact diagnostics.
+		{"check valid dir", []string{"policy", "check", validDir}, ExitOK, "ok: ", ""},
+		{"check valid with profile", []string{"policy", "check", "-profile", "cloudflare", validDir}, ExitOK, "warning(s)", "is always MISSING under the cloudflare profile"},
 		{"check profile conflict", []string{"policy", "check", "-profile", "direct_tls", validDir}, ExitInvalid, "", `cloudflare-site.yaml:4:1: error: profile: file declares profile "cloudflare" but the check was requested for "direct_tls"`},
 		{"check invalid file", []string{"policy", "check", invalidDir + "/non-bool-expr.yaml"}, ExitInvalid, "", `rule "returns-int": expr: expression must evaluate to bool, got int`},
 		{"check mixed files", []string{"policy", "check", docsExamples, invalidDir + "/unknown-field.yaml"}, ExitInvalid, "", `unknown field "mdoe"`},
 		{"check tight cost budget", []string{"policy", "check", "-max-cost", "100", docsExamples}, ExitInvalid, "", "exceeds the limit 100"},
 		{"compile invalid", []string{"policy", "compile", invalidDir}, ExitInvalid, "", "error(s)"},
-		{"cf audit", []string{"cf", "audit"}, ExitUsage, "[bot_fight_mode]", "not implemented until Phase 1"},
-		{"cf without audit", []string{"cf"}, ExitUsage, "", "expected: mgctl cf audit"},
+		// Only the dispatch is tested here; the cf / crawler packages (WP-G3)
+		// test their own commands.
+		{"cf without subcommand", []string{"cf"}, ExitUsage, "", "expected a subcommand: audit | ips"},
+		{"cf unknown subcommand", []string{"cf", "purge"}, ExitUsage, "", `unknown subcommand "purge"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -71,7 +77,10 @@ func TestCompileJSON(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
-	if !strings.Contains(stderr, "expr_ir is omitted") {
+	// ir_version 0 (Phase 0) omits expr_ir and says so; from ir_version 1
+	// (WP-G1) every rule carries base64 expr_ir. Either state is valid here.
+	irVersion := float64(policy.IRVersion)
+	if irVersion == 0 && !strings.Contains(stderr, "expr_ir is omitted") {
 		t.Errorf("missing Phase 1 IR note on stderr: %q", stderr)
 	}
 	var raw []map[string]any
@@ -82,11 +91,15 @@ func TestCompileJSON(t *testing.T) {
 		t.Fatalf("got %d rules, want 6", len(raw))
 	}
 	for _, r := range raw {
-		if _, ok := r["expr_ir"]; ok {
-			t.Errorf("rule %v has expr_ir; IR generation is Phase 1", r["id"])
+		ir, hasIR := r["expr_ir"].(string)
+		switch {
+		case irVersion == 0 && hasIR:
+			t.Errorf("rule %v has expr_ir at ir_version 0", r["id"])
+		case irVersion > 0 && (!hasIR || ir == ""):
+			t.Errorf("rule %v lacks expr_ir at ir_version %v", r["id"], irVersion)
 		}
-		if r["ir_version"] != float64(0) {
-			t.Errorf("rule %v ir_version = %v, want 0", r["id"], r["ir_version"])
+		if r["ir_version"] != irVersion {
+			t.Errorf("rule %v ir_version = %v, want %v", r["id"], r["ir_version"], irVersion)
 		}
 		cost, ok := r["cost"].(map[string]any)
 		if !ok || cost["max"].(float64) < cost["min"].(float64) || cost["max"].(float64) == 0 {
@@ -117,8 +130,9 @@ func TestCompileToFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The rule count belongs to the policy testdata (WP-G1); only require a non-empty array.
 	var rules []json.RawMessage
-	if err := json.Unmarshal(data, &rules); err != nil || len(rules) != 18 {
+	if err := json.Unmarshal(data, &rules); err != nil || len(rules) == 0 {
 		t.Fatalf("bad output file (%d rules): %v", len(rules), err)
 	}
 

@@ -9,12 +9,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"morphgate/control-plane/internal/cfaudit"
+	"morphgate/control-plane/internal/cli"
+	"morphgate/control-plane/internal/intelsync"
 	"morphgate/control-plane/internal/policy"
 	"morphgate/control-plane/internal/version"
 )
@@ -33,7 +37,9 @@ Usage:
   mgctl version
   mgctl policy check   [flags] <file.yaml|dir>...
   mgctl policy compile [flags] [-o out.json] <file.yaml|dir>...
-  mgctl cf audit
+  mgctl cf audit [flags]
+  mgctl cf ips sync [flags]
+  mgctl crawler sync [flags]
 
 policy flags:
   -profile cloudflare|direct_tls   UpstreamProfile for files without a top-level profile: key
@@ -61,7 +67,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "policy":
 		return runPolicy(args[1:], stdout, stderr)
 	case "cf":
-		return runCF(args[1:], stdout, stderr)
+		return runCF(args[1:], newEnv(stdout, stderr))
+	case "crawler":
+		return intelsync.RunCrawler(args[1:], newEnv(stdout, stderr))
 	}
 	fmt.Fprintf(stderr, "mgctl: unknown command %q\n\n", args[0])
 	fmt.Fprintf(stderr, usage, policy.DefaultMaxCost)
@@ -141,7 +149,9 @@ func runPolicy(args []string, stdout, stderr io.Writer) int {
 		return exitInternal
 	}
 	data := buf.Bytes()
-	fmt.Fprintf(stderr, "note: ir_version %d: expr_ir is omitted because CEL-to-IR lowering is implemented in Phase 1\n", policy.IRVersion)
+	if policy.IRVersion == 0 {
+		fmt.Fprintf(stderr, "note: ir_version %d: expr_ir is omitted because CEL-to-IR lowering is implemented in Phase 1\n", policy.IRVersion)
+	}
 	if *outPath == "" {
 		if _, err := stdout.Write(data); err != nil {
 			fmt.Fprintf(stderr, "mgctl policy compile: %v\n", err)
@@ -157,19 +167,39 @@ func runPolicy(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-func runCF(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 || args[0] != "audit" {
-		fmt.Fprintln(stderr, "mgctl cf: expected: mgctl cf audit")
+// newEnv builds the environment handed to subcommand packages
+// (internal/cli). Work package WP-G2 replaces Audit with the local
+// hash-chained audit log (docs/impl/phase1-spec.md §10.2).
+func newEnv(stdout, stderr io.Writer) cli.Env {
+	return cli.Env{
+		Stdout: stdout,
+		Stderr: stderr,
+		Stdin:  os.Stdin,
+		Now:    time.Now,
+		HTTP:   &http.Client{Timeout: 30 * time.Second},
+		Getenv: os.Getenv,
+		Audit:  auditNotWired,
+	}
+}
+
+var errAuditNotWired = errors.New("audit log not wired yet (Phase 1 WP-G2)")
+
+func auditNotWired(cli.AuditEvent) error { return errAuditNotWired }
+
+// runCF dispatches `mgctl cf <subcommand>` to the packages that own them.
+func runCF(args []string, env cli.Env) int {
+	if len(args) == 0 {
+		fmt.Fprintln(env.Stderr, "mgctl cf: expected a subcommand: audit | ips")
 		return ExitUsage
 	}
-	if err := cfaudit.PrintPlan(stdout); err != nil {
-		return exitInternal
+	switch args[0] {
+	case "audit":
+		return cfaudit.RunCLI(args[1:], env)
+	case "ips":
+		return intelsync.RunCFIPs(args[1:], env)
 	}
-	if err := cfaudit.Run(); errors.Is(err, cfaudit.ErrNotImplemented) {
-		fmt.Fprintf(stderr, "mgctl cf audit: %v\n", err)
-		return ExitUsage
-	}
-	return ExitOK
+	fmt.Fprintf(env.Stderr, "mgctl cf: unknown subcommand %q (expected audit | ips)\n", args[0])
+	return ExitUsage
 }
 
 // expandFiles replaces directories by their *.yaml / *.yml entries (sorted,
