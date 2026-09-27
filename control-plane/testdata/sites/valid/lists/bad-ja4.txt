@@ -1,0 +1,3 @@
+# SHA-1 of cipher lists seen from abusive clients (fixture values)
+0123456789abcdef0123456789abcdef01234567
+89abcdef0123456789abcdef0123456789abcdef   # trailing comment

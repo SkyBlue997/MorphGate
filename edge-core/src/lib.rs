@@ -14,7 +14,9 @@
 //! | [`state`] | WP-C3 | Valkey client (pipelines, `mg_gcra`, `mg_nonce_issue`), circuit breaker, local mode |
 //! | [`events`] | WP-C4 | bounded event queues, VictoriaLogs `jsonline` batches, file sink, `mg:ev` entries |
 //!
-//! Every module is empty until its work package lands.
+//! The `testkit` feature adds shared test helpers (a signed-bundle builder and
+//! HTTP test server, a Valkey fixture with a fault-injecting proxy, a fake
+//! VictoriaLogs), for these crate tests and for `mg-edge`'s stage-2 tests.
 
 pub mod bundle;
 pub mod events;

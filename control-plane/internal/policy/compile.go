@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/base64"
 	"fmt"
 	"maps"
 	"regexp"
@@ -12,19 +13,27 @@ import (
 	"github.com/google/cel-go/checker"
 	celast "github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/types"
+	"google.golang.org/protobuf/proto"
 
 	morphgatev1 "morphgate/control-plane/gen/morphgate/v1"
 )
 
-// IRVersion is the version of the restricted IR emitted in CompiledRule.
-// 0 means "no IR": IR generation is implemented in Phase 1.
-const IRVersion = 0
+// IRVersion is the version of the restricted policy IR (proto
+// morphgate.v1.PolicyExpr) emitted in CompiledRule.expr_ir.
+const IRVersion = 1
 
-// DefaultMaxCost is the default worst-case CEL cost budget per rule. The
+// DefaultMaxCost is the default worst-case cel-go cost budget per rule. The
 // examples in docs/06 stay well below 20k; a named-list lookup costs ~10k.
+// It is an additional check only: the normative limit is the IR's static
+// step bound MaxIRSteps (spec §5.2, §5.3), which the Edge recomputes.
 const DefaultMaxCost = 100_000
 
 var listNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+
+// optionalSyntaxError matches cel-go's parse error for the optional syntax
+// (x.?f, m[?k], [?e], {?k: v}, Msg{?f: v}), which the environment does not
+// enable (cel.OptionalTypes is off).
+var optionalSyntaxError = regexp.MustCompile(`^unsupported syntax '(\.\?|\[\?|\?)'$`)
 
 // Options configure a Compiler.
 type Options struct {
@@ -57,6 +66,11 @@ type CheckedRule struct {
 	// sorted and unique (docs/impl/phase1-spec.md §8.2: every referenced
 	// list must be defined by the site).
 	Lists []string
+	// IR is the expression lowered to the policy IR (spec §5.1), including
+	// its static step bound IR.MaxSteps (spec §5.3).
+	IR *morphgatev1.PolicyExpr
+	// ExprIR is IR serialized deterministically: CompiledRule.expr_ir.
+	ExprIR []byte
 }
 
 // NewCompiler builds the CEL environment. It fails only on programming errors.
@@ -113,8 +127,13 @@ func (c *Compiler) Check(rules []*Rule) ([]*CheckedRule, Diagnostics) {
 
 func (c *Compiler) checkSemantics(r *Rule, diags *Diagnostics) {
 	if r.Action == "challenge" {
-		if t, ok := r.Params["type"]; ok && !slices.Contains(ChallengeTypes, t) {
+		t, ok := r.Params["type"]
+		switch {
+		case ok && !slices.Contains(ChallengeTypes, t):
 			diags.errorf(r.File, r.posOf("params"), r.ID, "params.type", "%q is not one of %s", t, strings.Join(ChallengeTypes, ", "))
+		case t == "interactive":
+			// D-08: Phase 1 has no interactive challenge.
+			diags.warnf(r.File, r.posOf("params"), r.ID, "params.type", "interactive challenges arrive in Phase 2; the Phase 1 Edge runs this challenge as pow (D-08)")
 		}
 	}
 	if r.ExpiresAt != nil && !r.ExpiresAt.After(c.opts.Now()) {
@@ -130,7 +149,13 @@ func (c *Compiler) compileExpr(r *Rule, diags *Diagnostics) *CheckedRule {
 	if iss != nil && iss.Err() != nil {
 		for _, e := range iss.Errors() {
 			pos, where := r.exprDiagPos(e.Location.Line(), e.Location.Column())
-			diags.errorf(r.File, pos, r.ID, "expr", "%s%s", e.Message, where)
+			msg := e.Message
+			if optionalSyntaxError.MatchString(msg) {
+				// Optional syntax is a §5.2 construct; the environment does
+				// not enable it, so the parser rejects it before lowering.
+				msg = unsupportedPrefix + "optional syntax (" + strings.TrimPrefix(msg, "unsupported syntax ") + ")"
+			}
+			diags.errorf(r.File, pos, r.ID, "expr", "%s%s", msg, where)
 		}
 		return nil
 	}
@@ -140,8 +165,13 @@ func (c *Compiler) compileExpr(r *Rule, diags *Diagnostics) *CheckedRule {
 	}
 
 	nerr := len(diags.Errors())
-	refs := c.walk(r, ast, diags)
+	refs, ir := c.walk(r, ast, diags)
 	if len(diags.Errors()) > nerr {
+		return nil
+	}
+	exprIR, err := marshalIR(ir)
+	if err != nil {
+		diags.errorf(r.File, r.exprPos, r.ID, "expr", "%v", err)
 		return nil
 	}
 
@@ -157,7 +187,17 @@ func (c *Compiler) compileExpr(r *Rule, diags *Diagnostics) *CheckedRule {
 	c.checkAvailability(r, refs, diags)
 	checkCorroboration(r, ast.NativeRep().Expr(), refs, diags)
 	fields := longestPaths(append(slices.Clone(refs.reads), refs.tests...))
-	return &CheckedRule{Rule: r, AST: ast, Cost: cost, Fields: fields, Lists: refs.lists}
+	return &CheckedRule{Rule: r, AST: ast, Cost: cost, Fields: fields, Lists: refs.lists, IR: ir, ExprIR: exprIR}
+}
+
+// marshalIR serializes a PolicyExpr deterministically (spec §3.1): the same
+// checked expression always yields the same bytes.
+func marshalIR(pe *morphgatev1.PolicyExpr) ([]byte, error) {
+	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(pe)
+	if err != nil {
+		return nil, fmt.Errorf("policy IR serialization failed: %w", err)
+	}
+	return b, nil
 }
 
 // exprRefs are the context fields an expression refers to.
@@ -171,9 +211,12 @@ type exprRefs struct {
 	lists []string
 }
 
-// walk performs the static checks that cel-go's type checker cannot express
-// and collects the context fields the expression refers to.
-func (c *Compiler) walk(r *Rule, ast *cel.Ast, diags *Diagnostics) exprRefs {
+// walk performs the static checks that cel-go's type checker cannot express,
+// lowers the expression to the policy IR (reporting every construct of spec
+// §5.2, the IR structure limits and the step bound at the offending
+// sub-expression) and collects the context fields the expression refers to.
+// The IR is nil when walk reported an error.
+func (c *Compiler) walk(r *Rule, ast *cel.Ast, diags *Diagnostics) (exprRefs, *morphgatev1.PolicyExpr) {
 	native := ast.NativeRep()
 	info := native.SourceInfo()
 	report := func(e celast.Expr, format string, args ...any) {
@@ -202,7 +245,6 @@ func (c *Compiler) walk(r *Rule, ast *cel.Ast, diags *Diagnostics) exprRefs {
 	}))
 
 	readSet := map[string]struct{}{}
-	listSet := map[string]struct{}{}
 	celast.PostOrderVisit(native.Expr(), celast.NewExprVisitor(func(e celast.Expr) {
 		switch e.Kind() {
 		case celast.SelectKind, celast.IdentKind:
@@ -212,51 +254,15 @@ func (c *Compiler) walk(r *Rule, ast *cel.Ast, diags *Diagnostics) exprRefs {
 			if p := selectPath(e); p != "" {
 				readSet[p] = struct{}{}
 			}
-		case celast.CallKind:
-			call := e.AsCall()
-			args := call.Args()
-			switch call.FunctionName() {
-			case "list":
-				name, ok := stringLiteral(args[0])
-				switch {
-				case !ok:
-					report(args[0], "list() takes a string literal name so lists can be resolved when the bundle is built")
-				case !listNamePattern.MatchString(name):
-					report(args[0], "list name %q must match %s", name, listNamePattern)
-				default:
-					listSet[name] = struct{}{}
-				}
-			case "ip_in":
-				if ip, ok := stringLiteral(args[0]); ok {
-					if _, err := parseIPOrPrefix(ip); err != nil || strings.Contains(ip, "/") {
-						report(args[0], "ip_in: %q is not an IP address", ip)
-					}
-				}
-				if args[1].Kind() == celast.ListKind {
-					for _, el := range args[1].AsList().Elements() {
-						if s, ok := stringLiteral(el); ok {
-							if _, err := parseIPOrPrefix(s); err != nil {
-								report(el, "%v", err)
-							}
-						}
-					}
-				}
-			case "glob":
-				p, ok := stringLiteral(args[1])
-				switch {
-				case !ok:
-					report(args[1], "glob() pattern must be a string literal")
-				case p == "":
-					report(args[1], "glob() pattern must not be empty")
-				}
-			}
 		}
 	}))
+
+	ir, lists := lowerAST(native, report)
 	return exprRefs{
 		reads: longestPaths(slices.Collect(maps.Keys(readSet))),
 		tests: longestPaths(slices.Collect(maps.Keys(testSet))),
-		lists: slices.Sorted(maps.Keys(listSet)),
-	}
+		lists: lists,
+	}, ir
 }
 
 // longestPaths drops every path that is a prefix of another one ("tls.ja4"
@@ -322,14 +328,16 @@ func (r *Rule) exprDiagPos(line, col int) (Position, string) {
 }
 
 // CompiledRuleJSON is the `mgctl policy compile` output for one rule. Field
-// names follow morphgate.v1.CompiledRule; cost and source are extra metadata.
-// expr_ir is intentionally absent until IR generation lands in Phase 1.
+// names follow morphgate.v1.CompiledRule; max_steps (also inside expr_ir),
+// fields, cost and source are extra metadata.
 type CompiledRuleJSON struct {
 	ID             string            `json:"id"`
 	Phase          string            `json:"phase"`
 	Priority       int32             `json:"priority"`
 	ExprSource     string            `json:"expr_source"`
 	IRVersion      uint32            `json:"ir_version"`
+	ExprIR         string            `json:"expr_ir"` // standard base64 of the serialized PolicyExpr
+	MaxSteps       uint64            `json:"max_steps"`
 	Action         string            `json:"action"`
 	Params         map[string]string `json:"params,omitempty"`
 	Mode           string            `json:"mode"`
@@ -363,7 +371,9 @@ func (cr *CheckedRule) JSON() CompiledRuleJSON {
 		Phase:          cr.Phase,
 		Priority:       cr.Priority,
 		ExprSource:     cr.Expr,
-		IRVersion:      IRVersion,
+		IRVersion:      cr.irVersion(),
+		ExprIR:         base64.StdEncoding.EncodeToString(cr.ExprIR),
+		MaxSteps:       cr.IR.GetMaxSteps(),
 		Action:         cr.Action,
 		Params:         cr.Params,
 		Mode:           cr.Mode,
@@ -385,15 +395,35 @@ func (cr *CheckedRule) JSON() CompiledRuleJSON {
 	return out
 }
 
-// Proto converts the rule to the shared contract message. ExprIr stays empty
-// and IrVersion 0 until Phase 1.
+// ruleID is the rule's id for error messages; "" for a CheckedRule assembled
+// without its Rule.
+func (cr *CheckedRule) ruleID() string {
+	if cr == nil || cr.Rule == nil {
+		return ""
+	}
+	return cr.ID
+}
+
+// irVersion is IRVersion for a rule that carries IR and 0 otherwise (a
+// CheckedRule not produced by Compiler.Check), so that the bundle builder
+// fails with "policy IR unavailable" instead of shipping a rule without IR.
+func (cr *CheckedRule) irVersion() uint32 {
+	if len(cr.ExprIR) == 0 {
+		return 0
+	}
+	return IRVersion
+}
+
+// Proto converts the rule to the shared contract message, with expr_ir the
+// deterministic PolicyExpr bytes and ir_version IRVersion.
 func (cr *CheckedRule) Proto() *morphgatev1.CompiledRule {
 	pb := &morphgatev1.CompiledRule{
 		Id:             cr.ID,
 		Phase:          cr.Phase,
 		Priority:       cr.Priority,
 		ExprSource:     cr.Expr,
-		IrVersion:      IRVersion,
+		IrVersion:      cr.irVersion(),
+		ExprIr:         slices.Clone(cr.ExprIR),
 		Action:         ActionEnum(cr.Action),
 		Params:         cr.Params,
 		Mode:           cr.Mode,

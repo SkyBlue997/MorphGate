@@ -1,0 +1,12 @@
+# want: clearance.session_max_s: 900 is shorter than a clearance TTL
+version: 1
+site: shop
+profile: direct_tls
+hosts: [shop.example.test, admin.example.test]
+allowed_listeners: [public-tls]
+token:
+  active_kid: shop-t-20260927
+clearance: {ttl_pow_s: 3600, session_max_s: 900}
+environments:
+  - name: production
+    hosts: [shop.example.test, admin.example.test]

@@ -72,6 +72,28 @@ describe("collectEnv", () => {
     expect(env.ua.userAgent).toHaveLength(256);
     expect(env.languages?.[0]).toHaveLength(35);
   });
+
+  it("never emits a lone surrogate, which strict JSON parsers reject (§10.3: the body is UTF-8)", () => {
+    // A 256-unit cut through "😀" (a surrogate pair) would leave "\ud83d" in the
+    // submission JSON; the Edge's serde_json rejects that escape and the whole
+    // POST /__mg/c body fails as ic.body.
+    const cut = collectEnv({
+      navigator: { userAgent: `${"x".repeat(255)}😀 tail`, userAgentData: { platform: `${"p".repeat(63)}😀`, brands: [{ brand: `${"b".repeat(63)}😀`, version: "1" }] } },
+      timeZone: () => `${"z".repeat(63)}😀`,
+    });
+    expect(cut.ua.userAgent).toBe("x".repeat(255)); // still a prefix of the User-Agent (§10.3 step 8)
+    expect(cut.ua.platform).toBe("p".repeat(63));
+    expect(cut.ua.brands?.[0]?.brand).toBe("b".repeat(63));
+    expect(cut.timeZone).toBe("z".repeat(63));
+    // A whole pair within the limit is kept.
+    expect(collectEnv({ navigator: { userAgent: "UA 😀" } }).ua.userAgent).toBe("UA 😀");
+    // Malformed sources are dropped rather than rewritten (a rewritten UA would no longer be a prefix).
+    const lone = collectEnv({ navigator: { userAgent: "UA \ud800 x", languages: ["zh\udc00", "en"] }, timeZone: () => "\udfff" });
+    expect(lone.ua.userAgent).toBeNull();
+    expect(lone.languages).toEqual(["en"]);
+    expect(lone.timeZone).toBeNull();
+    for (const env of [cut, lone]) expect(JSON.stringify(env)).not.toMatch(/\\ud[89a-f]/i);
+  });
 });
 
 describe("collectAutomation", () => {

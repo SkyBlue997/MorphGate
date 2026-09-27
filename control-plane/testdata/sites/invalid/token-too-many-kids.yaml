@@ -1,0 +1,12 @@
+# want: token: 4 key ids, but token.keys.json holds at most 3 keys
+version: 1
+site: shop
+profile: direct_tls
+hosts: [shop.example.test, admin.example.test]
+allowed_listeners: [public-tls]
+token:
+  active_kid: shop-t-20260927
+  verify_kids: [shop-t-20260926, shop-t-20260925, shop-t-20260924]
+environments:
+  - name: production
+    hosts: [shop.example.test, admin.example.test]

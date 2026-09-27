@@ -29,17 +29,23 @@ var UpstreamProfiles = func() []string {
 // knows (the Phase 1 profiles). Other declared profiles skip the check.
 var CheckedProfiles = []string{"cloudflare", "direct_tls"}
 
-// alwaysMissing lists, per UpstreamProfile, the field prefixes that profile can
-// never supply, with a hint (docs/03 §3.1 per-signal table, docs/08 §2.5).
+// alwaysMissing lists, per UpstreamProfile, the field prefixes that are
+// MISSING on every request of that profile in Phase 1, with a hint (spec §4.4;
+// docs/03 §3.1 per-signal table, docs/08 §2.5, D-07).
 var alwaysMissing = map[string][]struct{ prefix, hint string }{
 	"cloudflare": {
 		{"tls", "Cloudflare terminates the visitor's TLS; edge_tls.* is the weak, shadow-first substitute"},
 		{"http.header_order", "Cloudflare does not preserve header order"},
+		{"identity.proof", "proof of possession arrives in Phase 2"},
+		{"identity.agent", "agent identities arrive in Phase 3"},
 	},
 	"direct_tls": {
 		{"edge_tls", "edge_tls.* is only forwarded by Cloudflare"},
 		{"identity.crawler.cf_vbot", "the verified-bot flag is only forwarded by Cloudflare"},
 		{"identity.crawler.cf_vbot_cat", "the verified-bot category is only forwarded by Cloudflare"},
+		{"tls.ja4", "JA4 is a Phase 1 spike only"},
+		{"identity.proof", "proof of possession arrives in Phase 2"},
+		{"identity.agent", "agent identities arrive in Phase 3"},
 	},
 }
 
@@ -66,8 +72,8 @@ func (c *Compiler) effectiveProfile(r *Rule) string {
 // tls.ja4.value. Positions are not compared: CEL's && and || are commutative
 // for unknown values, so `x.v == 1 && has(x)` behaves like `has(x) && x.v == 1`.
 //
-// Evaluation-time MISSING semantics (unknown, missing_input) are Phase 1; see
-// the comment at the top of context.go.
+// Evaluation-time MISSING semantics (unknown, missing_input) are spec §5.3;
+// Evaluator.EvalWithMissing is the reference implementation.
 func (c *Compiler) checkAvailability(r *Rule, refs exprRefs, diags *Diagnostics) {
 	profile := c.effectiveProfile(r)
 	for _, f := range refs.reads {
@@ -121,11 +127,6 @@ func guardPath(f, prefix string) string {
 		return f
 	}
 	return strings.Join(parts[:n], ".")
-}
-
-// underPath reports whether path is prefix or lies below it.
-func underPath(path, prefix string) bool {
-	return path == prefix || strings.HasPrefix(path, prefix+".")
 }
 
 // conjuncts flattens a top-level chain of && into its operands.

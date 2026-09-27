@@ -21,6 +21,18 @@
 | I-5 | 接受 D-27 的 Challenge 初值（失败时 risk_band +1、invisible 固定 `pow_bits.low`、凭证证据 −0.4），monitor 周后按数据复核。接受 D-04 改写（出站 TLS 用 reqwest 的 rustls / aws-lc-rs）。接受在 `testdata/phase1/keys` 提交测试密钥材料（RFC 8032 测试向量与确定性字节，仅测试用途，README 注明）。接受 CI 新增 msrv 与 lab-e2e 任务。 | D-27、D-04、§16 |
 | I-6 | WP-G2 保持单一实现者；若其 stage-1 耗时明显超过其他 WP，由集成者拆出 `keys` 子包给第二位实现者，文件所有权另行指定。 | §2 |
 | I-7 | 所有 WP：出站请求一律使用 User-Agent `morphgate-dev-tooling`，**不得**携带所有者邮箱或其他身份信息；测试只访问本机或 fake server。 | 全文 |
+| I-8 | 阶段 1 集成：**IR 嵌套深度上限改为 50**（原 64）。Edge 用 prost 解码 `PolicyExpr`，其固定递归上限为 100 层消息，而根以下每个 IR 节点占两层（`Expr` 与其消息体），深于 50 的树根本无法解码。Go `MaxIRDepth`、Rust `mg_core::policy::MAX_DEPTH` 与 `mg_proto::ir::PROST_MAX_IR_DEPTH` 均为 50；一致性用例 `limits.depth-50`（最深、且恰好 100 层消息的可解码树）与 `reject.depth-51` 固定这一点 | §5.3 |
+| I-9 | 阶段 1 集成，§5.3 语义补充（Go 参考实现与 Rust 求值器已一致，用例已加入 `cases.json`）：`ip_in` 的左侧不是合法 IP 时直接为 `false`，**不**校验条目（`node.ip_in.invalid-address-invalid-entry`）；前缀长度 `n < 96` 的 IPv4 映射 CIDR（如 `::ffff:0:0/80`）是非法条目：运行时 `Error(invalid_argument)`，字面量编译失败（`node.ip_in.mapped-cidr-short-prefix`、`reject.ip_in-mapped-cidr-short-prefix`）；`S(index_map(m, k))` 按 `m` 的值类型取：值为 string（`req.headers`，或分支都是它的 `cond`）时 8192，值为 double（`rate`）时 0（`node.index_map.cond-map`） | §5.3 |
+| I-10 | 阶段 1 集成：提交失败后新 C 的风险段为 `mg_core::RiskBand::after_failure(rb)` = `max(rb, min(rb + 1, high))`，即 low → medium → high → high，`very_high` 保持 `very_high`。原文的 `min(rb + 1, high)` 会把 `very_high` 降为 `high`，失败后难度反而下降 | D-27、§6.3、§10.3 |
+| I-11 | 阶段 1 集成：`edge.toml` 的 `[events] vl_main` / `vl_short` 与 `bundle_root` 同规则，`http://` 只接受回环、RFC 1918、ULA 或 100.64.0.0/10 的 IP 字面量（从不接受主机名），否则必须 `https://`：决定事件含客户端 IP 与路径。`EventsConfig::validate` 与 `VlClient` 都执行 | §8.1、§13.1 |
+| I-12 | 阶段 1 集成，头部清洗（§9.3）：第 3 步删除 `Connection` 列出的头时**不删除**上游头族的名字（`mg_edge_core::upstream::hop_by_hop` 已如此），它们留给第 4 步解析、第 5 步统一剥离；否则外部 Worker 可以用 `Connection: CF-Worker` 藏起 `CF-Worker`（D-23）。`x-mg-cf-hdr-names` 仍计入 `mg_upstream_signal_missing_total{signal="hdr-names"}`，但任何客户端发一个超过 64 字节的头名就能让它缺失，所以 §17 与 `mgctl cf audit` 第 18 项的缺失率**不含** `hdr-names`。I-2 的 `kind`：头名超过 256 字节计为 `header_value` | §9.3、§14.3、§17 |
+| I-13 | 阶段 1 集成，情报工件的特殊地址段（写入方 Go `intelsync` 与读取方 `mg-intel` 用同一张表，条目与任一段相交即拒绝）：IPv4 `0.0.0.0/8`、`10.0.0.0/8`、`100.64.0.0/10`、`127.0.0.0/8`、`169.254.0.0/16`、`172.16.0.0/12`、`192.0.0.0/24`、`192.168.0.0/16`、`198.18.0.0/15`、`224.0.0.0/4`、`240.0.0.0/4`；IPv6 `::/128`、`::1/128`、`2001::/23`、`fc00::/7`、`fe80::/10`、`ff00::/8` 以及 `2000::/3` 以外的全部地址；文档段 `192.0.2.0/24`、`198.51.100.0/24`、`203.0.113.0/24`、`2001:db8::/32`、`3fff::/20` 只在 `test: true` 的注册表中允许。§12.3 的"不接受非规范写法"只约束写入方：mgctl 写出规范文本；读取方接受同一网络的其他文本写法（大写十六进制、未压缩的 IPv6；爬虫注册表中的 IPv4 映射写法还原为 IPv4 后按 IPv4 规则校验）。主机位不为 0 在两边都拒绝 | §12.2、§12.3 |
+| I-14 | 阶段 1 集成，密钥 id 的形式是规范（WP-R2 读取方强制，WP-G2 写入方产生）：`token.keys.json` 的 `kid` 为 `<site>-t-<YYYYMMDD>`，`seal.root.json` 的 `root_id` 为 `<site>-r-<YYYYMMDD>`，同日重复时加 `-N`（1–3 位十进制、无前导零；mgctl 从 `-2` 开始）；`created_at` 为 RFC 3339；密钥文件 ≤ 64 KiB；Edge 要求配置包 `token_key_ids` 的**每一项**都在 `token.keys.json` 中，否则拒绝该配置包 | §12.7、§9.10 |
+| I-15 | 阶段 1 集成：I-7 的 User-Agent 适用于**全部**出站请求，包括产品代码：mgctl（Cloudflare API、情报源、`cf audit` 的 VictoriaMetrics 查询）与 mg-edge（配置包与工件拉取、VictoriaLogs 写入）一律 `morphgate-dev-tooling`。§2.4 第 7 条、§9.10、§13.1、§14.1 中的 `mg-edge/<version>` / `mgctl/<version>` 作废 | §2.4、§9.10、§13.1、§14.1 |
+| I-16 | 阶段 1 集成，配置包客户端（WP-C2）的细化：拉取的 `SignedBundle` ≤ 8 MiB + 1 KiB（签名信封余量），其中序列化的 `SiteBundle` ≤ 8 MiB（与 §8.2 一致）；每个环境至多 64 个声明的路由，外加构建器追加的 `default`（第 65 个恰为 `{id: "default", paths: ["/**"]}` 时接受）；工件请求的总截止时间为 `timeout_ms + 1 s/MiB`（按声明大小）；`mg_config_age_seconds` 在被抓取时计算（`now − last_fetch_ok`），轮询循环停住时也会继续增长 | §9.10、§8.2 |
+| I-17 | 阶段 1 集成，rDNS 在途标记（§7.3）：WP-E1b 构造 `CacheConfig` 时取 `inflight_ttl_ms = 2 × dns_timeout_ms + 3000`，严格大于任务的整体截止时间（`2 × dns_timeout_ms + 1 s`）加排队时间；否则标记过期后迟到的 `complete` / `abandon` 会清掉新任务的标记。截止时间到达按 `complete(job, DnsError, now)` 报告，drop guard 只在取消或 panic 时 `abandon`。hickory 的错误文本含查询名（PTR 名即客户端 IP），`DnsError::Server` 只带固定文本（如响应码） | §7.3、§9.6 |
+| I-18 | 阶段 1 集成，`mg-challenge` 的实现细化（Edge 依此接线）：`Sealer::open` 拒绝非规范的信封编码（`OpenError::Envelope`）；`SealError` 另有 `Shape`：`seal` 拒绝 `open` 会拒绝的一切（含缺 `bind.ipp`）；`seal` 对所有类型要求 `exp − iat ≤ MAX_C_LIFETIME_MS`；`verify` 要求 `sub` 与 `jti` 是 16 字节的 base64url（Edge 可据此直接把 `sub` 写入 `MG-Session` 与限速键）；`rb` 在解析 claims 时校验（未知值 → `invalid`，不像 `lvl` 那样排在过期检查之后）；`seal` / `open` 的 host 与 `pow_verify` 的 C 由调用方给出：host 先按 §9.4 规范化，C 为提交中收到的原文 | §6.2、§6.5、§6.7 |
+| I-19 | 阶段 1 集成：Phase 2 的挑战类型 `attestation`、`step_up` 与 `tarpit` 动作由 `mgctl policy check` 作为策略语言照常接受，由 `mgctl bundle build`（WP-G2）与 Edge 加载（`rule_from_proto`）拒绝，不会出现 Edge 无法加载的配置包。§2.1 的两处跨 WP 耦合已闭合：一致性套件与 golden 配置包的测试不再有 SKIPPED 分支（夹具缺失即失败）；另加两项跨语言检查：`edge-core/tests/bundle_golden.rs`（Go 签名的 golden 配置包经 `verify_bundle`，每条规则经 `rule_from_proto`）与 `intel/tests/artifacts.rs` 的 `go_crawler_sync_output_accepted`（`mgctl crawler sync` 的 golden 输出经 `mg-intel` 校验） | §2.1、§16 |
 
 ## 0. 范围、决定与已落地文件
 
@@ -93,7 +105,7 @@
 | D-24 | `ip` 实体：IPv4 为地址本身，IPv6 为所在 /64（`Net::entity_of`）；用于 `ip` 维度限速、`ip` verdict 键、`mg:ev` 的 `ipk`。`net.ip` 仍是完整地址，`ipp` 仍是 /24、/48 | 一个 IPv6 用户至少拥有一个 /64，隐私扩展地址随时轮换；按完整地址计数等于没有限速，还会制造无界的键 | 是（02 §7、04 §6.3） |
 | D-25 | 路由按多个路径视图匹配（原始、RFC 3986、Cloudflare、完全解码去参数），每个视图也比较切换末尾 `/` 后的形式；多个路由命中时取敏感度最高者，`require_clearance` / `fail_closed` 取所有命中路由的"或"；站点可设 `case_insensitive_paths` | 路由是 `require_clearance` 与 `critical` 的安全边界；源站框架常把 `/Account/Login/`、`/account%2Flogin`、`/account/login;x` 交给同一个处理器 | 是（02 §2 路由匹配、06 §1） |
 | D-26 | 策略输入有硬上限（§9.3.1）：路径、查询串各 ≤ 8 KiB，否则 414；单个头值 ≤ 8 KiB（`Cookie`、`Authorization`、`Proxy-Authorization` 除外）、头名 ≤ 256 字节、清洗后至多 128 个不同头名，否则 431；方法 ≤ 32 字节，否则 400。monitor 与 bootstrap 下同样执行。编译器按这些上限计算每条规则的静态最坏步数 `max_steps`，超过 100,000 的规则编译失败，Edge 加载时复算 | ADR-0006 决策 8 要求超出代价上限的规则编译失败；原稿在运行时超限后判"不命中"，攻击者加长路径即可让阻断规则失效 | 是（ADR-0006 勘误、06 §2） |
-| D-27 | Phase 1 挑战升级：`invisible` 的难度固定为 `pow_bits.low`，`pow` 取风险段难度；提交失败后附的新 C 一律为 `pow`，风险段升一级（`min(risk_band + 1, high)`；`attempt_no` 保持 0，它只用于交互式）；重试次数由失败配额（D-28）约束。凭证的人类证据不分级别（§5.7） | 04 §4.1 的"无感 / PoW 失败升级为交互式"在 Phase 1 没有交互式可升；否则机器人可以在最低难度上无限重试；原稿里两种级别难度相同而证据权重不同，互相矛盾 | 是（04 §3.1、§4.2） |
+| D-27 | Phase 1 挑战升级：`invisible` 的难度固定为 `pow_bits.low`，`pow` 取风险段难度；提交失败后附的新 C 一律为 `pow`，风险段升一级（`RiskBand::after_failure`：`max(risk_band, min(risk_band + 1, high))`，I-10；`attempt_no` 保持 0，它只用于交互式）；重试次数由失败配额（D-28）约束。凭证的人类证据不分级别（§5.7） | 04 §4.1 的"无感 / PoW 失败升级为交互式"在 Phase 1 没有交互式可升；否则机器人可以在最低难度上无限重试；原稿里两种级别难度相同而证据权重不同，互相矛盾 | 是（04 §3.1、§4.2） |
 | D-28 | 失败配额分两级：`mg.c.fail` 按 `ip` 实体（`max_failures`），`mg.c.fail.prefix` 按 `ipp`（4 × `max_failures`）；`ic.c_expired`、`ic.replay_unavailable`、`ic.no_client_ip`、`ic.issue_quota`、`ic.rate_limited`、`ic.too_early` 不计为失败 | 只按 /24 计时，同一 CGNAT / 移动网段中的一个客户端能让整个前缀无法通过挑战；Phase 1 挑战前没有会话，04 §4.1 的"按会话"由 `ip` 实体代替 | 是（04 §4.1） |
 | D-29 | 凭证 claims 增加 `sst`（会话开始时间，Unix 秒）；`sub` 只从通过站点 / 环境校验、没有硬绑定失败且 `now − sst ≤ session_max_s` 的凭证沿用（可以已过期）；凭证必须带 `bind.ipp`；未知或已退役 kid 的凭证按 `expired`（ABSENT）处理；只用 pasetors 的底层 `LocalToken` 接口，`iat` / `exp` 保持 Unix 秒 | 原规则允许把别的浏览器的会话接到新客户端上，且每次重签都重置 `iat`，会话可以无限续期 | 是（04 §5、ADR-0005） |
 | D-30 | `seal.root.json` 含 1–2 个根密钥：`roots[0]` 封装，全部用于打开（按顺序试 AEAD）；轮换分三步（§17） | 多台 Edge 逐台更换根密钥时，cloudflared 按连接选择副本，另一台签发的 C 会打不开 | 是（ADR-0005、06 §8） |
@@ -273,7 +285,7 @@ stage 3 (parallel):   L1 (lab/, scripts/lab-e2e.sh)   J1 (edge/src/tls/, ADR-000
 4. 不出现 `todo!()`、`unimplemented!()`、`panic!` 用于可恢复错误；Rust 公共类型实现 `Debug`，但不打印密钥、nonce、凭证原文。
 5. 日志（任何级别）与 `Debug` 输出不含客户端 IP 明文、Cookie、C、凭证、密钥、上游密钥头值与 `x-mg-cf-tls-random`（D-31）。
 6. 生产路径上的随机数（C 的 `xnonce` 与 `nonce`、凭证的 `sub` 与 `jti`、`request_id`、CSP nonce、轮询抖动）来自 OS CSPRNG（`getrandom`）；确定性 RNG 只出现在 `#[cfg(test)]` 与 `testkit` 中。
-7. 不在任何出站请求中放入所有者的个人信息；出站 User-Agent 为 `mgctl/<version>` 或 `mg-edge/<version>`（开发工具抓取资料时用 `morphgate-dev-tooling`）。
+7. 不在任何出站请求中放入所有者的个人信息；出站 User-Agent 一律为 `morphgate-dev-tooling`（I-7、I-15）。
 8. 该 WP 改动过的 README / 注释与行为一致；不改他人拥有的文件（§2.1 的修复规则）。
 
 ## 3. 数据模型改动
@@ -553,7 +565,7 @@ cel-go 环境保持 `CrossTypeNumericComparisons(false)`（默认值），因此
 | `index_map m k` | `m` 为 Map、`k` 为 String；键不存在 → `Error(no_such_key)` |
 | `size x` | String → Unicode 标量值个数；List / Map → 元素个数 |
 | `string_call` | 两侧 String；`startsWith` / `endsWith` / `contains` 按 Unicode 标量序列比较 |
-| `ip_in ip l` | `ip` 为 String、`l` 为 String 列表。`ip` 不是合法 IP（不带 zone 的 IPv4 点分或 IPv6）→ `false`。**逐项校验全部条目**：条目是 IP 或 CIDR；IPv4 映射的 IPv6 CIDR（`::ffff:a.b.c.d/n`，`n ≥ 96`）规范化为 IPv4 `/n-96`；带 zone 或无法解析 → `Error(invalid_argument)`（即使前面的条目已匹配）。IPv4 映射的 IPv6 地址先还原为 IPv4 再比较 |
+| `ip_in ip l` | `ip` 为 String、`l` 为 String 列表。`ip` 不是合法 IP（不带 zone 的 IPv4 点分或 IPv6）→ `false`，不看条目（I-9）。否则**逐项校验全部条目**：条目是 IP 或 CIDR；IPv4 映射的 IPv6 CIDR（`::ffff:a.b.c.d/n`）要求 `n ≥ 96`，规范化为 IPv4 `/n-96`，`n < 96` 是非法条目；带 zone 或无法解析 → `Error(invalid_argument)`（即使前面的条目已匹配）。IPv4 映射的 IPv6 地址先还原为 IPv4 再比较 |
 | `named_list name` | 配置包中该名单的条目（String 列表）；不存在 → `Error(unknown_list)`（配置包校验后不应发生） |
 | `glob s p` | `s` 为 String；`*` 匹配不含 `/` 的任意串，连续 ≥ 2 个 `*` 视为 `**`，匹配含 `/` 的任意串，`?` 匹配一个非 `/` 字符，其他字符原样匹配；按 Unicode 标量值、区分大小写（与 `funcs.go` 的 `glob` 相同） |
 
@@ -561,7 +573,7 @@ cel-go 环境保持 `CrossTypeNumericComparisons(false)`（默认值），因此
 
 **错误种类**（wire 字符串）：`no_such_overload`、`no_such_key`、`invalid_argument`、`unknown_list`、`step_limit`。
 
-**结构上限**（Rust 加载时检查）：IR 节点数 ≤ 4096、嵌套深度 ≤ 64、字符串字面量 ≤ 4096 字节、列表字面量 ≤ 1000 项。
+**结构上限**（Rust 加载时检查，Go 编译器同样执行）：IR 节点数 ≤ 4096、嵌套深度 ≤ 50（根为第 1 层；prost 解码的递归上限决定，I-8）、字符串字面量 ≤ 4096 字节、列表字面量 ≤ 1000 项。
 
 **步数**：求值一个节点花费 `cost(node)` 步，再加上它求值过的子节点的步数。`|x|` 是子表达式结果的大小：字符串为 UTF-8 字节数，列表 / map 为元素数。
 
@@ -576,7 +588,7 @@ cel-go 环境保持 `CrossTypeNumericComparisons(false)`（默认值），因此
 | `ip_in` | `1 + \|rhs\|` |
 | `glob` | `1 + ⌊\|subject\| · len(pattern) / 16⌋`（`len` 为字节数） |
 
-**静态步数上界** `max_steps(root)`：用同一张表，把每个 `|x|` 换成上界 `S(x)`，并假定所有子节点都被求值（`and` / `or` 不按短路打折；`cond` 取 `1 + steps(c) + max(steps(t), steps(e))`）。`S`：字面量为实际大小；`field` 为 §4.1 的大小上限；`index_map(req.headers, k)` 为 8192；`index_map(rate, k)` 与标量字段为 0；`named_list` 为 10,000；`list` 为元素个数；`cond` 为两个分支的较大者；布尔与数值结果为 0。上界用 `u64` 饱和运算。
+**静态步数上界** `max_steps(root)`：用同一张表，把每个 `|x|` 换成上界 `S(x)`，并假定所有子节点都被求值（`and` / `or` 不按短路打折；`cond` 取 `1 + steps(c) + max(steps(t), steps(e))`）。`S`：字面量为实际大小；`field` 为 §4.1 的大小上限；`index_map(m, k)` 按 `m` 的值类型：string（`req.headers`，或分支都是它的 `cond`）为 8192，double（`rate`）为 0（I-9）；标量字段为 0；`named_list` 为 10,000；`list` 为元素个数；`cond` 为两个分支的较大者；布尔与数值结果为 0。上界用 `u64` 饱和运算。
 
 - WP-G1 在降级时计算 `max_steps` 并写入 `PolicyExpr.max_steps`，超过 100,000 编译失败（§5.2）。
 - WP-R1 的 `decode_program` 用同一规则复算：与 `max_steps` 不相等（`IrError::Steps`）或超过 100,000 时拒绝。一致性套件（§5.8）逐用例比较两边的值。
@@ -948,7 +960,7 @@ Phase 1 签发的 claims：`v = 1`；`kid` 与信封相同；`nonce` 16 个随�
 | 判定 | `leading_zero_bits(digest) ≥ difficulty` |
 | 取值 | 协议上 `0 ≤ difficulty ≤ 32`；配置包的 `pow_bits` 每项必须在 8–24（§8.2）；`counter < 2^53`（JS 安全整数）；Phase 1 提交恰好一个 counter |
 | 缺省难度 | `low` 14、`medium` 16、`high` 18、`very_high` 20（配置包 `challenge.pow_bits`） |
-| 难度选择（D-27） | `invisible`：`pow_bits.low`（保持"无感"：中位设备几十毫秒）；`pow`：`pow_bits[risk_band]`；提交失败后附的新 C：`type = pow`，`risk_band = min(原 risk_band + 1, high)`，难度 `pow_bits[新 risk_band]`。重试次数由失败配额约束（§9.8，D-28） |
+| 难度选择（D-27） | `invisible`：`pow_bits.low`（保持"无感"：中位设备几十毫秒）；`pow`：`pow_bits[risk_band]`；提交失败后附的新 C：`type = pow`，`risk_band = RiskBand::after_failure(原 risk_band)` = `max(原, min(原 + 1, high))`（`very_high` 保持不变，I-10），难度 `pow_bits[新 risk_band]`。重试次数由失败配额约束（§9.8，D-28） |
 
 ### 6.4 绑定哈希与返回路径
 
@@ -1298,7 +1310,7 @@ local_limiter_capacity = 200000            # in-process GCRA entries; full -> ov
 local_nonce_capacity = 200000              # in-process replay set; never evicts live nonces; full -> unavailable (§9.7)
 
 [events]
-# vl_main  = "http://10.0.0.5:9428"        # optional; absent = no VictoriaLogs sink
+# vl_main  = "http://10.0.0.5:9428"        # optional; absent = no VictoriaLogs sink; http:// only to loopback / private / 100.64.0.0/10 IP literals (I-11)
 # vl_short = "http://10.0.0.5:9429"
 # file     = "/var/lib/morphgate/events.jsonl"   # optional JSONL sink for tests / the Lab
 flush_interval_ms = 1000
@@ -1533,7 +1545,7 @@ Pingora 0.9 的 `Server::run_forever()` 在守护进程模式（`-d`，systemd �
 
 1. 协议输入上限（§9.3.1）。
 2. 记下客户端头名（`direct_tls` 的 `http.header_names` 与 `header_order`：不重复的名称，按首次出现顺序，保留原大小写）。
-3. 删除客户端的 `Connection` 头以及它列出的每个头名（逐跳头；防止客户端用 `Connection: MG-Client-IP, X-Forwarded-For` 让 Edge 写入的头在转发时被删掉）；`Keep-Alive`、`Proxy-Connection`、`TE`、`Upgrade`（非 WebSocket 升级时）同样删除。
+3. 删除客户端的 `Connection` 头以及它列出的每个头名（逐跳头；防止客户端用 `Connection: MG-Client-IP, X-Forwarded-For` 让 Edge 写入的头在转发时被删掉）；`Keep-Alive`、`Proxy-Connection`、`TE`、`Upgrade`（非 WebSocket 升级时）同样删除。列出的名字属于上游头族时本步**不删**（`upstream::hop_by_hop`），留给第 4 步解析、第 5 步剥离，否则 `Connection: CF-Worker` 能藏起外部 Worker（I-12）。
 4. 认证通过的 `cloudflare` 请求：只按下表解析**精确的连字符小写名**；下划线变体永不解析。
 5. 从请求中删除所有命中头族的头（包括认证通过时 Cloudflare 添加的），然后为源站重新写入 §9.9 规定的头。`direct_tls`（或未认证）请求只要带了任一头族，计一次 `mg_upstream_headers_stripped_total{profile}`。
 
@@ -1558,7 +1570,7 @@ Pingora 0.9 的 `Server::run_forever()` 在守护进程模式（`-d`，systemd �
 | `x-mg-cf-asn` | 十进制 1–4294967295 | `net.upstream_asn` | 告警 |
 | `x-mg-cf-vbot` | `true` / `false` | `identity.crawler.cf_vbot` | 告警 |
 | `x-mg-cf-vbot-cat` | `[A-Za-z0-9 ()/&.,_-]{1,64}` | `identity.crawler.cf_vbot_cat` | 不告警（非爬虫时本来就没有） |
-| `x-mg-cf-hdr-names` | 逗号分隔，每项为 1–64 个 HTTP token 字符（RFC 9110 `tchar`），至多 128 项 | `http.header_names`（集合语义，保留原大小写） | 告警 |
+| `x-mg-cf-hdr-names` | 逗号分隔，每项为 1–64 个 HTTP token 字符（RFC 9110 `tchar`），至多 128 项 | `http.header_names`（集合语义，保留原大小写） | 告警（客户端可控，不计入 §17 与 `cf audit` 的缺失率，I-12） |
 | `x-mg-cf-t1` | `snippet` / `worker` | 仅 `cloudflare.tier1` 且标记有效时解析下面三项 | Tier 1 全部 MISSING，不告警 |
 | `x-mg-cf-priority` | `[A-Za-z0-9=;,._-]{1,128}` | `http.priority` | MISSING |
 | `x-mg-cf-accept-encoding` | ≤ 256 字节可见 ASCII | `http.accept_encoding_orig` | MISSING |
@@ -1572,7 +1584,7 @@ Pingora 0.9 的 `Server::run_forever()` 在守护进程模式（`-d`，systemd �
 | 条件 | 响应 | `reason` |
 |---|---|---|
 | 路径（不含查询串）> 8192 字节，或查询串 > 8192 字节 | 414 | `uri_too_long` |
-| 任一头值 > 8192 字节（`cookie`、`authorization`、`proxy-authorization` 除外；Cookie 的解析只看前 16 KiB，§6.6）；同名头以 `", "` 连接后 > 8192 字节；头名 > 256 字节；清洗后（§9.3 第 5 步之后）不同头名超过 128 个 | 431 | `header_too_large` |
+| 任一头值 > 8192 字节（`cookie`、`authorization`、`proxy-authorization` 除外；Cookie 的解析只看前 16 KiB，§6.6）；同名头以 `", "` 连接后 > 8192 字节；头名 > 256 字节（I-2 的 `kind` 计为 `header_value`）；清洗后（§9.3 第 5 步之后）不同头名超过 128 个 | 431 | `header_too_large` |
 | 方法不是 1–32 个 `tchar` | 400 | `bad_method` |
 | `Host` 与 `:authority` 或绝对形式请求目标的主机不一致、缺少 Host、Host 不是合法主机名（§9.4） | 400 | `bad_host` |
 
@@ -1634,7 +1646,7 @@ Cloudflare 自身的上限（URL 约 16 KiB、请求头合计约 32 KiB）比这
 ### 9.6 身份（WP-E1b）
 
 - **凭证**：取 Cookie 候选（§6.6），`mg_challenge::verify` 验证；再以当前请求算出 `BindInputs`（`uah` 来自 `mg_core::ua::parse`；`ipp` 在 IP 已知时；`ipa` 在 ASN 已知且不为 0 时；`ctp` 在 `ctp_shadow` 且四项齐全时）做 `check_clearance_bind`。结果写入 `identity.token`（`status`、`level`、`age`、`bind`），状态映射按 §6.5（未知 kid → `expired`），计 `mg_token_verify_total{result}`（`none` / `valid` / `expired` / `invalid` / `binding_mismatch`）。
-- **爬虫**：配置包含 `crawler-registry` 工件时，用 `CrawlerVerifier::check(ua, ip, now)`。返回 `RdnsJob` 时：若该 `ip_prefix` 在最近一分钟内新建的任务已达 `rdns_jobs_per_prefix_per_min`（进程内 GCRA，§9.7 的本地表）、在途任务数已达 `rdns_concurrency`，或向 `mg-rdns` 的提交队列已满，则 `abandon(&job)` 并计 `mg_rdns_lookups_total{result="dropped"}`（§17 告警）；否则提交给 `mg-rdns`，它在任务外包一个 `2 × dns_timeout_ms + 1 s` 的整体截止时间执行 `resolve_rdns`，然后 `complete(job, outcome, now)`；任务被取消、超时或 panic 时由 drop guard 调用 `abandon`。映射：
+- **爬虫**：配置包含 `crawler-registry` 工件时，用 `CrawlerVerifier::check(ua, ip, now)`。返回 `RdnsJob` 时：若该 `ip_prefix` 在最近一分钟内新建的任务已达 `rdns_jobs_per_prefix_per_min`（进程内 GCRA，§9.7 的本地表）、在途任务数已达 `rdns_concurrency`，或向 `mg-rdns` 的提交队列已满，则 `abandon(&job)` 并计 `mg_rdns_lookups_total{result="dropped"}`（§17 告警）；否则提交给 `mg-rdns`，它在任务外包一个 `2 × dns_timeout_ms + 1 s` 的整体截止时间执行 `resolve_rdns`，然后 `complete(job, outcome, now)`（截止时间到达按 `DnsError` 报告）；任务被取消或 panic 时由 drop guard 调用 `abandon`。`CacheConfig.inflight_ttl_ms = 2 × dns_timeout_ms + 3000`，严格大于整体截止时间（I-17）。映射：
 
 | `CrawlerStatus` | `claimed` | `operator` / `purpose` | `verified` | `verification` | `method` | `outside_ranges` |
 |---|---|---|---|---|---|---|
@@ -1867,7 +1879,7 @@ every bundle_poll_seconds (±20% jitter), per site (mg-bundles background servic
   200                        -> candidate
   error / timeout            -> mg_config_fetch_failures_total{site}++, keep current
 candidate:
-  size <= 8 MiB; decode SignedBundle; key_id in [trust].owner_keys;
+  size <= 8 MiB + 1 KiB envelope (SiteBundle <= 8 MiB, I-16); decode SignedBundle; key_id in [trust].owner_keys;
   ed25519 verify("mg-bundle-v1" || 0x00 || bundle); decode SiteBundle
   schema_version == 1; site_id == site; hosts == edge.toml hosts (as sets)
   upstream.kind == profile of every edge.toml listener serving this site
@@ -1882,9 +1894,9 @@ candidate:
   reject -> mg_config_reload_total{site, result="rejected"} and a log line with the reason; keep current
 ```
 
-- `mg_config_version{site}` = 当前生效版本（bootstrap 与 lkg_invalid 为 0）；`mg_config_age_seconds{site}` = `now − last_fetch_ok`（最近一次成功拉取，含 304；从未成功过时为进程运行时长）——它衡量的是**拉取是否正常**，不是配置是否最新；`mg_config_reload_total{site, result="applied"|"rejected"|"unchanged"}`。
+- `mg_config_version{site}` = 当前生效版本（bootstrap 与 lkg_invalid 为 0）；`mg_config_age_seconds{site}` = `now − last_fetch_ok`，在被抓取时计算（最近一次成功拉取，含 304；从未成功过时为轮询循环的运行时长；I-16）——它衡量的是**拉取是否正常**，不是配置是否最新；`mg_config_reload_total{site, result="applied"|"rejected"|"unchanged"}`。
 - **新鲜度**：静态服务器陈旧或 http 链路上的中间人可以一直返回旧的配置包（或 304）而不触发 `mg_config_age_seconds` 告警。所以 `mgctl bundle publish --metrics-textfile` 写出 `mg_bundle_published_version{site}`，§17 的告警比较它与各 Edge 的 `mg_config_version{site}`（持续 10 分钟不相等即告警）；`bundle_root` 的 `http://` 只允许私网地址（§8.1）。
-- 出站请求（C2 与 C4）：`reqwest`，必须调用 `ClientBuilder::no_proxy()`（reqwest 0.13 无论特性如何都读取 `HTTP_PROXY` 等环境变量），`redirect::Policy::custom`：只跟随同源重定向、至多 3 次；User-Agent `mg-edge/<version>`；`bundle_client` 的 CA / 客户端证书用于 https；超时 `timeout_ms`。测试：设置了 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 指向一个会记录连接的本地监听器时，拉取仍直连目标且该监听器没有收到连接。
+- 出站请求（C2 与 C4）：`reqwest`，必须调用 `ClientBuilder::no_proxy()`（reqwest 0.13 无论特性如何都读取 `HTTP_PROXY` 等环境变量），`redirect::Policy::custom`：只跟随同源重定向、至多 3 次；User-Agent `morphgate-dev-tooling`（I-15）；`bundle_client` 的 CA / 客户端证书用于 https；超时 `timeout_ms`。测试：设置了 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 指向一个会记录连接的本地监听器时，拉取仍直连目标且该监听器没有收到连接。
 - 工件缓存的清理：成功切换后删除既不被当前配置包、也不被持久化的 LKG 引用的文件（二者通常相同）；pending 配置包引用的文件也保留。从不删除 LKG 引用的工件。
 
 ### 9.11 事件（WP-C4 实现，WP-E1d 接线）
@@ -1987,7 +1999,7 @@ pub trait EventSink: Send + Sync {
 | 失败配额 / 提交限速 / 签发配额 / IP 未知 | 429 + `Retry-After`，简短 HTML | 429 `{"error":"mg_rate_limited","retry_after":N,"request_id":"…"}` |
 | 重放存储不可用且 `fail_closed` | 429 + `Retry-After: 5` | 同上 |
 
-- 第 5 步及之后的失败附新 C（D-27）：`type = pow`，`route_class` 与 `ret` 同原 C，`risk_band = min(原 risk_band + 1, high)`，难度 `pow_bits[新 risk_band]`；失败计数按 §9.8 异步写入。
+- 第 5 步及之后的失败附新 C（D-27）：`type = pow`，`route_class` 与 `ret` 同原 C，`risk_band = RiskBand::after_failure(原 risk_band)`（I-10），难度 `pow_bits[新 risk_band]`；失败计数按 §9.8 异步写入。
 - 每次提交都产生一条 `kind=feedback` 事件（§13.3）与 `mg_challenge_total{type, provider="none", result="solved"|"failed"|"expired"}`（`expired` 指 `ic.c_expired`）；带 `env` 时另写一条 `kind=telemetry`（§13.5）。
 
 ### 10.4 `/__mg/s/<file>`
@@ -2104,7 +2116,7 @@ mgctl 写出的所有 JSON 文件（工件、密钥文件、`.age` 内的明文�
  "ipv4_cidrs": ["173.245.48.0/20", "103.21.244.0/22"], "ipv6_cidrs": ["2400:cb00::/32"]}
 ```
 
-校验（写入方与读取方相同）：`v == 1`、`kind`；IPv4 5–64 条、IPv6 2–32 条；每条是规范网络地址（主机位为 0）；IPv4 前缀长度 8–32、IPv6 16–128；不含私有、回环、链路本地、组播、未指定与文档地址段。样例：`testdata/phase1/artifacts/cloudflare-ips.json` 与 `invalid/cloudflare-ips.*.json`。
+校验（写入方与读取方相同）：`v == 1`、`kind`；IPv4 5–64 条、IPv6 2–32 条；每条是规范网络地址（主机位为 0）；IPv4 前缀长度 8–32、IPv6 16–128；不与 I-13 表中的特殊地址段相交（文档段在此一律拒绝）。样例：`testdata/phase1/artifacts/cloudflare-ips.json` 与 `invalid/cloudflare-ips.*.json`。
 
 ### 12.3 爬虫注册表
 
@@ -2148,7 +2160,7 @@ operators:
 
 - `v == 1`、`kind == "mg-crawler-registry"`；运营方 id 唯一；`purpose`、`verify.mode` 取表内值；`ua_tokens` 1–8 个、每个 3–64 字符。
 - `mode` 含 rDNS 时 `rdns_suffixes` 非空，每项小写、1–253 字节；`ip_ranges` 模式的 `cidrs` 非空；每个运营方至多 20,000 条 CIDR。
-- **每条 CIDR**：规范网络地址（主机位为 0，不接受单个地址以外的非规范写法）；IPv4 前缀长度 ≥ 16、IPv6 ≥ 32（更宽的段一律拒绝，例如 `0.0.0.0/0`、`66.0.0.0/8`、`2600::/16`）；不与私有（RFC 1918、ULA）、回环、链路本地、组播、未指定、CGNAT（100.64.0.0/10）、保留段（240.0.0.0/4 等）相交；文档段（192.0.2.0/24、198.51.100.0/24、203.0.113.0/24、2001:db8::/32）只在 `test: true` 时允许。
+- **每条 CIDR**：规范网络地址（主机位为 0；写入方不写出单个地址以外的非规范写法，读取方接受同一网络的其他文本写法，I-13）；IPv4 前缀长度 ≥ 16、IPv6 ≥ 32（更宽的段一律拒绝，例如 `0.0.0.0/0`、`66.0.0.0/8`、`2600::/16`）；不与私有（RFC 1918、ULA）、回环、链路本地、组播、未指定、CGNAT（100.64.0.0/10）、保留段（240.0.0.0/4 等）相交（完整的表见 I-13）；文档段（192.0.2.0/24、198.51.100.0/24、203.0.113.0/24、2001:db8::/32、3fff::/20）只在 `test: true` 时允许。
 - `sources[].sha256` 为 64 位小写十六进制；`fetched_at` 为 RFC 3339。
 
 运营方按文件顺序匹配 UA。样例：`testdata/phase1/artifacts/crawler-registry*.json` 与 `invalid/crawler-registry.*.json`。
@@ -2200,7 +2212,7 @@ Edge 读取的是下面的明文 JSON（systemd credential 或 0600 文件）；
 {"v": 1, "kind": "mg-upstream-keys", "values": ["<43-char b64url>", "<previous value>"], "created_at": "2026-09-27T10:00:00Z"}
 ```
 
-`token.keys.json` 新的在前，1–3 个，kid 唯一；`kid` 形如 `<site>-t-<YYYYMMDD>`（同日重复时加 `-2` 等后缀）。`seal.root.json` 的 `roots` 1–2 个（D-30），`roots[0]` 封装；`root_id` 形如 `<site>-r-<YYYYMMDD>`。`mg-upstream-keys` 1–2 个值，`values[0]` 写入 Cloudflare Tier 0 规则的静态值。所有字段必填（`created_at` 为 RFC 3339），未知字段拒绝。有效与无效样例：`testdata/phase1/keys/`。
+`token.keys.json` 新的在前，1–3 个，kid 唯一；`kid` **必须**为 `<site>-t-<YYYYMMDD>`（同日重复时加 `-2` 等后缀，I-14）。`seal.root.json` 的 `roots` 1–2 个（D-30），`roots[0]` 封装；`root_id` **必须**为 `<site>-r-<YYYYMMDD>`（同样的后缀规则），且唯一。`mg-upstream-keys` 1–2 个值，`values[0]` 写入 Cloudflare Tier 0 规则的静态值。所有字段必填（`created_at` 为 RFC 3339），未知字段拒绝。有效与无效样例：`testdata/phase1/keys/`。
 
 ### 12.8 审计日志
 
@@ -2225,7 +2237,7 @@ JSON Lines，每行一条（06 §6 的记录格式，Phase 1 取值）：
 ```
 POST {vl_main | vl_short}/insert/jsonline?_stream_fields=kind,site&_time_field=ts&_msg_field=msg
 Content-Type: application/stream+json
-User-Agent: mg-edge/<version>
+User-Agent: morphgate-dev-tooling
 
 <json line>\n<json line>\n…
 ```
@@ -2355,7 +2367,7 @@ mgctl 用 node_exporter textfile 格式输出（`--metrics-textfile <path>`，�
 - 写文件一律先写临时文件再 `rename`；不覆盖已有密钥文件。
 - 环境变量：`MGCTL_PASSPHRASE_FILE`、`MGCTL_AGE_WORK_FACTOR`（< 18 需要 `--insecure-test-key`，§12.6）、`MGCTL_AUDIT_LOG`、`CLOUDFLARE_API_TOKEN`、`MGCTL_CF_API_BASE`（缺省 `https://api.cloudflare.com/client/v4`，测试指向 httptest）。
 - 写入类命令都接受 `--audit-log`；成功写入后调用一次 `env.Audit`；`--confirm` 缺省时若 stdin 是 TTY 则提示输入站点 id，否则报用法错误。
-- 出站请求 User-Agent：`mgctl/<version>`；不读 `HTTP_PROXY` 之外的任何身份信息；请求中不带所有者的个人信息。
+- 出站请求 User-Agent：`morphgate-dev-tooling`（I-15）；不读 `HTTP_PROXY` 之外的任何身份信息；请求中不带所有者的个人信息。
 
 ### 14.2 Go API（WP-G2）
 
@@ -2440,7 +2452,7 @@ func Verify(path string) (count int, lastHash string, err error) // err names th
 | 15 | `rocket_loader` | warning | `GET /zones/{z}/settings/rocket_loader`；`--sdk-dir` 的模板 | `off`，或模板 SDK 标签带 `data-cfasync="false"` |
 | 16 | `ai_bot_policy` | warning | `GET /zones/{z}/bot_management` 的 AI bot 相关字段 | 模式 A：全部 allow（字段缺失时 manual） |
 | 17 | `precursor` | warning | 读取接口需确认 | 总是 manual（除非 `--ack`） |
-| 18 | `runtime_metrics` | error / warning | `--vm-url` 的 `/api/v1/query`（`increase(…[24h])`） | `mg_cf_connecting_ip_missing_total`、`mg_upstream_auth_failures_total{reason="bad_secret_header"}`、`mg_cf_foreign_worker_total` 增量为 0（error）；`mg_upstream_signal_missing_total` 缺失率 < 1%（warning）；无 `--vm-url` 时 skip |
+| 18 | `runtime_metrics` | error / warning | `--vm-url` 的 `/api/v1/query`（`increase(…[24h])`） | `mg_cf_connecting_ip_missing_total`、`mg_upstream_auth_failures_total{reason="bad_secret_header"}`、`mg_cf_foreign_worker_total` 增量为 0（error）；`mg_upstream_signal_missing_total` 缺失率 < 1%（不含 `hdr-names`，I-12；warning）；无 `--vm-url` 时 skip |
 | 19 | `ip_snapshot_age` | warning | `--cf-ips` 的 `.state.json` | `last_success` 在 48 h 内；无参数时 skip |
 | 20 | `optional_rules` | info | 限速入口规则集 | 只报告 `/__mg/` 洪泛限速规则是否存在 |
 | 21 | `always_use_https` | error | `GET /zones/{z}/settings/always_use_https` | `on`（`__Host-` 凭证 Cookie 只在 https 下保存，D-32）；另报告 HSTS（`security_header`）是否开启（info） |
@@ -2722,7 +2734,7 @@ impl FaultProxy {
    - **凭证密钥**：`site keys rotate-token` → 在每台 Edge 上更新 `token.keys` credential 并 `systemctl reload mg-edge`（新 kid 必须先出现在所有 Edge 的密钥文件里）→ 站点 YAML 把新 kid 设为 `active_kid`、旧 kid 放进 `verify_kids` → `bundle publish`（否则配置包因 `token_key_ids` 不在密钥文件中而被拒）→ 至少一个凭证有效期之后，从 `verify_kids` 删除旧 kid 并发布；再过一个周期可从密钥文件删除。删除后仍带旧 kid 的凭证按 `expired` 处理（不加风险，重新挑战）。
    - **封装根密钥**（D-30）：`rotate-seal --step add`（新根在第二位）→ 部署到所有 Edge 并 reload；`--step promote`（新根封装）→ 部署并 reload；至少 125 s 后 `--step retire` → 部署并 reload。任一时刻所有 Edge 都能打开彼此签发的 C。
    - **所有者签名密钥**：新 `.pub` 先加入每台 Edge 的 `[trust] owner_keys` 并 reload → 用新密钥签发并发布新版本 → 所有 Edge 的 `mg_config_version` 都更新后，才从 `[trust]` 删除旧 `.pub`（否则现有 LKG 无法验证，站点进入 `lkg_invalid` 并 503；`--check-config` 会先报出来）。
-6. **monitor 周**：站点 YAML `monitor_only: true` 连续运行 ≥ 7 天；每日看 vmui：`mg_edge_added_latency_seconds` p99 < 5 ms、`mg_cf_connecting_ip_missing_total`、`bad_secret_header` 与 `mg_cf_foreign_worker_total` 为 0、`mg_upstream_signal_missing_total` 缺失率、`mg_config_age_seconds`、`mg_event_dropped_total`、`mg_protocol_rejected_total`；在 VictoriaLogs 中按路由统计"本应"的挑战 / 阻断比例，校准 θ_c、z0 与权重（改站点 YAML 发新版本）。
+6. **monitor 周**：站点 YAML `monitor_only: true` 连续运行 ≥ 7 天；每日看 vmui：`mg_edge_added_latency_seconds` p99 < 5 ms、`mg_cf_connecting_ip_missing_total`、`bad_secret_header` 与 `mg_cf_foreign_worker_total` 为 0、`mg_upstream_signal_missing_total` 缺失率（`hdr-names` 除外，I-12）、`mg_config_age_seconds`、`mg_event_dropped_total`、`mg_protocol_rejected_total`；在 VictoriaLogs 中按路由统计"本应"的挑战 / 阻断比例，校准 θ_c、z0 与权重（改站点 YAML 发新版本）。
 7. **真人浏览回归**：主流浏览器（含移动端）手工浏览关键路径；把一个测试路由临时设为 `require_clearance` 并在 enforce 下确认挑战页能自动通过、跳回原页面、Cookie 生效；自有 E2E（若有）通过。
 8. **收尾**：`mgctl cf audit --site-config … --vm-url … --cf-ips …` 全绿（`manual` 项逐一 `--ack`）；`mgctl audit verify` 通过。
 

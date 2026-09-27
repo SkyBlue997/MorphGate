@@ -119,7 +119,7 @@ message Identity {
     // not checked. ctp is shadow only (recorded, never enforced).
     message Bind {
       string uah = 1;
-      string ipp = 2;
+      string ipp = 2;               // match | soft_mismatch (prefix changed within the ASN) | mismatch
       string jkt = 3;
       string ctp = 4;
       string tfp = 5;
@@ -153,6 +153,9 @@ message Identity {
     bool verified = 4;            // verified by MorphGate (signature, official IP ranges, rDNS)
     optional bool cf_vbot = 5;    // x-mg-cf-vbot; unset when not forwarded (MISSING)
     string cf_vbot_cat = 6;       // x-mg-cf-vbot-cat
+    string verification = 7;      // none | pending | verified | failed | unverifiable
+    string method = 8;            // ip_range | rdns | "" (how the verified / failed result was reached)
+    bool outside_ranges = 9;      // pending only: the operator publishes ranges and the IP is not in them (D-18)
   }
 
   Token token = 1;
@@ -204,6 +207,16 @@ message Decision {
   uint32 retry_after_s = 5;
   string rule_id = 6;
   bool dry_run = 7;
+  repeated string tags = 8;   // labels added by TAG rules, forwarded as MG-Tags
+}
+
+// One policy rule (or rate limiter) that matched, or could not be evaluated, on this request.
+message RuleHit {
+  string rule_id = 1;         // CompiledRule.id, or "ratelimit.<limiter id>"
+  string outcome = 2;         // matched | missing_input | eval_error
+  string mode = 3;            // enforce | dry_run
+  Action action = 4;          // the rule's (would-be) action
+  repeated string fields = 5; // missing_input: MISSING field paths read; eval_error: [error kind]
 }
 
 // One JSON line in vl-main (kind = decision).
@@ -217,6 +230,7 @@ message DecisionEvent {
   string edge_id = 7;
   uint64 bundle_version = 8;  // SiteBundle.version in effect
   bool monitor_only = 9;      // global monitor switch was on
+  repeated RuleHit hits = 10; // at most 16, in evaluation order
 }
 
 // kind = feedback, emitted by POST /__mg/c.

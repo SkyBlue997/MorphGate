@@ -1,0 +1,42 @@
+# Crawler registry source used by the internal/intelsync tests. The tests
+# serve every URL below from an in-process TLS server; nothing is fetched from
+# the network.
+version: 1
+operators:
+  - id: googlebot
+    name: Googlebot
+    purpose: search
+    ua_tokens: [Googlebot]
+    verify:
+      mode: ip_ranges_or_rdns
+      rdns_suffixes: [.googlebot.com, .google.com]
+      ip_ranges:
+        - url: https://developers.google.com/static/crawling/ipranges/common-crawlers.json
+          format: prefixes_json
+  - id: gptbot
+    name: GPTBot
+    purpose: ai_training
+    ua_tokens: [GPTBot]
+    verify:
+      mode: ip_ranges
+      ip_ranges:
+        - url: https://openai.com/gptbot.json
+          format: prefixes_json
+  - id: archivebot
+    name: Example archive crawler
+    purpose: archive
+    ua_tokens: [archive.org_bot]
+    verify:
+      mode: ip_ranges
+      ip_ranges:
+        - url: https://ranges.example.net/archivebot.txt
+          format: cidr_text
+        - url: https://ranges.example.net/archivebot-extra.txt
+          format: cidr_text
+  - id: rdnsbot
+    name: rDNS-only crawler
+    purpose: other
+    ua_tokens: [rdnsbot]
+    verify:
+      mode: rdns
+      rdns_suffixes: [.crawl.example.net]

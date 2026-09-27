@@ -1,0 +1,9 @@
+policies:
+  - id: test-env-default-deny
+    phase: identity
+    locked: true
+    expr: >
+      route.env in ["staging", "test", "dev"]
+      && risk.class != "AUTHORIZED_AGENT"
+      && (!has(net.ip) || !ip_in(net.ip, list("owner_cidrs")))
+    action: block

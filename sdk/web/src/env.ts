@@ -107,8 +107,40 @@ function bool(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+/**
+ * True when `value` contains an unpaired UTF-16 surrogate (no UTF-8 encoding).
+ * A loop rather than a lookbehind regex: lookbehind is a syntax error in
+ * Safari before 16.4 and would stop the whole bundle from parsing.
+ */
+function hasLoneSurrogate(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0xd800 || code > 0xdfff) continue;
+    if (code >= 0xdc00) return true; // trailing surrogate without a leading one
+    const next = value.charCodeAt(i + 1); // NaN past the end
+    if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+    i++; // skip the pair's trailing half
+  }
+  return false;
+}
+
+/**
+ * At most `max` UTF-16 code units of a string, never ending inside a surrogate
+ * pair; `undefined` for non-strings and for strings that are not well-formed
+ * Unicode. `JSON.stringify` writes a lone surrogate as a `\udXXX` escape,
+ * which strict parsers (the Edge's serde_json) reject, failing the whole
+ * challenge submission (phase1-spec §10.3: the body is UTF-8). Such a value is
+ * dropped rather than rewritten, so a truncated `userAgent` stays a prefix of
+ * the User-Agent header (§10.3 step 8).
+ */
 function truncate(value: unknown, max: number): string | undefined {
-  return typeof value === "string" ? value.slice(0, max) : undefined;
+  if (typeof value !== "string") return undefined;
+  let out = value.slice(0, max);
+  if (out.length < value.length) {
+    const last = out.charCodeAt(out.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) out = out.slice(0, -1);
+  }
+  return hasLoneSurrogate(out) ? undefined : out;
 }
 
 /** Reads the real browser globals; property access itself is deferred to the probes. */
@@ -170,8 +202,8 @@ export function collectEnv(source: EnvSource = browserEnvSource()): EnvSummary {
       if (!Array.isArray(list)) return undefined;
       return list
         .slice(0, MAX_LANGUAGES)
-        .filter((tag): tag is string => typeof tag === "string")
-        .map((tag) => tag.slice(0, MAX_LANGUAGE_TAG_LENGTH));
+        .map((tag) => truncate(tag, MAX_LANGUAGE_TAG_LENGTH))
+        .filter((tag): tag is string => tag !== undefined);
     }),
     timeZone: probe(() => truncate(source.timeZone?.(), 64)),
     utcOffsetMin: probe(() => {

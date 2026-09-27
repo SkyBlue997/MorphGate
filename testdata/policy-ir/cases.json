@@ -1,0 +1,2939 @@
+{
+  "version": 1,
+  "lists": {
+    "owner_cidrs": ["10.0.0.0/8", "2001:db8::/32"],
+    "bad_ja4": ["t13d1516h2_8daaf6152771_02713d6af862"],
+    "bad_cf_ciphers": ["8e5b7c0d9f3a2b1c4d6e8f0a1b2c3d4e5f6a7b8c"],
+    "hosts": ["example.com", "shop.example.test"],
+    "mixed_cidrs": ["192.0.2.0/24", "not-a-cidr"],
+    "zoned": ["fe80::1%eth0"],
+    "mapped_cidrs": ["::ffff:198.51.100.0/120"],
+    "mapped_short": ["::ffff:0:0/80"],
+    "empty": []
+  },
+  "contexts": {
+    "cf_browser": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "cf_phase2": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.agent"
+      ]
+    },
+    "cf_impersonator": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/",
+          "query": "",
+          "headers": {
+            "accept": "*/*",
+            "user-agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "198.51.100.23",
+          "asn": 64511,
+          "country": "US",
+          "conn_type": "datacenter",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/1.1",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "",
+            "age": 0
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": true,
+            "operator": "google",
+            "purpose": "search",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 95,
+          "confidence": 0.9,
+          "class": "IMPERSONATOR",
+          "reasons": [
+            "identity.crawler_failed",
+            "net.datacenter"
+          ]
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "production"
+        },
+        "rate": {},
+        "labels": [
+          "declared_bot"
+        ]
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "cf_verified_crawler": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/blog/post-1",
+          "query": "",
+          "headers": {
+            "accept": "*/*",
+            "user-agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "192.0.2.10",
+          "asn": 64512,
+          "country": "US",
+          "conn_type": "datacenter",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "",
+            "age": 0
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": true,
+            "operator": "google",
+            "purpose": "search",
+            "verified": true,
+            "cf_vbot": true,
+            "cf_vbot_cat": "Search Engine Crawler"
+          }
+        },
+        "risk": {
+          "score": 5,
+          "confidence": 0.9,
+          "class": "VERIFIED_CRAWLER",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "production"
+        },
+        "rate": {},
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "cf_ai_crawler": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/blog/post-1",
+          "query": "",
+          "headers": {
+            "accept": "*/*",
+            "user-agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "192.0.2.10",
+          "asn": 64512,
+          "country": "US",
+          "conn_type": "datacenter",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "",
+            "age": 0
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": true,
+            "operator": "example-ai",
+            "purpose": "ai_training",
+            "verified": true,
+            "cf_vbot": true,
+            "cf_vbot_cat": "AI Crawler"
+          }
+        },
+        "risk": {
+          "score": 5,
+          "confidence": 0.9,
+          "class": "VERIFIED_CRAWLER",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "production"
+        },
+        "rate": {},
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "cf_scanner": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/wp-login.php",
+          "query": "",
+          "headers": {
+            "user-agent": "zgrab/0.x"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "",
+            "age": 0
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 85,
+          "confidence": 0.7,
+          "class": "SCANNER",
+          "reasons": [
+            "http.ua_library"
+          ]
+        },
+        "route": {
+          "name": "admin",
+          "sensitivity": "high",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": [
+          "delegated",
+          "scanner"
+        ]
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "cf_login_risky": {
+      "input": {
+        "req": {
+          "method": "POST",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "content-type": "application/x-www-form-urlencoded",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 60,
+          "confidence": 0.7,
+          "class": "AUTOMATION_LIKELY",
+          "reasons": [
+            "rate.utilization"
+          ]
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login_ip": 0.9,
+          "login-per-ip": 1.0
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "cf_old_tls": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "secret_header"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/1.1",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.2",
+          "cipher": "ECDHE-RSA-AES128-GCM-SHA256",
+          "ciphers_sha1": "8e5b7c0d9f3a2b1c4d6e8f0a1b2c3d4e5f6a7b8c",
+          "ext_sha1": "1f2e3d4c5b6a79880706f5e4d3c2b1a098765432",
+          "hello_len": 180
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "cf_no_edge_tls": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "",
+          "cipher": "",
+          "ciphers_sha1": "",
+          "ext_sha1": "",
+          "hello_len": 0
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent",
+        "edge_tls",
+        "http.version",
+        "identity.crawler.cf_vbot",
+        "identity.crawler.cf_vbot_cat"
+      ]
+    },
+    "cf_interactive_token": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "interactive",
+            "age": 60
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "cf_admin": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/admin/users/7",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.9",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "admin",
+          "sensitivity": "high",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "cf_admin_owner": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/admin/users/7",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "fc00::1:2",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "admin",
+          "sensitivity": "high",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "cf_post_bare": {
+      "input": {
+        "req": {
+          "method": "POST",
+          "host": "example.com",
+          "path": "/api/upload",
+          "query": "",
+          "headers": {
+            "user-agent": "curl/8.4.0"
+          },
+          "channel": "api"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "api",
+          "sensitivity": "medium",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "api_debug": {
+      "input": {
+        "req": {
+          "method": "POST",
+          "host": "shop.example.test",
+          "path": "/api/v1/upload",
+          "query": "a=1&debug=1",
+          "headers": {
+            "content-type": "multipart/form-data; boundary=x",
+            "user-agent": "okhttp/4.12.0"
+          },
+          "channel": "api"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "api",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "tor_dc": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "tor.example.net",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "192.0.2.44",
+          "asn": 64501,
+          "country": "NL",
+          "conn_type": "datacenter",
+          "tor": true
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 70,
+          "confidence": 0.8,
+          "class": "AUTOMATION_LIKELY",
+          "reasons": [
+            "net.tor",
+            "dc_asn"
+          ]
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "production"
+        },
+        "rate": {
+          "login_ip": 0.5
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "staging_outside": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "198.51.100.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 10,
+          "confidence": 0.5,
+          "class": "AUTOMATION_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "staging"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "staging_owner_v4": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "10.1.2.3",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 10,
+          "confidence": 0.5,
+          "class": "AUTOMATION_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "staging"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "staging_owner_v6": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "2001:db8:1::5",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 10,
+          "confidence": 0.5,
+          "class": "AUTOMATION_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "staging"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "staging_owner_mapped": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "::ffff:10.9.8.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 10,
+          "confidence": 0.5,
+          "class": "AUTOMATION_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "staging"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "staging_agent": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "198.51.100.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 10,
+          "confidence": 0.5,
+          "class": "AUTHORIZED_AGENT",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "staging"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "staging_no_ip": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "",
+          "asn": 0,
+          "country": "",
+          "conn_type": "",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 10,
+          "confidence": 0.5,
+          "class": "AUTOMATION_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "home",
+          "sensitivity": "low",
+          "env": "staging"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent",
+        "net.ip",
+        "net.asn",
+        "net.country",
+        "net.conn_type"
+      ]
+    },
+    "dt_h1": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "direct_tls",
+          "authenticated": true,
+          "auth_method": "none"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": "TLSv1.3"
+        },
+        "http": {
+          "version": "HTTP/1.1",
+          "header_order": [
+            "Host",
+            "User-Agent",
+            "Accept",
+            "Accept-Language"
+          ]
+        },
+        "edge_tls": {
+          "version": "",
+          "cipher": "",
+          "ciphers_sha1": "",
+          "ext_sha1": "",
+          "hello_len": 0
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "edge_tls",
+        "identity.crawler.cf_vbot",
+        "identity.crawler.cf_vbot_cat",
+        "tls.ja4",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "dt_h2": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "direct_tls",
+          "authenticated": true,
+          "auth_method": "none"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": "TLSv1.3"
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "",
+          "cipher": "",
+          "ciphers_sha1": "",
+          "ext_sha1": "",
+          "hello_len": 0
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "edge_tls",
+        "identity.crawler.cf_vbot",
+        "identity.crawler.cf_vbot_cat",
+        "tls.ja4",
+        "identity.proof",
+        "identity.agent",
+        "http.header_order"
+      ]
+    },
+    "dt_ja4_spike": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "direct_tls",
+          "authenticated": true,
+          "auth_method": "none"
+        },
+        "tls": {
+          "ja4": {
+            "value": "t13d1516h2_8daaf6152771_02713d6af862",
+            "source": "self",
+            "authenticated": true
+          },
+          "version": "TLSv1.3"
+        },
+        "http": {
+          "version": "HTTP/1.1",
+          "header_order": [
+            "Host",
+            "User-Agent",
+            "Accept",
+            "Accept-Language"
+          ]
+        },
+        "edge_tls": {
+          "version": "",
+          "cipher": "",
+          "ciphers_sha1": "",
+          "ext_sha1": "",
+          "hello_len": 0
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "edge_tls",
+        "identity.crawler.cf_vbot",
+        "identity.crawler.cf_vbot_cat",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "dt_ja4_other": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "direct_tls",
+          "authenticated": true,
+          "auth_method": "none"
+        },
+        "tls": {
+          "ja4": {
+            "value": "t12d1312h1_c866b44c5a26_b0da82dd1658",
+            "source": "self",
+            "authenticated": true
+          },
+          "version": "TLSv1.3"
+        },
+        "http": {
+          "version": "HTTP/1.1",
+          "header_order": [
+            "Host",
+            "User-Agent",
+            "Accept",
+            "Accept-Language"
+          ]
+        },
+        "edge_tls": {
+          "version": "",
+          "cipher": "",
+          "ciphers_sha1": "",
+          "ext_sha1": "",
+          "hello_len": 0
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "edge_tls",
+        "identity.crawler.cf_vbot",
+        "identity.crawler.cf_vbot_cat",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "dt_verified_crawler": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "direct_tls",
+          "authenticated": true,
+          "auth_method": "none"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": "TLSv1.3"
+        },
+        "http": {
+          "version": "HTTP/1.1",
+          "header_order": [
+            "Host",
+            "User-Agent",
+            "Accept",
+            "Accept-Language"
+          ]
+        },
+        "edge_tls": {
+          "version": "",
+          "cipher": "",
+          "ciphers_sha1": "",
+          "ext_sha1": "",
+          "hello_len": 0
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": true,
+            "operator": "google",
+            "purpose": "search",
+            "verified": true,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "edge_tls",
+        "identity.crawler.cf_vbot",
+        "identity.crawler.cf_vbot_cat",
+        "tls.ja4",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "phase3_agent": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "interactive",
+            "age": 600
+          },
+          "proof": {
+            "valid": true
+          },
+          "agent": {
+            "id": "agent-1",
+            "grant_id": "grant-9"
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order"
+      ]
+    },
+    "only_cf_vbot_missing": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "identity.crawler.cf_vbot"
+      ]
+    },
+    "unicode": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/日本/語/ページ",
+          "query": "q=Zoë",
+          "headers": {
+            "accept": "text/html",
+            "x-name": "Zoë 🙂",
+            "x-key": "x-name",
+            "x-ip": "fe80::1%eth0"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": []
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": [
+          "überprüft"
+        ]
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.proof",
+        "identity.agent"
+      ]
+    },
+    "zero": {
+      "input": {},
+      "missing": []
+    }
+  },
+  "cases": [
+    {"name": "docs06.test-env-default-deny.match", "expr": "route.env in [\"staging\", \"test\", \"dev\"] && risk.class != \"AUTHORIZED_AGENT\" && (!has(net.ip) || !ip_in(net.ip, list(\"owner_cidrs\")))", "context": "staging_outside", "expect": "true"},
+    {"name": "docs06.test-env-default-deny.owner-v4", "expr": "route.env in [\"staging\", \"test\", \"dev\"] && risk.class != \"AUTHORIZED_AGENT\" && (!has(net.ip) || !ip_in(net.ip, list(\"owner_cidrs\")))", "context": "staging_owner_v4", "expect": "false"},
+    {"name": "docs06.test-env-default-deny.owner-v6", "expr": "route.env in [\"staging\", \"test\", \"dev\"] && risk.class != \"AUTHORIZED_AGENT\" && (!has(net.ip) || !ip_in(net.ip, list(\"owner_cidrs\")))", "context": "staging_owner_v6", "expect": "false"},
+    {"name": "docs06.test-env-default-deny.owner-mapped-v4", "expr": "route.env in [\"staging\", \"test\", \"dev\"] && risk.class != \"AUTHORIZED_AGENT\" && (!has(net.ip) || !ip_in(net.ip, list(\"owner_cidrs\")))", "context": "staging_owner_mapped", "expect": "false"},
+    {"name": "docs06.test-env-default-deny.authorized-agent", "expr": "route.env in [\"staging\", \"test\", \"dev\"] && risk.class != \"AUTHORIZED_AGENT\" && (!has(net.ip) || !ip_in(net.ip, list(\"owner_cidrs\")))", "context": "staging_agent", "expect": "false"},
+    {"name": "docs06.test-env-default-deny.production", "expr": "route.env in [\"staging\", \"test\", \"dev\"] && risk.class != \"AUTHORIZED_AGENT\" && (!has(net.ip) || !ip_in(net.ip, list(\"owner_cidrs\")))", "context": "cf_browser", "expect": "false"},
+    {"name": "docs06.test-env-default-deny.no-client-ip", "expr": "route.env in [\"staging\", \"test\", \"dev\"] && risk.class != \"AUTHORIZED_AGENT\" && (!has(net.ip) || !ip_in(net.ip, list(\"owner_cidrs\")))", "context": "staging_no_ip", "expect": "true"},
+    {"name": "docs06.block-impersonators.match", "expr": "risk.class == \"IMPERSONATOR\"", "context": "cf_impersonator", "expect": "true"},
+    {"name": "docs06.block-impersonators.browser", "expr": "risk.class == \"IMPERSONATOR\"", "context": "cf_browser", "expect": "false"},
+    {"name": "docs06.deny-ai-training-crawlers.match", "expr": "identity.crawler.verified && identity.crawler.purpose == \"ai_training\"", "context": "cf_ai_crawler", "expect": "true"},
+    {"name": "docs06.deny-ai-training-crawlers.search-crawler", "expr": "identity.crawler.verified && identity.crawler.purpose == \"ai_training\"", "context": "cf_verified_crawler", "expect": "false"},
+    {"name": "docs06.deny-ai-training-crawlers.unverified", "expr": "identity.crawler.verified && identity.crawler.purpose == \"ai_training\"", "context": "cf_impersonator", "expect": "false"},
+    {"name": "docs06.scanner-block.match", "expr": "\"scanner\" in labels", "context": "cf_scanner", "expect": "true"},
+    {"name": "docs06.scanner-block.browser", "expr": "\"scanner\" in labels", "context": "cf_browser", "expect": "false"},
+    {"name": "docs06.login-require-proof.phase1-unknown", "expr": "route.name == \"login\" && !identity.proof.valid", "context": "cf_browser", "expect": "unknown"},
+    {"name": "docs06.login-require-proof.other-route", "expr": "route.name == \"login\" && !identity.proof.valid", "context": "cf_impersonator", "expect": "false"},
+    {"name": "docs06.login-require-proof.phase2-no-proof", "expr": "route.name == \"login\" && !identity.proof.valid", "context": "cf_phase2", "expect": "true"},
+    {"name": "docs06.login-require-proof.phase3-proof", "expr": "route.name == \"login\" && !identity.proof.valid", "context": "phase3_agent", "expect": "false"},
+    {"name": "docs06.login-high-risk.match", "expr": "route.name == \"login\" && risk.score >= 60", "context": "cf_login_risky", "expect": "true"},
+    {"name": "docs06.login-high-risk.low-score", "expr": "route.name == \"login\" && risk.score >= 60", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.admin-paths-owner-only.match", "expr": "glob(req.path, \"/admin/**\") && !ip_in(net.ip, [\"127.0.0.1\", \"10.0.0.0/8\", \"fc00::/7\"])", "context": "cf_admin", "expect": "true"},
+    {"name": "valid.admin-paths-owner-only.owner", "expr": "glob(req.path, \"/admin/**\") && !ip_in(net.ip, [\"127.0.0.1\", \"10.0.0.0/8\", \"fc00::/7\"])", "context": "cf_admin_owner", "expect": "false"},
+    {"name": "valid.admin-paths-owner-only.other-path", "expr": "glob(req.path, \"/admin/**\") && !ip_in(net.ip, [\"127.0.0.1\", \"10.0.0.0/8\", \"fc00::/7\"])", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.maintenance-window-tarpit.match", "expr": "req.method == \"POST\" && req.headers[\"content-type\"].startsWith(\"multipart/\")", "context": "api_debug", "expect": "true"},
+    {"name": "valid.maintenance-window-tarpit.get-absorbs-error", "expr": "req.method == \"POST\" && req.headers[\"content-type\"].startsWith(\"multipart/\")", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.maintenance-window-tarpit.form-post", "expr": "req.method == \"POST\" && req.headers[\"content-type\"].startsWith(\"multipart/\")", "context": "cf_login_risky", "expect": "false"},
+    {"name": "valid.maintenance-window-tarpit.no-content-type", "expr": "req.method == \"POST\" && req.headers[\"content-type\"].startsWith(\"multipart/\")", "context": "cf_post_bare", "expect": "error"},
+    {"name": "valid.login-rate.match", "expr": "\"login_ip\" in rate && rate[\"login_ip\"] > 0.8", "context": "cf_login_risky", "expect": "true"},
+    {"name": "valid.login-rate.no-limiter", "expr": "\"login_ip\" in rate && rate[\"login_ip\"] > 0.8", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.login-rate.below", "expr": "\"login_ip\" in rate && rate[\"login_ip\"] > 0.8", "context": "tor_dc", "expect": "false"},
+    {"name": "valid.weak-edge-tls-tag.match", "expr": "upstream.profile == \"cloudflare\" && upstream.authenticated && upstream.auth_method != \"none\" && edge_tls.version == \"TLSv1.2\" && edge_tls.hello_len < 200 && edge_tls.ext_sha1 != \"\"", "context": "cf_old_tls", "expect": "true"},
+    {"name": "valid.weak-edge-tls-tag.tls13", "expr": "upstream.profile == \"cloudflare\" && upstream.authenticated && upstream.auth_method != \"none\" && edge_tls.version == \"TLSv1.2\" && edge_tls.hello_len < 200 && edge_tls.ext_sha1 != \"\"", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.weak-edge-tls-tag.direct-tls", "expr": "upstream.profile == \"cloudflare\" && upstream.authenticated && upstream.auth_method != \"none\" && edge_tls.version == \"TLSv1.2\" && edge_tls.hello_len < 200 && edge_tls.ext_sha1 != \"\"", "context": "dt_h1", "expect": "false"},
+    {"name": "valid.weak-edge-tls-tag.headers-missing", "expr": "upstream.profile == \"cloudflare\" && upstream.authenticated && upstream.auth_method != \"none\" && edge_tls.version == \"TLSv1.2\" && edge_tls.hello_len < 200 && edge_tls.ext_sha1 != \"\"", "context": "cf_no_edge_tls", "expect": "unknown"},
+    {"name": "valid.direct-tls-ja4-log.match", "expr": "tls.ja4.source == \"self\" && tls.ja4.value.startsWith(\"t13d\") && size(http.header_order) > 0", "context": "dt_ja4_spike", "expect": "true"},
+    {"name": "valid.direct-tls-ja4-log.tls12", "expr": "tls.ja4.source == \"self\" && tls.ja4.value.startsWith(\"t13d\") && size(http.header_order) > 0", "context": "dt_ja4_other", "expect": "false"},
+    {"name": "valid.direct-tls-ja4-log.cloudflare", "expr": "tls.ja4.source == \"self\" && tls.ja4.value.startsWith(\"t13d\") && size(http.header_order) > 0", "context": "cf_browser", "expect": "unknown"},
+    {"name": "valid.direct-tls-ja4-log.phase1-direct-tls", "expr": "tls.ja4.source == \"self\" && tls.ja4.value.startsWith(\"t13d\") && size(http.header_order) > 0", "context": "dt_h1", "expect": "unknown"},
+    {"name": "valid.agents-with-grant.match", "expr": "identity.agent.id != \"\" && identity.agent.grant_id != \"\" && identity.token.level == \"interactive\" && identity.token.age < 1800", "context": "phase3_agent", "expect": "true"},
+    {"name": "valid.agents-with-grant.false-absorbs-unknown", "expr": "identity.agent.id != \"\" && identity.agent.grant_id != \"\" && identity.token.level == \"interactive\" && identity.token.age < 1800", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.agents-with-grant.phase1-unknown", "expr": "identity.agent.id != \"\" && identity.agent.grant_id != \"\" && identity.token.level == \"interactive\" && identity.token.age < 1800", "context": "cf_interactive_token", "expect": "unknown"},
+    {"name": "valid.tor-high-risk.match", "expr": "net.tor && net.asn != 0 && net.country != \"\" && net.conn_type == \"datacenter\" && risk.confidence > 0.5 && \"dc_asn\" in risk.reasons", "context": "tor_dc", "expect": "true"},
+    {"name": "valid.tor-high-risk.browser", "expr": "net.tor && net.asn != 0 && net.country != \"\" && net.conn_type == \"datacenter\" && risk.confidence > 0.5 && \"dc_asn\" in risk.reasons", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.tor-high-risk.no-client-ip", "expr": "net.tor && net.asn != 0 && net.country != \"\" && net.conn_type == \"datacenter\" && risk.confidence > 0.5 && \"dc_asn\" in risk.reasons", "context": "staging_no_ip", "expect": "false"},
+    {"name": "valid.api-channel-sensitive.match", "expr": "req.channel == \"api\" && route.sensitivity == \"critical\" && req.host.endsWith(\".example.test\") && req.query.contains(\"debug=\")", "context": "api_debug", "expect": "true"},
+    {"name": "valid.api-channel-sensitive.web", "expr": "req.channel == \"api\" && route.sensitivity == \"critical\" && req.host.endsWith(\".example.test\") && req.query.contains(\"debug=\")", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.bad-tls-fingerprints.cloudflare-bad", "expr": "has(tls.ja4) ? tls.ja4.value in list(\"bad_ja4\") : edge_tls.ciphers_sha1 in list(\"bad_cf_ciphers\")", "context": "cf_old_tls", "expect": "true"},
+    {"name": "valid.bad-tls-fingerprints.cloudflare-ok", "expr": "has(tls.ja4) ? tls.ja4.value in list(\"bad_ja4\") : edge_tls.ciphers_sha1 in list(\"bad_cf_ciphers\")", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.bad-tls-fingerprints.ja4-bad", "expr": "has(tls.ja4) ? tls.ja4.value in list(\"bad_ja4\") : edge_tls.ciphers_sha1 in list(\"bad_cf_ciphers\")", "context": "dt_ja4_spike", "expect": "true"},
+    {"name": "valid.bad-tls-fingerprints.ja4-ok", "expr": "has(tls.ja4) ? tls.ja4.value in list(\"bad_ja4\") : edge_tls.ciphers_sha1 in list(\"bad_cf_ciphers\")", "context": "dt_ja4_other", "expect": "false"},
+    {"name": "valid.bad-tls-fingerprints.phase1-direct-tls", "expr": "has(tls.ja4) ? tls.ja4.value in list(\"bad_ja4\") : edge_tls.ciphers_sha1 in list(\"bad_cf_ciphers\")", "context": "dt_h1", "expect": "unknown"},
+    {"name": "valid.secret-header-only-upstream.match", "expr": "upstream.authenticated && upstream.auth_method == \"secret_header\"", "context": "cf_old_tls", "expect": "true"},
+    {"name": "valid.secret-header-only-upstream.loopback", "expr": "upstream.authenticated && upstream.auth_method == \"secret_header\"", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.verified-search-crawlers.match", "expr": "identity.crawler.verified && identity.crawler.purpose == \"search\" && identity.crawler.cf_vbot_cat == \"Search Engine Crawler\"", "context": "cf_verified_crawler", "expect": "true"},
+    {"name": "valid.verified-search-crawlers.ai-crawler", "expr": "identity.crawler.verified && identity.crawler.purpose == \"search\" && identity.crawler.cf_vbot_cat == \"Search Engine Crawler\"", "context": "cf_ai_crawler", "expect": "false"},
+    {"name": "valid.verified-search-crawlers.direct-tls-unknown", "expr": "identity.crawler.verified && identity.crawler.purpose == \"search\" && identity.crawler.cf_vbot_cat == \"Search Engine Crawler\"", "context": "dt_verified_crawler", "expect": "unknown"},
+    {"name": "valid.verified-search-crawlers.direct-tls-unverified", "expr": "identity.crawler.verified && identity.crawler.purpose == \"search\" && identity.crawler.cf_vbot_cat == \"Search Engine Crawler\"", "context": "dt_h1", "expect": "false"},
+    {"name": "valid.edge-tls-shadow-log.match", "expr": "edge_tls.ext_sha1 != \"\" && edge_tls.hello_len < 200 && http.version == \"HTTP/1.1\"", "context": "cf_old_tls", "expect": "true"},
+    {"name": "valid.edge-tls-shadow-log.browser", "expr": "edge_tls.ext_sha1 != \"\" && edge_tls.hello_len < 200 && http.version == \"HTTP/1.1\"", "context": "cf_browser", "expect": "false"},
+    {"name": "valid.edge-tls-shadow-log.headers-missing", "expr": "edge_tls.ext_sha1 != \"\" && edge_tls.hello_len < 200 && http.version == \"HTTP/1.1\"", "context": "cf_no_edge_tls", "expect": "unknown"},
+    {"name": "node.literal.true", "expr": "true", "context": "zero", "expect": "true"},
+    {"name": "node.literal.false", "expr": "false", "context": "zero", "expect": "false"},
+    {"name": "node.field.bool.true", "expr": "net.tor", "context": "tor_dc", "expect": "true"},
+    {"name": "node.field.bool.false", "expr": "net.tor", "context": "cf_browser", "expect": "false"},
+    {"name": "node.field.bool.unknown", "expr": "tls.ja4.authenticated", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.field.absent-zero-bool", "expr": "identity.crawler.claimed", "context": "zero", "expect": "false"},
+    {"name": "node.field.absent-zero-int", "expr": "net.asn == 0 && risk.score == 0 && edge_tls.hello_len == 0", "context": "zero", "expect": "true"},
+    {"name": "node.field.absent-zero-string", "expr": "req.path == \"\" && route.name == \"\" && identity.token.level == \"\"", "context": "zero", "expect": "true"},
+    {"name": "node.field.absent-zero-collections", "expr": "size(labels) == 0 && size(rate) == 0 && size(req.headers) == 0 && size(http.header_order) == 0", "context": "zero", "expect": "true"},
+    {"name": "node.field.derived-missing", "expr": "net.asn == 0", "context": "staging_no_ip", "expect": "unknown"},
+    {"name": "node.has.present", "expr": "has(net.ip)", "context": "cf_browser", "expect": "true"},
+    {"name": "node.has.absent-is-true", "expr": "has(identity.token.level) && has(net.ip) && has(tls.ja4.value)", "context": "zero", "expect": "true"},
+    {"name": "node.has.missing-exact", "expr": "has(http.header_order)", "context": "cf_browser", "expect": "false"},
+    {"name": "node.has.missing-parent", "expr": "has(tls.ja4.value)", "context": "cf_browser", "expect": "false"},
+    {"name": "node.has.missing-struct", "expr": "has(tls.ja4)", "context": "cf_browser", "expect": "false"},
+    {"name": "node.has.missing-namespace-leaf", "expr": "has(edge_tls.hello_len)", "context": "dt_h1", "expect": "false"},
+    {"name": "node.has.sibling-of-missing", "expr": "has(http.version)", "context": "cf_browser", "expect": "true"},
+    {"name": "node.has.struct-present", "expr": "has(identity.token)", "context": "cf_browser", "expect": "true"},
+    {"name": "node.has.leaf-missing", "expr": "has(identity.crawler.cf_vbot)", "context": "dt_h1", "expect": "false"},
+    {"name": "node.has.leaf-sibling-present", "expr": "has(identity.crawler.claimed)", "context": "dt_h1", "expect": "true"},
+    {"name": "node.has.not-a-path-prefix", "expr": "has(identity.crawler.cf_vbot_cat)", "context": "only_cf_vbot_missing", "expect": "true"},
+    {"name": "node.has.not-a-path-prefix-read", "expr": "identity.crawler.cf_vbot_cat == \"\"", "context": "only_cf_vbot_missing", "expect": "true"},
+    {"name": "node.has.exact-leaf-read", "expr": "identity.crawler.cf_vbot", "context": "only_cf_vbot_missing", "expect": "unknown"},
+    {"name": "node.has.never-unknown", "expr": "has(tls.version) || !has(tls.version)", "context": "cf_browser", "expect": "true"},
+    {"name": "node.list.string.true", "expr": "req.method in [\"GET\", \"HEAD\"]", "context": "cf_browser", "expect": "true"},
+    {"name": "node.list.string.false", "expr": "req.method in [\"GET\", \"HEAD\"]", "context": "api_debug", "expect": "false"},
+    {"name": "node.list.int", "expr": "net.asn in [64500, 64501]", "context": "cf_browser", "expect": "true"},
+    {"name": "node.list.double", "expr": "risk.confidence in [0.6, 0.9]", "context": "cf_browser", "expect": "true"},
+    {"name": "node.list.bool", "expr": "net.tor in [true]", "context": "cf_browser", "expect": "false"},
+    {"name": "node.list.empty", "expr": "req.method in []", "context": "cf_browser", "expect": "false"},
+    {"name": "node.list.unknown-element", "expr": "\"TLSv1.3\" in [tls.version, \"x\"]", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.list.error-element", "expr": "\"x\" in [req.headers[\"nope\"], \"y\"]", "context": "cf_browser", "expect": "error"},
+    {"name": "node.list.error-beats-unknown", "expr": "\"x\" in [tls.version, req.headers[\"nope\"]]", "context": "cf_browser", "expect": "error"},
+    {"name": "node.list.field-elements", "expr": "req.method in [req.headers[\"x-method\"], \"GET\"]", "context": "zero", "expect": "error"},
+    {"name": "node.not.true", "expr": "!net.tor", "context": "cf_browser", "expect": "true"},
+    {"name": "node.not.false", "expr": "!net.tor", "context": "tor_dc", "expect": "false"},
+    {"name": "node.not.unknown", "expr": "!tls.ja4.authenticated", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.not.error", "expr": "!(req.headers[\"nope\"] == \"x\")", "context": "cf_browser", "expect": "error"},
+    {"name": "node.not.double-negation", "expr": "!!net.tor", "context": "tor_dc", "expect": "true"},
+    {"name": "missing.and.false-absorbs", "expr": "false && tls.version == \"TLSv1.3\"", "context": "cf_browser", "expect": "false"},
+    {"name": "missing.and.unknown-then-false", "expr": "tls.version == \"TLSv1.3\" && false", "context": "cf_browser", "expect": "false"},
+    {"name": "missing.and.true-unknown", "expr": "true && tls.version == \"TLSv1.3\"", "context": "cf_browser", "expect": "unknown"},
+    {"name": "missing.and.unknown-error", "expr": "tls.version == \"x\" && req.headers[\"nope\"] == \"x\"", "context": "cf_browser", "expect": "unknown"},
+    {"name": "missing.and.error-unknown", "expr": "req.headers[\"nope\"] == \"x\" && tls.version == \"x\"", "context": "cf_browser", "expect": "unknown"},
+    {"name": "missing.and.error-false", "expr": "req.headers[\"nope\"] == \"x\" && false", "context": "cf_browser", "expect": "false"},
+    {"name": "missing.and.error-true", "expr": "req.headers[\"nope\"] == \"x\" && true", "context": "cf_browser", "expect": "error"},
+    {"name": "missing.and.two-errors", "expr": "req.headers[\"a1\"] == \"x\" && req.headers[\"b2\"] == \"y\"", "context": "cf_browser", "expect": "error"},
+    {"name": "missing.and.unknown-union", "expr": "edge_tls.hello_len > 0 && size(http.header_order) > 0", "context": "dt_h2", "expect": "unknown"},
+    {"name": "missing.and.all-true", "expr": "net.ip != \"\" && net.asn > 0 && req.host == \"example.com\"", "context": "cf_browser", "expect": "true"},
+    {"name": "missing.or.true-unknown", "expr": "true || tls.version == \"x\"", "context": "cf_browser", "expect": "true"},
+    {"name": "missing.or.unknown-then-true", "expr": "tls.version == \"x\" || true", "context": "cf_browser", "expect": "true"},
+    {"name": "missing.or.false-unknown", "expr": "false || tls.version == \"x\"", "context": "cf_browser", "expect": "unknown"},
+    {"name": "missing.or.unknown-error", "expr": "tls.version == \"x\" || req.headers[\"nope\"] == \"x\"", "context": "cf_browser", "expect": "unknown"},
+    {"name": "missing.or.error-true", "expr": "req.headers[\"nope\"] == \"x\" || true", "context": "cf_browser", "expect": "true"},
+    {"name": "missing.or.error-false", "expr": "req.headers[\"nope\"] == \"x\" || false", "context": "cf_browser", "expect": "error"},
+    {"name": "missing.or.all-false", "expr": "net.tor || req.method == \"POST\"", "context": "cf_browser", "expect": "false"},
+    {"name": "missing.not-unknown", "expr": "!(tls.version == \"TLSv1.3\")", "context": "cf_browser", "expect": "unknown"},
+    {"name": "missing.nested.and-or", "expr": "(net.tor || req.method == \"GET\") && (risk.score < 50 && route.name == \"login\")", "context": "cf_browser", "expect": "true"},
+    {"name": "missing.nested.or-of-ands-unknown", "expr": "(false && tls.version == \"x\") || (true && tls.version == \"y\")", "context": "cf_browser", "expect": "unknown"},
+    {"name": "missing.nested.or-of-ands-true", "expr": "(false && tls.version == \"x\") || (true && http.version == \"HTTP/2\")", "context": "cf_browser", "expect": "true"},
+    {"name": "node.cond.then", "expr": "net.tor ? req.method == \"GET\" : false", "context": "tor_dc", "expect": "true"},
+    {"name": "node.cond.else", "expr": "net.tor ? false : true", "context": "cf_browser", "expect": "true"},
+    {"name": "missing.cond.unknown-condition", "expr": "tls.ja4.authenticated ? true : false", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.cond.error-condition", "expr": "req.headers[\"nope\"] == \"x\" ? true : false", "context": "cf_browser", "expect": "error"},
+    {"name": "node.cond.untaken-unknown-branch", "expr": "true ? true : tls.version == \"x\"", "context": "cf_browser", "expect": "true"},
+    {"name": "node.cond.untaken-error-branch", "expr": "false ? req.headers[\"nope\"] == \"x\" : true", "context": "cf_browser", "expect": "true"},
+    {"name": "node.cond.taken-unknown-branch", "expr": "net.tor ? true : tls.version == \"x\"", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.cond.taken-error-branch", "expr": "net.tor ? true : req.headers[\"nope\"] == \"x\"", "context": "cf_browser", "expect": "error"},
+    {"name": "node.cond.has-fallback", "expr": "has(tls.version) ? tls.version == \"x\" : edge_tls.version == \"TLSv1.3\"", "context": "cf_browser", "expect": "true"},
+    {"name": "node.cond.string-value", "expr": "(net.tor ? \"tor\" : req.method) == \"GET\"", "context": "cf_browser", "expect": "true"},
+    {"name": "node.cond.list-value", "expr": "req.method in (net.tor ? [\"POST\"] : [\"GET\"])", "context": "cf_browser", "expect": "true"},
+    {"name": "node.compare.int.lt", "expr": "risk.score < 13", "context": "cf_browser", "expect": "true"},
+    {"name": "node.compare.int.le", "expr": "risk.score <= 11", "context": "cf_browser", "expect": "false"},
+    {"name": "node.compare.int.gt", "expr": "net.asn > 64499", "context": "cf_browser", "expect": "true"},
+    {"name": "node.compare.int.ge", "expr": "net.asn >= 64501", "context": "cf_browser", "expect": "false"},
+    {"name": "node.compare.int.ne", "expr": "risk.score != 12", "context": "cf_browser", "expect": "false"},
+    {"name": "node.compare.int.min-literal", "expr": "net.asn > -9223372036854775808", "context": "cf_browser", "expect": "true"},
+    {"name": "node.compare.double.gt", "expr": "risk.confidence > 0.59", "context": "cf_browser", "expect": "true"},
+    {"name": "node.compare.double.eq", "expr": "risk.confidence == 0.6", "context": "cf_browser", "expect": "true"},
+    {"name": "node.compare.double.le", "expr": "rate[\"login-per-ip\"] <= 0.1", "context": "cf_browser", "expect": "false"},
+    {"name": "node.compare.double.negative-zero", "expr": "-0.0 == 0.0", "context": "zero", "expect": "true"},
+    {"name": "node.compare.string.lt", "expr": "req.method < \"HEAD\"", "context": "cf_browser", "expect": "true"},
+    {"name": "node.compare.string.ge", "expr": "req.host >= \"f\"", "context": "cf_browser", "expect": "false"},
+    {"name": "node.compare.string.prefix-order", "expr": "req.path > \"/日本\"", "context": "unicode", "expect": "true"},
+    {"name": "node.compare.string.scalar-order", "expr": "\"\\uff61\" < \"\\U0001f600\"", "context": "zero", "expect": "true"},
+    {"name": "node.compare.string.ne", "expr": "req.headers[\"x-name\"] != \"Zoe 🙂\"", "context": "unicode", "expect": "true"},
+    {"name": "node.compare.bool.eq", "expr": "net.tor == false", "context": "cf_browser", "expect": "true"},
+    {"name": "node.compare.bool.ne", "expr": "upstream.authenticated != true", "context": "cf_browser", "expect": "false"},
+    {"name": "node.compare.unknown", "expr": "tls.version == \"TLSv1.3\"", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.compare.error", "expr": "req.headers[\"nope\"] == \"x\"", "context": "cf_browser", "expect": "error"},
+    {"name": "node.compare.error-before-unknown", "expr": "tls.version == req.headers[\"nope\"]", "context": "cf_browser", "expect": "error"},
+    {"name": "node.compare.unknown-both-sides", "expr": "tls.version == edge_tls.version", "context": "cf_no_edge_tls", "expect": "unknown"},
+    {"name": "node.in_list.named.true", "expr": "req.host in list(\"hosts\")", "context": "cf_browser", "expect": "true"},
+    {"name": "node.in_list.named.false", "expr": "req.host in list(\"hosts\")", "context": "tor_dc", "expect": "false"},
+    {"name": "node.in_list.named-empty", "expr": "req.host in list(\"empty\")", "context": "cf_browser", "expect": "false"},
+    {"name": "node.in_list.field-list", "expr": "\"net.tor\" in risk.reasons", "context": "tor_dc", "expect": "true"},
+    {"name": "node.in_list.field-list-false", "expr": "\"net.tor\" in risk.reasons", "context": "cf_browser", "expect": "false"},
+    {"name": "node.in_list.unknown-lhs", "expr": "tls.version in [\"TLSv1.3\"]", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.in_list.unknown-rhs", "expr": "\"Host\" in http.header_order", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.in_list.header-order", "expr": "\"User-Agent\" in http.header_order", "context": "dt_h1", "expect": "true"},
+    {"name": "node.in_list.header-order-case", "expr": "\"user-agent\" in http.header_order", "context": "dt_h1", "expect": "false"},
+    {"name": "node.in_list.error-lhs", "expr": "req.headers[\"nope\"] in [\"x\"]", "context": "cf_browser", "expect": "error"},
+    {"name": "node.in_list.unicode", "expr": "\"überprüft\" in labels", "context": "unicode", "expect": "true"},
+    {"name": "node.in_map.headers.true", "expr": "\"accept\" in req.headers", "context": "cf_browser", "expect": "true"},
+    {"name": "node.in_map.headers.false", "expr": "\"x-missing\" in req.headers", "context": "cf_browser", "expect": "false"},
+    {"name": "node.in_map.headers.case-sensitive", "expr": "\"Accept\" in req.headers", "context": "cf_browser", "expect": "false"},
+    {"name": "node.in_map.rate.true", "expr": "\"login-per-ip\" in rate", "context": "cf_browser", "expect": "true"},
+    {"name": "node.in_map.rate.false", "expr": "\"login-per-ip\" in rate", "context": "zero", "expect": "false"},
+    {"name": "node.in_map.unknown", "expr": "tls.version in req.headers", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.in_map.error", "expr": "req.headers[\"nope\"] in req.headers", "context": "cf_browser", "expect": "error"},
+    {"name": "node.index_map.headers", "expr": "req.headers[\"accept\"] == \"text/html\"", "context": "cf_browser", "expect": "true"},
+    {"name": "node.index_map.select-form", "expr": "req.headers.accept == \"text/html\"", "context": "cf_browser", "expect": "true"},
+    {"name": "node.index_map.no-such-key", "expr": "req.headers[\"x-missing\"] == \"\"", "context": "cf_browser", "expect": "error"},
+    {"name": "node.index_map.select-no-such-key", "expr": "req.headers.accept == \"text/html\"", "context": "zero", "expect": "error"},
+    {"name": "node.index_map.guarded", "expr": "\"x-missing\" in req.headers && req.headers[\"x-missing\"] == \"\"", "context": "cf_browser", "expect": "false"},
+    {"name": "node.index_map.rate", "expr": "rate[\"login-per-ip\"] > 0.1", "context": "cf_browser", "expect": "true"},
+    {"name": "node.index_map.rate-no-such-key", "expr": "rate[\"nope\"] > 0.1", "context": "cf_browser", "expect": "error"},
+    {"name": "node.index_map.dynamic-key", "expr": "req.headers[req.headers[\"x-key\"]] == \"Zoë 🙂\"", "context": "unicode", "expect": "true"},
+    {"name": "node.index_map.unknown-key", "expr": "req.headers[tls.version] == \"x\"", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.index_map.cond-map", "expr": "(net.tor ? req.headers : req.headers)[\"accept\"] == \"text/html\"", "context": "cf_browser", "expect": "true"},
+    {"name": "node.index_map.computed-map-unknown", "expr": "(tls.ja4.authenticated ? req.headers : req.headers)[\"accept\"] == \"text/html\"", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.index_map.computed-map-error-key", "expr": "(tls.ja4.authenticated ? req.headers : req.headers)[req.headers[\"nope\"]] == \"x\"", "context": "cf_browser", "expect": "error"},
+    {"name": "node.index_map.computed-rate-error-key", "expr": "(tls.ja4.authenticated ? rate : rate)[req.headers[\"nope\"]] > 0.5", "context": "cf_browser", "expect": "error"},
+    {"name": "node.size.string.code-points", "expr": "size(req.path) == 9", "context": "unicode", "expect": "true"},
+    {"name": "node.size.string.not-bytes", "expr": "req.path.size() == 21", "context": "unicode", "expect": "false"},
+    {"name": "node.size.string.astral", "expr": "size(req.headers[\"x-name\"]) == 5", "context": "unicode", "expect": "true"},
+    {"name": "node.size.list", "expr": "size(labels) == 2", "context": "cf_scanner", "expect": "true"},
+    {"name": "node.size.map", "expr": "size(req.headers) == 3", "context": "cf_browser", "expect": "true"},
+    {"name": "node.size.map-receiver", "expr": "rate.size() == 1", "context": "cf_browser", "expect": "true"},
+    {"name": "node.size.named-list", "expr": "size(list(\"owner_cidrs\")) == 2", "context": "zero", "expect": "true"},
+    {"name": "node.size.literal", "expr": "size(\"日本\") == 2 && size([1, 2, 3]) == 3", "context": "zero", "expect": "true"},
+    {"name": "node.size.unknown", "expr": "size(http.header_order) > 0", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.size.error", "expr": "size(req.headers[\"nope\"]) > 0", "context": "cf_browser", "expect": "error"},
+    {"name": "node.string_call.starts-with.multibyte", "expr": "req.path.startsWith(\"/日本/\")", "context": "unicode", "expect": "true"},
+    {"name": "node.string_call.ends-with.multibyte", "expr": "req.path.endsWith(\"ページ\")", "context": "unicode", "expect": "true"},
+    {"name": "node.string_call.contains.multibyte", "expr": "req.headers[\"x-name\"].contains(\"ë 🙂\")", "context": "unicode", "expect": "true"},
+    {"name": "node.string_call.contains.false", "expr": "req.path.contains(\"日本語\")", "context": "unicode", "expect": "false"},
+    {"name": "node.string_call.starts-with.false", "expr": "req.path.startsWith(\"/account/logout\")", "context": "cf_browser", "expect": "false"},
+    {"name": "node.string_call.ends-with.longer-arg", "expr": "req.method.endsWith(\"xGET\")", "context": "cf_browser", "expect": "false"},
+    {"name": "node.string_call.empty-arg", "expr": "req.path.startsWith(\"\") && req.path.endsWith(\"\") && req.path.contains(\"\")", "context": "zero", "expect": "true"},
+    {"name": "node.string_call.unknown", "expr": "tls.version.startsWith(\"TLS\")", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.string_call.unknown-arg", "expr": "req.path.contains(tls.version)", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.string_call.error", "expr": "req.headers[\"nope\"].endsWith(\"x\")", "context": "cf_browser", "expect": "error"},
+    {"name": "node.ip_in.v4.cidr", "expr": "ip_in(net.ip, [\"203.0.113.0/24\"])", "context": "cf_browser", "expect": "true"},
+    {"name": "node.ip_in.v4.false", "expr": "ip_in(net.ip, [\"198.51.100.0/24\"])", "context": "cf_browser", "expect": "false"},
+    {"name": "node.ip_in.v4.single-address", "expr": "ip_in(net.ip, [\"203.0.113.7\"])", "context": "cf_browser", "expect": "true"},
+    {"name": "node.ip_in.v6.cidr", "expr": "ip_in(net.ip, [\"2001:db8::/32\"])", "context": "staging_owner_v6", "expect": "true"},
+    {"name": "node.ip_in.v6.false", "expr": "ip_in(net.ip, [\"2001:db8::/48\"])", "context": "staging_owner_v6", "expect": "false"},
+    {"name": "node.ip_in.mapped-address", "expr": "ip_in(net.ip, [\"10.0.0.0/8\"])", "context": "staging_owner_mapped", "expect": "true"},
+    {"name": "node.ip_in.mapped-cidr", "expr": "ip_in(net.ip, [\"::ffff:10.0.0.0/104\"])", "context": "staging_owner_v4", "expect": "true"},
+    {"name": "node.ip_in.mapped-cidr-named", "expr": "ip_in(net.ip, list(\"mapped_cidrs\"))", "context": "cf_impersonator", "expect": "true"},
+    {"name": "node.ip_in.v4-address-v6-prefix", "expr": "ip_in(net.ip, [\"::/0\"])", "context": "cf_browser", "expect": "false"},
+    {"name": "node.ip_in.v6-address-v4-prefix", "expr": "ip_in(net.ip, [\"0.0.0.0/0\"])", "context": "staging_owner_v6", "expect": "false"},
+    {"name": "node.ip_in.named-owner", "expr": "ip_in(net.ip, list(\"owner_cidrs\"))", "context": "staging_owner_v4", "expect": "true"},
+    {"name": "node.ip_in.named-empty", "expr": "ip_in(net.ip, list(\"empty\"))", "context": "cf_browser", "expect": "false"},
+    {"name": "node.ip_in.invalid-address", "expr": "ip_in(req.query, [\"0.0.0.0/0\"])", "context": "cf_browser", "expect": "false"},
+    {"name": "node.ip_in.zoned-address", "expr": "ip_in(req.headers[\"x-ip\"], [\"fe80::/10\"])", "context": "unicode", "expect": "false"},
+    {"name": "node.ip_in.invalid-entry-after-match", "expr": "ip_in(net.ip, list(\"mixed_cidrs\"))", "context": "tor_dc", "expect": "error"},
+    {"name": "node.ip_in.invalid-entry-no-match", "expr": "ip_in(net.ip, list(\"mixed_cidrs\"))", "context": "cf_browser", "expect": "error"},
+    {"name": "node.ip_in.zoned-entry", "expr": "ip_in(net.ip, list(\"zoned\"))", "context": "cf_browser", "expect": "error"},
+    {"name": "node.ip_in.invalid-address-invalid-entry", "expr": "ip_in(req.query, list(\"mixed_cidrs\"))", "context": "cf_browser", "expect": "false"},
+    {"name": "node.ip_in.mapped-cidr-short-prefix", "expr": "ip_in(net.ip, list(\"mapped_short\"))", "context": "cf_browser", "expect": "error"},
+    {"name": "node.ip_in.unknown", "expr": "ip_in(net.ip, [\"10.0.0.0/8\"])", "context": "staging_no_ip", "expect": "unknown"},
+    {"name": "node.ip_in.unknown-absorbed", "expr": "!has(net.ip) || !ip_in(net.ip, [\"10.0.0.0/8\"])", "context": "staging_no_ip", "expect": "true"},
+    {"name": "node.named_list.in", "expr": "edge_tls.ciphers_sha1 in list(\"bad_cf_ciphers\")", "context": "cf_old_tls", "expect": "true"},
+    {"name": "node.named_list.not-in", "expr": "tls.ja4.value in list(\"bad_ja4\")", "context": "dt_ja4_other", "expect": "false"},
+    {"name": "node.glob.star", "expr": "glob(req.path, \"/account/*\")", "context": "cf_browser", "expect": "true"},
+    {"name": "node.glob.star-stops-at-slash", "expr": "glob(req.path, \"/*\")", "context": "cf_browser", "expect": "false"},
+    {"name": "node.glob.double-star", "expr": "glob(req.path, \"/**\")", "context": "cf_browser", "expect": "true"},
+    {"name": "node.glob.double-star-needs-prefix", "expr": "glob(req.path, \"/admin/**\")", "context": "cf_browser", "expect": "false"},
+    {"name": "node.glob.question", "expr": "glob(req.path, \"/account/logi?\")", "context": "cf_browser", "expect": "true"},
+    {"name": "node.glob.question-not-slash", "expr": "glob(req.path, \"/account?login\")", "context": "cf_browser", "expect": "false"},
+    {"name": "node.glob.consecutive-stars", "expr": "glob(req.path, \"/***n\")", "context": "cf_browser", "expect": "true"},
+    {"name": "node.glob.unicode-star", "expr": "glob(req.path, \"/日本/?/*\")", "context": "unicode", "expect": "true"},
+    {"name": "node.glob.unicode-question-per-code-point", "expr": "glob(req.path, \"/??/?/???\")", "context": "unicode", "expect": "true"},
+    {"name": "node.glob.case-sensitive", "expr": "glob(req.path, \"/Account/**\")", "context": "cf_browser", "expect": "false"},
+    {"name": "node.glob.header", "expr": "glob(req.headers[\"user-agent\"], \"Mozilla/5.0 (*) **\")", "context": "cf_browser", "expect": "true"},
+    {"name": "node.glob.empty-subject", "expr": "glob(req.query, \"*\")", "context": "zero", "expect": "true"},
+    {"name": "node.glob.pathological", "expr": "glob(\"/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab\", \"/*a*a*a*a*a*a*a*a*a*a*c\")", "context": "zero", "expect": "false"},
+    {"name": "node.glob.unknown", "expr": "glob(tls.ja4.value, \"t13d*\")", "context": "cf_browser", "expect": "unknown"},
+    {"name": "node.glob.error", "expr": "glob(req.headers[\"nope\"], \"*\")", "context": "cf_browser", "expect": "error"},
+    {"name": "steps.near-bound", "expr": "glob(req.path, \"/aaaaaaaaaaaaaaaaaaaaaaaaaaaaa/*\") && glob(req.path, \"/bbbbbbbbbbbbbbbbbbbbbbbbbbbbb/*\") && glob(req.path, \"/ccccccccccccccccccccccccccccc/*\") && glob(req.path, \"/ddddddddddddddddddddddddddddd/*\") && glob(req.path, \"/eeeeeeeeeeeeeeeeeeeeeeeeeeeee/*\") && glob(req.path, \"/fffffffffffffffffffffffffffff/*\")", "context": "cf_browser", "expect": "false"},
+    {"name": "steps.named-list-scan", "expr": "ip_in(net.ip, list(\"owner_cidrs\")) || req.host in list(\"hosts\")", "context": "cf_browser", "expect": "true"},
+    {"name": "steps.header-string-ops", "expr": "req.headers[\"user-agent\"].startsWith(req.headers[\"accept\"]) || req.path.endsWith(req.query)", "context": "cf_browser", "expect": "false"},
+    {"name": "limits.depth-50", "expr": "has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip)) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false", "context": "cf_browser", "expect": "true"},
+    {"name": "reject.arith", "expr": "risk.score + 1 > 2", "context": "cf_browser", "compile_error": "unsupported in policy IR"},
+    {"name": "reject.arith.subtract", "expr": "risk.score - 1 > 2", "context": "cf_browser", "compile_error": "unsupported in policy IR: arithmetic (-)"},
+    {"name": "reject.arith.multiply", "expr": "risk.confidence * 2.0 > 1.0", "context": "cf_browser", "compile_error": "unsupported in policy IR: arithmetic (*)"},
+    {"name": "reject.arith.divide", "expr": "risk.score / 2 > 2", "context": "cf_browser", "compile_error": "unsupported in policy IR: arithmetic (/)"},
+    {"name": "reject.arith.modulo", "expr": "risk.score % 2 == 1", "context": "cf_browser", "compile_error": "unsupported in policy IR: arithmetic (%)"},
+    {"name": "reject.unary-minus", "expr": "-risk.score < 0", "context": "cf_browser", "compile_error": "unsupported in policy IR: unary minus"},
+    {"name": "reject.string-concat", "expr": "req.path + \"x\" == \"/x\"", "context": "cf_browser", "compile_error": "unsupported in policy IR: string concatenation"},
+    {"name": "reject.list-concat", "expr": "size(labels + [\"a\"]) > 0", "context": "cf_browser", "compile_error": "unsupported in policy IR: list concatenation"},
+    {"name": "reject.matches", "expr": "req.path.matches(\"^/admin\")", "context": "cf_browser", "compile_error": "unsupported in policy IR: matches()"},
+    {"name": "reject.macro.all", "expr": "labels.all(l, l != \"x\")", "context": "cf_browser", "compile_error": "unsupported in policy IR: macro all()"},
+    {"name": "reject.macro.exists", "expr": "labels.exists(l, l == \"x\")", "context": "cf_browser", "compile_error": "unsupported in policy IR: macro exists()"},
+    {"name": "reject.macro.exists_one", "expr": "labels.exists_one(l, l == \"x\")", "context": "cf_browser", "compile_error": "unsupported in policy IR: macro exists_one()"},
+    {"name": "reject.macro.map", "expr": "size(labels.map(l, l)) > 0", "context": "cf_browser", "compile_error": "unsupported in policy IR: macro map()"},
+    {"name": "reject.macro.filter", "expr": "size(labels.filter(l, l == \"x\")) > 0", "context": "cf_browser", "compile_error": "unsupported in policy IR: macro filter()"},
+    {"name": "reject.conversion.int", "expr": "int(risk.confidence) > 0", "context": "cf_browser", "compile_error": "unsupported in policy IR: type conversion int()"},
+    {"name": "reject.conversion.uint", "expr": "uint(risk.score) == uint(1)", "context": "cf_browser", "compile_error": "unsupported in policy IR: type conversion uint()"},
+    {"name": "reject.conversion.double", "expr": "double(risk.score) > 0.5", "context": "cf_browser", "compile_error": "unsupported in policy IR: type conversion double()"},
+    {"name": "reject.conversion.string", "expr": "string(risk.score) == \"1\"", "context": "cf_browser", "compile_error": "unsupported in policy IR: type conversion string()"},
+    {"name": "reject.conversion.bytes", "expr": "size(bytes(req.path)) > 0", "context": "cf_browser", "compile_error": "unsupported in policy IR: type conversion bytes()"},
+    {"name": "reject.conversion.dyn", "expr": "dyn(risk.score) == 1", "context": "cf_browser", "compile_error": "unsupported in policy IR: type conversion dyn()"},
+    {"name": "reject.conversion.type", "expr": "type(risk.score) == int", "context": "cf_browser", "compile_error": "unsupported in policy IR: type conversion type()"},
+    {"name": "reject.timestamp", "expr": "timestamp(\"2026-01-01T00:00:00Z\") < timestamp(\"2027-01-01T00:00:00Z\")", "context": "cf_browser", "compile_error": "unsupported in policy IR: timestamps and durations"},
+    {"name": "reject.duration", "expr": "duration(\"1s\") < duration(\"2s\")", "context": "cf_browser", "compile_error": "unsupported in policy IR: timestamps and durations"},
+    {"name": "reject.uint-literal", "expr": "1u == 1u", "context": "cf_browser", "compile_error": "unsupported in policy IR"},
+    {"name": "reject.bytes-literal", "expr": "b\"a\" == b\"a\"", "context": "cf_browser", "compile_error": "unsupported in policy IR"},
+    {"name": "reject.null-literal", "expr": "null == null", "context": "cf_browser", "compile_error": "unsupported in policy IR"},
+    {"name": "reject.map-literal", "expr": "\"a\" in {\"a\": 1}", "context": "cf_browser", "compile_error": "unsupported in policy IR: map literal"},
+    {"name": "reject.message-literal", "expr": "policy.Request{method: \"GET\"}.method == \"GET\"", "context": "cf_browser", "compile_error": "unsupported in policy IR: message literal"},
+    {"name": "reject.list-index", "expr": "labels[0] == \"x\"", "context": "cf_browser", "compile_error": "unsupported in policy IR: list index"},
+    {"name": "reject.bool-ordering", "expr": "net.tor < true", "context": "cf_browser", "compile_error": "unsupported in policy IR: ordering of bool values"},
+    {"name": "reject.list-equality", "expr": "labels == [\"a\"]", "context": "cf_browser", "compile_error": "unsupported in policy IR: == on list(string) values"},
+    {"name": "reject.map-equality", "expr": "req.headers == req.headers", "context": "cf_browser", "compile_error": "unsupported in policy IR: == on map(string, string) values"},
+    {"name": "reject.heterogeneous.in-mixed-list", "expr": "1 in [1.0, \"a\"]", "context": "cf_browser", "compile_error": "expected type 'double' but found 'string'"},
+    {"name": "reject.heterogeneous.in-double-list", "expr": "1 in [1.0]", "context": "cf_browser", "compile_error": "found no matching overload for '@in' applied to '(int, list(double))'"},
+    {"name": "reject.heterogeneous.string-in-mixed-list", "expr": "\"a\" in [1, \"a\"]", "context": "cf_browser", "compile_error": "expected type 'int' but found 'string'"},
+    {"name": "reject.heterogeneous.int-double-list", "expr": "[1, 2.0] == [1, 2.0]", "context": "cf_browser", "compile_error": "expected type 'int' but found 'double'"},
+    {"name": "reject.nested-list", "expr": "[[1]] == [[1]]", "context": "cf_browser", "compile_error": "unsupported in policy IR"},
+    {"name": "reject.in-non-scalar-left", "expr": "labels in [labels]", "context": "cf_browser", "compile_error": "unsupported in policy IR"},
+    {"name": "reject.struct-value", "expr": "tls.ja4 == tls.ja4", "context": "cf_browser", "compile_error": "unsupported in policy IR: tls.ja4 used as a value"},
+    {"name": "reject.namespace-value", "expr": "req == req", "context": "cf_browser", "compile_error": "unsupported in policy IR: req used as a value"},
+    {"name": "reject.has-map-key", "expr": "has(req.headers.accept)", "context": "cf_browser", "compile_error": "unsupported in policy IR: has() on a map key"},
+    {"name": "reject.has-rate-key", "expr": "has(rate.login)", "context": "cf_browser", "compile_error": "unsupported in policy IR: has() on a map key"},
+    {"name": "reject.optional-syntax", "expr": "req.headers[?\"accept\"] == \"x\"", "context": "cf_browser", "compile_error": "unsupported in policy IR: optional syntax"},
+    {"name": "reject.cross-type-equality", "expr": "risk.score == 1.0", "context": "cf_browser", "compile_error": "found no matching overload for '_==_' applied to '(int, double)'"},
+    {"name": "reject.cross-type-ordering", "expr": "risk.score < 1.5", "context": "cf_browser", "compile_error": "found no matching overload for '_<_' applied to '(int, double)'"},
+    {"name": "reject.list-name-not-literal", "expr": "req.host in list(req.host)", "context": "cf_browser", "compile_error": "list() takes a string literal name"},
+    {"name": "reject.glob-pattern-not-literal", "expr": "glob(req.path, req.query)", "context": "cf_browser", "compile_error": "glob() pattern must be a string literal"},
+    {"name": "reject.glob-pattern-empty", "expr": "glob(req.path, \"\")", "context": "cf_browser", "compile_error": "glob() pattern must not be empty"},
+    {"name": "reject.ip_in-bad-cidr-literal", "expr": "ip_in(net.ip, [\"10.0.0.0/33\"])", "context": "cf_browser", "compile_error": "ip_in: invalid CIDR \"10.0.0.0/33\""},
+    {"name": "reject.ip_in-cidr-as-address", "expr": "ip_in(\"10.0.0.0/8\", [\"10.0.0.0/8\"])", "context": "cf_browser", "compile_error": "is not an IP address"},
+    {"name": "reject.ip_in-mapped-cidr-short-prefix", "expr": "ip_in(net.ip, [\"::ffff:0:0/80\"])", "context": "cf_browser", "compile_error": "ip_in: invalid CIDR \"::ffff:0:0/80\""},
+    {"name": "reject.depth-51", "expr": "has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip) ? (has(net.ip)) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false) : false", "context": "cf_browser", "compile_error": "unsupported in policy IR: expression nests 51 levels deep (limit 50)"},
+    {"name": "reject.undefined-field", "expr": "net.ipv4 == \"x\"", "context": "cf_browser", "compile_error": "undefined field 'ipv4'"},
+    {"name": "reject.not-bool", "expr": "risk.score", "context": "cf_browser", "compile_error": "expression must evaluate to bool"},
+    {"name": "reject.steps.glob-chain", "expr": "glob(req.path, \"/aaaaaaaaaaaaaaaaaaaaaaaaaaaaa/*\") && glob(req.path, \"/bbbbbbbbbbbbbbbbbbbbbbbbbbbbb/*\") && glob(req.path, \"/ccccccccccccccccccccccccccccc/*\") && glob(req.path, \"/ddddddddddddddddddddddddddddd/*\") && glob(req.path, \"/eeeeeeeeeeeeeeeeeeeeeeeeeeeee/*\") && glob(req.path, \"/fffffffffffffffffffffffffffff/*\") && glob(req.path, \"/ggggggggggggggggggggggggggggg/*\")", "context": "cf_browser", "compile_error": "rule exceeds the evaluation step bound: 114703 > 100000"}
+  ]
+}

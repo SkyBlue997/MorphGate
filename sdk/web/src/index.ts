@@ -1,70 +1,36 @@
 /**
- * MorphGate Web SDK entry point (bundled to dist/mg.js as an IIFE).
+ * MorphGate Web SDK entry point (bundled to dist/mg.js as an IIFE and
+ * published as dist/sdk/mg.<hex16>.js, docs/impl/phase1-spec.md §11).
  *
- * The Edge injects the SDK as a first-party script, e.g.
- *   <script data-cfasync="false" src="/__mg/s/{build}.js" data-mg-path-prefix="/__mg/" nonce="..."></script>
- * `data-cfasync="false"` keeps Cloudflare Rocket Loader away from it; the
- * data attributes carry configuration.
+ * The same file runs in two contexts:
  *
- * Phase 0 bootstrap: read configuration, take env/automation snapshots on
- * demand, expose a small read-only `window.MorphGate` object for debugging.
- * No network requests and no key generation happen yet; the challenge flow,
- * session keys in IndexedDB, MG-Proof and telemetry uploads land in Phase 2.
+ * - In a document it bootstraps the SDK (configuration from its own
+ *   `data-mg-*` attributes, a read-only `window.MorphGate`) and, on the
+ *   Edge's challenge page (`#mg-challenge`), runs the challenge flow
+ *   (`challenge.ts`).
+ * - In a Worker started by that flow from the same URL
+ *   (`self instanceof WorkerGlobalScope`) it only installs the PoW message
+ *   handler (`pow.ts`). One cacheable file; CSP needs only `worker-src 'self'`.
+ *
+ * The Edge serves it first-party, e.g.
+ *   <script data-cfasync="false" src="/__mg/s/mg.<hex16>.js" nonce="…" data-mg-path-prefix="/__mg/"></script>
+ * `data-cfasync="false"` (before `src`) keeps Cloudflare Rocket Loader away.
+ *
+ * Phase 1 sends exactly one request: the challenge form submission. Session
+ * keys, MG-Proof, telemetry uploads and fetch wrapping land in Phase 2.
  */
 
 import { collectAutomation, type AutomationSummary } from "./automation";
+import { startChallenge } from "./challenge";
+import { parseConfig, type MgConfig } from "./config";
 import { collectEnv, type EnvSummary } from "./env";
+import { installPowWorker, isWorkerScope, type PowWorkerScope } from "./pow";
 import { classifyResponse } from "./transport";
 
-export const SDK_VERSION = "0.0.0-phase0";
-export const DEFAULT_PATH_PREFIX = "/__mg/";
-const MAX_PREFIX_LENGTH = 64;
-const SITE_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
-const PATH_SEGMENT_PATTERN = /^[A-Za-z0-9._~-]+$/;
+export { DEFAULT_PATH_PREFIX, endpointPath, normalizePathPrefix, parseConfig } from "./config";
+export type { MgConfig, MgEndpoint } from "./config";
 
-export interface MgConfig {
-  /** First-party path prefix for MorphGate endpoints; always starts and ends with "/". */
-  pathPrefix: string;
-  /** Site id from data-mg-site; informational, the Edge knows the site from the Host. */
-  site: string | null;
-  /** data-mg-debug="true" logs snapshots to the console. */
-  debug: boolean;
-}
-
-/** Endpoints under the prefix (docs/02 §3, docs/04 §9). */
-export type MgEndpoint = "c" | "c/renew" | "r" | "t";
-
-/**
- * Normalise a configured prefix. Only same-origin absolute paths are accepted
- * ("/__mg/", "/x7/mg"), so a tampered attribute cannot point the SDK at a
- * third-party host ("//evil.example/") or escape with dot segments.
- */
-export function normalizePathPrefix(raw: string | undefined): string {
-  if (raw === undefined) return DEFAULT_PATH_PREFIX;
-  const value = raw.trim();
-  if (value.length === 0 || value.length > MAX_PREFIX_LENGTH || !value.startsWith("/")) {
-    return DEFAULT_PATH_PREFIX;
-  }
-  const segments = value.slice(1).replace(/\/$/, "").split("/");
-  const valid = segments.every(
-    (segment) => PATH_SEGMENT_PATTERN.test(segment) && segment !== "." && segment !== "..",
-  );
-  return valid ? `/${segments.join("/")}/` : DEFAULT_PATH_PREFIX;
-}
-
-/** Build the configuration from a script element's dataset (data-mg-* attributes). */
-export function parseConfig(dataset: Readonly<Record<string, string | undefined>>): MgConfig {
-  const site = dataset["mgSite"]?.trim();
-  return {
-    pathPrefix: normalizePathPrefix(dataset["mgPathPrefix"]),
-    site: site !== undefined && SITE_ID_PATTERN.test(site) ? site : null,
-    debug: dataset["mgDebug"] === "true",
-  };
-}
-
-export function endpointPath(config: MgConfig, endpoint: MgEndpoint): string {
-  return `${config.pathPrefix}${endpoint}`;
-}
+export const SDK_VERSION = "0.1.0-phase1";
 
 export interface Snapshot {
   env: EnvSummary;
@@ -115,6 +81,36 @@ export function bootstrap(doc: Document = document, win: Window = window): Morph
   }
 }
 
-if (typeof document !== "undefined" && typeof window !== "undefined") {
+/**
+ * URL of the executing script, the Worker script for the PoW. Must be read
+ * synchronously: `document.currentScript` is null once execution yields.
+ */
+function currentScriptSrc(doc: Document): string | null {
+  try {
+    const script = doc.currentScript;
+    return script instanceof HTMLScriptElement && script.src !== "" ? script.src : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Run the challenge flow when this is a challenge page (after parsing, if needed). */
+function startChallengeWhenReady(doc: Document, scriptSrc: string | null): void {
+  try {
+    if (doc.getElementById("mg-challenge") !== null || doc.readyState !== "loading") {
+      void startChallenge(doc, scriptSrc);
+      return;
+    }
+    doc.addEventListener("DOMContentLoaded", () => void startChallenge(doc, scriptSrc), { once: true });
+  } catch {
+    // Never throw into the page.
+  }
+}
+
+if (isWorkerScope(globalThis)) {
+  installPowWorker(globalThis as unknown as PowWorkerScope);
+} else if (typeof document !== "undefined" && typeof window !== "undefined") {
+  const scriptSrc = currentScriptSrc(document);
   bootstrap();
+  startChallengeWhenReady(document, scriptSrc);
 }

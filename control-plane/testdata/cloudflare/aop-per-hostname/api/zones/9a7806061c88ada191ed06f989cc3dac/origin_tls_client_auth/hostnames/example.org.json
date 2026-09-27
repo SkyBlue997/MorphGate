@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "hostname": "example.org",
+    "cert_id": "3exampleo",
+    "enabled": true,
+    "status": "active",
+    "cert_status": "active",
+    "expires_on": "2027-03-01T00:00:00Z",
+    "issuer": "Owner AOP CA"
+  }
+}

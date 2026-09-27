@@ -1,14 +1,19 @@
 // Package policy parses, validates and type-checks MorphGate policy files
-// (docs/06-policy-console-observability.md §1-§2).
+// (docs/06-policy-console-observability.md §1-§2) and compiles them to the
+// restricted policy IR evaluated by the Rust Decision Core
+// (docs/impl/phase1-spec.md §3.1, §5).
 //
-// Phase 0 scope: YAML schema validation, CEL compilation with cel-go against the
-// declared request context, output-type and cost checks, compile-time warnings
-// (fields that are always MISSING under the file's declared `profile:` and read
-// without a has() guard; allow / block rules that rely on Cloudflare's
-// verified-bot flag alone), and a JSON listing of checked rules. Lowering CEL
-// to the restricted IR consumed by the Rust Decision Core, and the
-// evaluation-time MISSING ("unknown") semantics, are Phase 1; until then
-// CheckedRule carries IRVersion 0 and no IR bytes.
+// Pipeline: YAML schema validation (Parse); CEL type checking with cel-go
+// against the declared request context (Input); lowering of the checked AST
+// to the IR, which rejects every construct the IR cannot express and every
+// rule whose static worst-case step count exceeds MaxIRSteps (Lower,
+// MaxSteps); the cel-go cost check; compile-time warnings (fields that are
+// always MISSING under the file's declared `profile:` and read without a
+// has() guard; allow / block rules that rely on Cloudflare's verified-bot
+// flag alone); and the JSON listing of `mgctl policy compile`. Evaluator is
+// the cel-go reference for the IR's three-valued MISSING semantics; the
+// conformance suite in testdata/policy-ir pins the IR bytes and the expected
+// results for the Rust evaluator.
 package policy
 
 import (

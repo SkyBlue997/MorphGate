@@ -1,0 +1,25 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "cust0004",
+    "name": "zone",
+    "kind": "zone",
+    "version": "3",
+    "phase": "http_request_firewall_custom",
+    "last_updated": "2026-09-20T08:00:00.000000Z",
+    "rules": [
+      {
+        "id": "c2",
+        "version": "1",
+        "ref": "block-wp-login",
+        "description": "no WordPress here",
+        "expression": "http.request.uri.path eq \"/wp-login.php\"",
+        "action": "block",
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      }
+    ]
+  }
+}

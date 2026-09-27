@@ -5,7 +5,6 @@ package mgctl
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -37,6 +36,20 @@ Usage:
   mgctl version
   mgctl policy check   [flags] <file.yaml|dir>...
   mgctl policy compile [flags] [-o out.json] <file.yaml|dir>...
+  mgctl site check --site-config <site.yaml>
+  mgctl bundle build --site-config <site.yaml> --out-dir <dir> [--version N]
+  mgctl bundle sign --in <site.sitebundle.pb> --key <kid>.key.age --out <file.bundle>
+  mgctl bundle verify --in <file.bundle> --pub <kid>.pub... [--site <id>] [--json]
+  mgctl bundle publish --in <file.bundle> --artifacts <dir> --dest <dir> --pub <kid>.pub... --confirm <site> [--metrics-textfile <path>]
+  mgctl keys gen --kid <kid> --out-dir <dir> [--insecure-test-key]
+  mgctl keys gen-pseudo --out <file.json.age> [--insecure-test-key]
+  mgctl keys gen-upstream --out <file.json.age> [--rotate] [--insecure-test-key]
+  mgctl keys export --in <file.json.age> [--out <file> | -]
+  mgctl site keys gen --site <id> --out-dir <dir> [--date YYYYMMDD] [--insecure-test-key]
+  mgctl site keys rotate-token --site <id> --file <token.keys.json.age> [--date YYYYMMDD]
+  mgctl site keys rotate-seal --site <id> --file <seal.root.json.age> --step add|promote|retire [--date YYYYMMDD]
+  mgctl verdict key --pseudo-key <file.json.age> --site <id|all> --type ip|prefix|asn|session --value <v>
+  mgctl audit verify
   mgctl cf audit [flags]
   mgctl cf ips sync [flags]
   mgctl crawler sync [flags]
@@ -48,11 +61,43 @@ policy flags:
 A policy file may declare its site's UpstreamProfile with a top-level profile: key;
 rules that read fields that profile never supplies, without a has() guard, get a
 warning. Directories are expanded to their *.yaml and *.yml files. Flags go before files.
-Exit status: 0 ok, 1 policy errors, 2 usage error or command not implemented yet.
+
+Global flag: --audit-log <path> (default $MGCTL_AUDIT_LOG, else
+$XDG_STATE_HOME/morphgate/audit.jsonl or ~/.local/state/morphgate/audit.jsonl):
+the hash-chained log every write command appends to.
+Passphrases for age key files come from the first line of $MGCTL_PASSPHRASE_FILE
+or the terminal; MGCTL_AGE_WORK_FACTOR (10-22, default 18; below 18 only with
+--insecure-test-key) sets the scrypt work factor of new files.
+Exit status: 0 ok, 1 invalid input or failed check, 2 usage error or command not
+implemented yet, 3 I/O or internal error (including a failed audit append).
 `
 
 // Run executes mgctl with args (without the program name) and returns the exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
+	return RunEnv(args, newEnv(stdout, stderr))
+}
+
+// RunEnv executes mgctl in env. When env.Audit is nil it is wired to the
+// local audit log (--audit-log, else MGCTL_AUDIT_LOG, XDG_STATE_HOME, HOME);
+// write commands open that log before they change anything.
+func RunEnv(args []string, env cli.Env) int {
+	args, auditPath, err := extractAuditLog(args)
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "mgctl: %v\n", err)
+		return ExitUsage
+	}
+	r := &runner{env: env, auditPath: auditPath}
+	if r.env.Now == nil {
+		r.env.Now = time.Now
+	}
+	if r.env.Getenv == nil {
+		r.env.Getenv = func(string) string { return "" }
+	}
+	if r.env.Audit == nil {
+		r.audit = &auditor{override: auditPath, getenv: r.env.Getenv, now: r.env.Now}
+		r.env.Audit = r.audit.append
+	}
+	stdout, stderr := r.env.Stdout, r.env.Stderr
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, usage, policy.DefaultMaxCost)
 		return ExitUsage
@@ -66,10 +111,20 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	case "policy":
 		return runPolicy(args[1:], stdout, stderr)
+	case "site":
+		return r.runSite(args[1:])
+	case "bundle":
+		return r.runBundle(args[1:])
+	case "keys":
+		return r.runKeys(args[1:])
+	case "verdict":
+		return r.verdictKey(args[1:])
+	case "audit":
+		return r.auditVerify(args[1:])
 	case "cf":
-		return runCF(args[1:], newEnv(stdout, stderr))
+		return runCF(args[1:], r.env)
 	case "crawler":
-		return intelsync.RunCrawler(args[1:], newEnv(stdout, stderr))
+		return intelsync.RunCrawler(args[1:], r.env)
 	}
 	fmt.Fprintf(stderr, "mgctl: unknown command %q\n\n", args[0])
 	fmt.Fprintf(stderr, usage, policy.DefaultMaxCost)
@@ -168,8 +223,8 @@ func runPolicy(args []string, stdout, stderr io.Writer) int {
 }
 
 // newEnv builds the environment handed to subcommand packages
-// (internal/cli). Work package WP-G2 replaces Audit with the local
-// hash-chained audit log (docs/impl/phase1-spec.md §10.2).
+// (internal/cli). Audit stays nil: RunEnv wires it to the local hash-chained
+// audit log (docs/impl/phase1-spec.md §12.8, §14.2).
 func newEnv(stdout, stderr io.Writer) cli.Env {
 	return cli.Env{
 		Stdout: stdout,
@@ -178,13 +233,8 @@ func newEnv(stdout, stderr io.Writer) cli.Env {
 		Now:    time.Now,
 		HTTP:   &http.Client{Timeout: 30 * time.Second},
 		Getenv: os.Getenv,
-		Audit:  auditNotWired,
 	}
 }
-
-var errAuditNotWired = errors.New("audit log not wired yet (Phase 1 WP-G2)")
-
-func auditNotWired(cli.AuditEvent) error { return errAuditNotWired }
 
 // runCF dispatches `mgctl cf <subcommand>` to the packages that own them.
 func runCF(args []string, env cli.Env) int {

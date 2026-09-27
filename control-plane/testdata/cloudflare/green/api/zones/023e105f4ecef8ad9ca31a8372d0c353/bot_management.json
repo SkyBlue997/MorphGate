@@ -1,0 +1,17 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "fight_mode": false,
+    "enable_js": false,
+    "using_latest_model": true,
+    "sbfm_definitely_automated": "allow",
+    "sbfm_verified_bots": "allow",
+    "sbfm_static_resource_protection": false,
+    "optimize_wordpress": false,
+    "ai_bots_protection": "disabled",
+    "crawler_protection": "disabled",
+    "is_robots_txt_managed": false
+  }
+}

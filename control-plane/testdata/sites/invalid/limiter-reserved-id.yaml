@@ -1,0 +1,16 @@
+# want: the "mg." prefix is reserved for built-in limiters
+version: 1
+site: shop
+profile: direct_tls
+hosts: [shop.example.test, admin.example.test]
+allowed_listeners: [public-tls]
+token:
+  active_kid: shop-t-20260927
+environments:
+  - name: production
+    hosts: [shop.example.test, admin.example.test]
+    rate_limits:
+      - id: mg.c.submit
+        key: [ip_prefix]
+        rate: 30/1m
+        on_exceed: {action: rate_limit}

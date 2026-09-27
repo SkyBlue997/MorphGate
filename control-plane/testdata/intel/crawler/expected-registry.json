@@ -1,0 +1,114 @@
+{
+  "v": 1,
+  "kind": "mg-crawler-registry",
+  "generated_at": "2026-09-27T10:00:00Z",
+  "operators": [
+    {
+      "id": "googlebot",
+      "name": "Googlebot",
+      "purpose": "search",
+      "ua_tokens": [
+        "Googlebot"
+      ],
+      "verify": {
+        "mode": "ip_ranges_or_rdns",
+        "rdns_suffixes": [
+          ".googlebot.com",
+          ".google.com"
+        ]
+      },
+      "cidrs": [
+        "66.249.64.0/27",
+        "66.249.64.32/27",
+        "2001:4860:4801:10::/64"
+      ],
+      "sources": [
+        {
+          "url": "https://developers.google.com/static/crawling/ipranges/common-crawlers.json",
+          "format": "prefixes_json",
+          "fetched_at": "2026-09-27T10:00:00Z",
+          "creation_time": "2026-09-25T14:49:23.000000",
+          "sha256": "5c53fa3d3e8e64c1949c84fdf93c23e963e7cd2327912796e024753d2b0249c1",
+          "stale": false
+        }
+      ]
+    },
+    {
+      "id": "gptbot",
+      "name": "GPTBot",
+      "purpose": "ai_training",
+      "ua_tokens": [
+        "GPTBot"
+      ],
+      "verify": {
+        "mode": "ip_ranges",
+        "rdns_suffixes": []
+      },
+      "cidrs": [
+        "20.171.206.0/24",
+        "52.230.152.0/24"
+      ],
+      "sources": [
+        {
+          "url": "https://openai.com/gptbot.json",
+          "format": "prefixes_json",
+          "fetched_at": "2026-09-27T10:00:00Z",
+          "creation_time": "2026-09-20T08:00:00.000000",
+          "sha256": "424f9f28ed50cad864649a2984051c70d109f8ae338fadb32c97dfe71976139c",
+          "stale": false
+        }
+      ]
+    },
+    {
+      "id": "archivebot",
+      "name": "Example archive crawler",
+      "purpose": "archive",
+      "ua_tokens": [
+        "archive.org_bot"
+      ],
+      "verify": {
+        "mode": "ip_ranges",
+        "rdns_suffixes": []
+      },
+      "cidrs": [
+        "207.241.224.0/20",
+        "208.70.24.0/21",
+        "2620:0:9c0::/48"
+      ],
+      "sources": [
+        {
+          "url": "https://ranges.example.net/archivebot.txt",
+          "format": "cidr_text",
+          "fetched_at": "2026-09-27T10:00:00Z",
+          "creation_time": "",
+          "sha256": "2fec89d884709b7249ac0f6b730252a11ab283888955d5cb7abb61cba97c462b",
+          "stale": false
+        },
+        {
+          "url": "https://ranges.example.net/archivebot-extra.txt",
+          "format": "cidr_text",
+          "fetched_at": "2026-09-27T10:00:00Z",
+          "creation_time": "",
+          "sha256": "28612cc4b9cc655dfe3f00c93ea1b53cc18458a239c196993bd8433305a1e18a",
+          "stale": false
+        }
+      ]
+    },
+    {
+      "id": "rdnsbot",
+      "name": "rDNS-only crawler",
+      "purpose": "other",
+      "ua_tokens": [
+        "rdnsbot"
+      ],
+      "verify": {
+        "mode": "rdns",
+        "rdns_suffixes": [
+          ".crawl.example.net"
+        ]
+      },
+      "cidrs": [],
+      "sources": []
+    }
+  ]
+}

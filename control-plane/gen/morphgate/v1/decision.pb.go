@@ -1092,6 +1092,7 @@ type Decision struct {
 	RetryAfterS   uint32                 `protobuf:"varint,5,opt,name=retry_after_s,json=retryAfterS,proto3" json:"retry_after_s,omitempty"`
 	RuleId        string                 `protobuf:"bytes,6,opt,name=rule_id,json=ruleId,proto3" json:"rule_id,omitempty"`
 	DryRun        bool                   `protobuf:"varint,7,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
+	Tags          []string               `protobuf:"bytes,8,rep,name=tags,proto3" json:"tags,omitempty"` // labels added by TAG rules, forwarded as MG-Tags
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1175,6 +1176,90 @@ func (x *Decision) GetDryRun() bool {
 	return false
 }
 
+func (x *Decision) GetTags() []string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
+}
+
+// One policy rule (or rate limiter) that matched, or could not be evaluated, on this request.
+type RuleHit struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RuleId        string                 `protobuf:"bytes,1,opt,name=rule_id,json=ruleId,proto3" json:"rule_id,omitempty"`             // CompiledRule.id, or "ratelimit.<limiter id>"
+	Outcome       string                 `protobuf:"bytes,2,opt,name=outcome,proto3" json:"outcome,omitempty"`                         // matched | missing_input | eval_error
+	Mode          string                 `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`                               // enforce | dry_run
+	Action        Action                 `protobuf:"varint,4,opt,name=action,proto3,enum=morphgate.v1.Action" json:"action,omitempty"` // the rule's (would-be) action
+	Fields        []string               `protobuf:"bytes,5,rep,name=fields,proto3" json:"fields,omitempty"`                           // missing_input: MISSING field paths read; eval_error: [error kind]
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuleHit) Reset() {
+	*x = RuleHit{}
+	mi := &file_morphgate_v1_decision_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuleHit) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuleHit) ProtoMessage() {}
+
+func (x *RuleHit) ProtoReflect() protoreflect.Message {
+	mi := &file_morphgate_v1_decision_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuleHit.ProtoReflect.Descriptor instead.
+func (*RuleHit) Descriptor() ([]byte, []int) {
+	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *RuleHit) GetRuleId() string {
+	if x != nil {
+		return x.RuleId
+	}
+	return ""
+}
+
+func (x *RuleHit) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *RuleHit) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *RuleHit) GetAction() Action {
+	if x != nil {
+		return x.Action
+	}
+	return Action_ACTION_UNSPECIFIED
+}
+
+func (x *RuleHit) GetFields() []string {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
 // One JSON line in vl-main (kind = decision).
 type DecisionEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1187,13 +1272,14 @@ type DecisionEvent struct {
 	EdgeId        string                 `protobuf:"bytes,7,opt,name=edge_id,json=edgeId,proto3" json:"edge_id,omitempty"`
 	BundleVersion uint64                 `protobuf:"varint,8,opt,name=bundle_version,json=bundleVersion,proto3" json:"bundle_version,omitempty"` // SiteBundle.version in effect
 	MonitorOnly   bool                   `protobuf:"varint,9,opt,name=monitor_only,json=monitorOnly,proto3" json:"monitor_only,omitempty"`       // global monitor switch was on
+	Hits          []*RuleHit             `protobuf:"bytes,10,rep,name=hits,proto3" json:"hits,omitempty"`                                        // at most 16, in evaluation order
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DecisionEvent) Reset() {
 	*x = DecisionEvent{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[11]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1205,7 +1291,7 @@ func (x *DecisionEvent) String() string {
 func (*DecisionEvent) ProtoMessage() {}
 
 func (x *DecisionEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[11]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1218,7 +1304,7 @@ func (x *DecisionEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecisionEvent.ProtoReflect.Descriptor instead.
 func (*DecisionEvent) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{11}
+	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *DecisionEvent) GetCtx() *RequestContext {
@@ -1284,6 +1370,13 @@ func (x *DecisionEvent) GetMonitorOnly() bool {
 	return false
 }
 
+func (x *DecisionEvent) GetHits() []*RuleHit {
+	if x != nil {
+		return x.Hits
+	}
+	return nil
+}
+
 // kind = feedback, emitted by POST /__mg/c.
 type ChallengeResult struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
@@ -1306,7 +1399,7 @@ type ChallengeResult struct {
 
 func (x *ChallengeResult) Reset() {
 	*x = ChallengeResult{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[12]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1318,7 +1411,7 @@ func (x *ChallengeResult) String() string {
 func (*ChallengeResult) ProtoMessage() {}
 
 func (x *ChallengeResult) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[12]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1331,7 +1424,7 @@ func (x *ChallengeResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChallengeResult.ProtoReflect.Descriptor instead.
 func (*ChallengeResult) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{12}
+	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ChallengeResult) GetRequestId() string {
@@ -1435,7 +1528,7 @@ type EntityVerdict struct {
 
 func (x *EntityVerdict) Reset() {
 	*x = EntityVerdict{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[13]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1447,7 +1540,7 @@ func (x *EntityVerdict) String() string {
 func (*EntityVerdict) ProtoMessage() {}
 
 func (x *EntityVerdict) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[13]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1460,7 +1553,7 @@ func (x *EntityVerdict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityVerdict.ProtoReflect.Descriptor instead.
 func (*EntityVerdict) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{13}
+	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *EntityVerdict) GetType() EntityType {
@@ -1539,7 +1632,7 @@ type Tls_Ja4 struct {
 
 func (x *Tls_Ja4) Reset() {
 	*x = Tls_Ja4{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[14]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1551,7 +1644,7 @@ func (x *Tls_Ja4) String() string {
 func (*Tls_Ja4) ProtoMessage() {}
 
 func (x *Tls_Ja4) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[14]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1602,7 +1695,7 @@ type Identity_Token struct {
 
 func (x *Identity_Token) Reset() {
 	*x = Identity_Token{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[15]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1614,7 +1707,7 @@ func (x *Identity_Token) String() string {
 func (*Identity_Token) ProtoMessage() {}
 
 func (x *Identity_Token) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[15]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1669,7 +1762,7 @@ type Identity_Proof struct {
 
 func (x *Identity_Proof) Reset() {
 	*x = Identity_Proof{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[16]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1681,7 +1774,7 @@ func (x *Identity_Proof) String() string {
 func (*Identity_Proof) ProtoMessage() {}
 
 func (x *Identity_Proof) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[16]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1723,7 +1816,7 @@ type Identity_Agent struct {
 
 func (x *Identity_Agent) Reset() {
 	*x = Identity_Agent{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[17]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1735,7 +1828,7 @@ func (x *Identity_Agent) String() string {
 func (*Identity_Agent) ProtoMessage() {}
 
 func (x *Identity_Agent) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[17]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1775,19 +1868,22 @@ func (x *Identity_Agent) GetMethod() string {
 // Crawler verification (docs/05 §3). cf_vbot / cf_vbot_cat are corroboration only.
 type Identity_Crawler struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Claimed       bool                   `protobuf:"varint,1,opt,name=claimed,proto3" json:"claimed,omitempty"`                       // the request claims to be a known crawler (UA or signature)
-	Operator      string                 `protobuf:"bytes,2,opt,name=operator,proto3" json:"operator,omitempty"`                      // claimed operator id from the crawler registry
-	Purpose       string                 `protobuf:"bytes,3,opt,name=purpose,proto3" json:"purpose,omitempty"`                        // e.g. search | ai_training | ai_agent
-	Verified      bool                   `protobuf:"varint,4,opt,name=verified,proto3" json:"verified,omitempty"`                     // verified by MorphGate (signature, official IP ranges, rDNS)
-	CfVbot        *bool                  `protobuf:"varint,5,opt,name=cf_vbot,json=cfVbot,proto3,oneof" json:"cf_vbot,omitempty"`     // x-mg-cf-vbot; unset when not forwarded (MISSING)
-	CfVbotCat     string                 `protobuf:"bytes,6,opt,name=cf_vbot_cat,json=cfVbotCat,proto3" json:"cf_vbot_cat,omitempty"` // x-mg-cf-vbot-cat
+	Claimed       bool                   `protobuf:"varint,1,opt,name=claimed,proto3" json:"claimed,omitempty"`                                  // the request claims to be a known crawler (UA or signature)
+	Operator      string                 `protobuf:"bytes,2,opt,name=operator,proto3" json:"operator,omitempty"`                                 // claimed operator id from the crawler registry
+	Purpose       string                 `protobuf:"bytes,3,opt,name=purpose,proto3" json:"purpose,omitempty"`                                   // e.g. search | ai_training | ai_agent
+	Verified      bool                   `protobuf:"varint,4,opt,name=verified,proto3" json:"verified,omitempty"`                                // verified by MorphGate (signature, official IP ranges, rDNS)
+	CfVbot        *bool                  `protobuf:"varint,5,opt,name=cf_vbot,json=cfVbot,proto3,oneof" json:"cf_vbot,omitempty"`                // x-mg-cf-vbot; unset when not forwarded (MISSING)
+	CfVbotCat     string                 `protobuf:"bytes,6,opt,name=cf_vbot_cat,json=cfVbotCat,proto3" json:"cf_vbot_cat,omitempty"`            // x-mg-cf-vbot-cat
+	Verification  string                 `protobuf:"bytes,7,opt,name=verification,proto3" json:"verification,omitempty"`                         // none | pending | verified | failed | unverifiable
+	Method        string                 `protobuf:"bytes,8,opt,name=method,proto3" json:"method,omitempty"`                                     // ip_range | rdns | "" (how the verified / failed result was reached)
+	OutsideRanges bool                   `protobuf:"varint,9,opt,name=outside_ranges,json=outsideRanges,proto3" json:"outside_ranges,omitempty"` // pending only: the operator publishes ranges and the IP is not in them (D-18)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Identity_Crawler) Reset() {
 	*x = Identity_Crawler{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[18]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1799,7 +1895,7 @@ func (x *Identity_Crawler) String() string {
 func (*Identity_Crawler) ProtoMessage() {}
 
 func (x *Identity_Crawler) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[18]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1857,12 +1953,33 @@ func (x *Identity_Crawler) GetCfVbotCat() string {
 	return ""
 }
 
+func (x *Identity_Crawler) GetVerification() string {
+	if x != nil {
+		return x.Verification
+	}
+	return ""
+}
+
+func (x *Identity_Crawler) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *Identity_Crawler) GetOutsideRanges() bool {
+	if x != nil {
+		return x.OutsideRanges
+	}
+	return false
+}
+
 // Per-item binding check results: "match" | "mismatch"; empty = not bound or
 // not checked. ctp is shadow only (recorded, never enforced).
 type Identity_Token_Bind struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Uah           string                 `protobuf:"bytes,1,opt,name=uah,proto3" json:"uah,omitempty"`
-	Ipp           string                 `protobuf:"bytes,2,opt,name=ipp,proto3" json:"ipp,omitempty"`
+	Ipp           string                 `protobuf:"bytes,2,opt,name=ipp,proto3" json:"ipp,omitempty"` // match | soft_mismatch (prefix changed within the ASN) | mismatch
 	Jkt           string                 `protobuf:"bytes,3,opt,name=jkt,proto3" json:"jkt,omitempty"`
 	Ctp           string                 `protobuf:"bytes,4,opt,name=ctp,proto3" json:"ctp,omitempty"`
 	Tfp           string                 `protobuf:"bytes,5,opt,name=tfp,proto3" json:"tfp,omitempty"`
@@ -1872,7 +1989,7 @@ type Identity_Token_Bind struct {
 
 func (x *Identity_Token_Bind) Reset() {
 	*x = Identity_Token_Bind{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[19]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1884,7 +2001,7 @@ func (x *Identity_Token_Bind) String() string {
 func (*Identity_Token_Bind) ProtoMessage() {}
 
 func (x *Identity_Token_Bind) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[19]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2018,7 +2135,7 @@ const file_morphgate_v1_decision_proto_rawDesc = "" +
 	"\n" +
 	"early_data\x18\r \x01(\bR\tearlyData\x12\x1a\n" +
 	"\bpriority\x18\x0e \x01(\tR\bpriority\x120\n" +
-	"\x14accept_encoding_orig\x18\x0f \x01(\tR\x12acceptEncodingOrig\"\x8c\x06\n" +
+	"\x14accept_encoding_orig\x18\x0f \x01(\tR\x12acceptEncodingOrig\"\xef\x06\n" +
 	"\bIdentity\x122\n" +
 	"\x05token\x18\x01 \x01(\v2\x1c.morphgate.v1.Identity.TokenR\x05token\x122\n" +
 	"\x05proof\x18\x02 \x01(\v2\x1c.morphgate.v1.Identity.ProofR\x05proof\x122\n" +
@@ -2041,14 +2158,17 @@ const file_morphgate_v1_decision_proto_rawDesc = "" +
 	"\x05Agent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bgrant_id\x18\x02 \x01(\tR\agrantId\x12\x16\n" +
-	"\x06method\x18\x03 \x01(\tR\x06method\x1a\xbf\x01\n" +
+	"\x06method\x18\x03 \x01(\tR\x06method\x1a\xa2\x02\n" +
 	"\aCrawler\x12\x18\n" +
 	"\aclaimed\x18\x01 \x01(\bR\aclaimed\x12\x1a\n" +
 	"\boperator\x18\x02 \x01(\tR\boperator\x12\x18\n" +
 	"\apurpose\x18\x03 \x01(\tR\apurpose\x12\x1a\n" +
 	"\bverified\x18\x04 \x01(\bR\bverified\x12\x1c\n" +
 	"\acf_vbot\x18\x05 \x01(\bH\x00R\x06cfVbot\x88\x01\x01\x12\x1e\n" +
-	"\vcf_vbot_cat\x18\x06 \x01(\tR\tcfVbotCatB\n" +
+	"\vcf_vbot_cat\x18\x06 \x01(\tR\tcfVbotCat\x12\"\n" +
+	"\fverification\x18\a \x01(\tR\fverification\x12\x16\n" +
+	"\x06method\x18\b \x01(\tR\x06method\x12%\n" +
+	"\x0eoutside_ranges\x18\t \x01(\bR\routsideRangesB\n" +
 	"\n" +
 	"\b_cf_vbot\"\x81\x02\n" +
 	"\rClientSignals\x12&\n" +
@@ -2081,7 +2201,7 @@ const file_morphgate_v1_decision_proto_rawDesc = "" +
 	"topReasons\x12#\n" +
 	"\rmodel_version\x18\x06 \x01(\tR\fmodelVersion\x12'\n" +
 	"\x0fruleset_version\x18\a \x01(\tR\x0erulesetVersion\x12!\n" +
-	"\fshadow_score\x18\b \x01(\rR\vshadowScore\"\x8b\x02\n" +
+	"\fshadow_score\x18\b \x01(\rR\vshadowScore\"\x9f\x02\n" +
 	"\bDecision\x12,\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x14.morphgate.v1.ActionR\x06action\x12B\n" +
 	"\x0echallenge_type\x18\x02 \x01(\x0e2\x1b.morphgate.v1.ChallengeTypeR\rchallengeType\x12\x1f\n" +
@@ -2090,7 +2210,14 @@ const file_morphgate_v1_decision_proto_rawDesc = "" +
 	"\x06status\x18\x04 \x01(\rR\x06status\x12\"\n" +
 	"\rretry_after_s\x18\x05 \x01(\rR\vretryAfterS\x12\x17\n" +
 	"\arule_id\x18\x06 \x01(\tR\x06ruleId\x12\x17\n" +
-	"\adry_run\x18\a \x01(\bR\x06dryRun\"\xf8\x02\n" +
+	"\adry_run\x18\a \x01(\bR\x06dryRun\x12\x12\n" +
+	"\x04tags\x18\b \x03(\tR\x04tags\"\x96\x01\n" +
+	"\aRuleHit\x12\x17\n" +
+	"\arule_id\x18\x01 \x01(\tR\x06ruleId\x12\x18\n" +
+	"\aoutcome\x18\x02 \x01(\tR\aoutcome\x12\x12\n" +
+	"\x04mode\x18\x03 \x01(\tR\x04mode\x12,\n" +
+	"\x06action\x18\x04 \x01(\x0e2\x14.morphgate.v1.ActionR\x06action\x12\x16\n" +
+	"\x06fields\x18\x05 \x03(\tR\x06fields\"\xa3\x03\n" +
 	"\rDecisionEvent\x12.\n" +
 	"\x03ctx\x18\x01 \x01(\v2\x1c.morphgate.v1.RequestContextR\x03ctx\x12.\n" +
 	"\asignals\x18\x02 \x03(\v2\x14.morphgate.v1.SignalR\asignals\x120\n" +
@@ -2102,7 +2229,9 @@ const file_morphgate_v1_decision_proto_rawDesc = "" +
 	"sampleRate\x12\x17\n" +
 	"\aedge_id\x18\a \x01(\tR\x06edgeId\x12%\n" +
 	"\x0ebundle_version\x18\b \x01(\x04R\rbundleVersion\x12!\n" +
-	"\fmonitor_only\x18\t \x01(\bR\vmonitorOnly\"\xf3\x02\n" +
+	"\fmonitor_only\x18\t \x01(\bR\vmonitorOnly\x12)\n" +
+	"\x04hits\x18\n" +
+	" \x03(\v2\x15.morphgate.v1.RuleHitR\x04hits\"\xf3\x02\n" +
 	"\x0fChallengeResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x17\n" +
@@ -2143,7 +2272,7 @@ func file_morphgate_v1_decision_proto_rawDescGZIP() []byte {
 	return file_morphgate_v1_decision_proto_rawDescData
 }
 
-var file_morphgate_v1_decision_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_morphgate_v1_decision_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_morphgate_v1_decision_proto_goTypes = []any{
 	(*RequestContext)(nil),      // 0: morphgate.v1.RequestContext
 	(*UpstreamInfo)(nil),        // 1: morphgate.v1.UpstreamInfo
@@ -2156,27 +2285,28 @@ var file_morphgate_v1_decision_proto_goTypes = []any{
 	(*Signal)(nil),              // 8: morphgate.v1.Signal
 	(*RiskAssessment)(nil),      // 9: morphgate.v1.RiskAssessment
 	(*Decision)(nil),            // 10: morphgate.v1.Decision
-	(*DecisionEvent)(nil),       // 11: morphgate.v1.DecisionEvent
-	(*ChallengeResult)(nil),     // 12: morphgate.v1.ChallengeResult
-	(*EntityVerdict)(nil),       // 13: morphgate.v1.EntityVerdict
-	(*Tls_Ja4)(nil),             // 14: morphgate.v1.Tls.Ja4
-	(*Identity_Token)(nil),      // 15: morphgate.v1.Identity.Token
-	(*Identity_Proof)(nil),      // 16: morphgate.v1.Identity.Proof
-	(*Identity_Agent)(nil),      // 17: morphgate.v1.Identity.Agent
-	(*Identity_Crawler)(nil),    // 18: morphgate.v1.Identity.Crawler
-	(*Identity_Token_Bind)(nil), // 19: morphgate.v1.Identity.Token.Bind
-	(Channel)(0),                // 20: morphgate.v1.Channel
-	(UpstreamProfileKind)(0),    // 21: morphgate.v1.UpstreamProfileKind
-	(SignalSource)(0),           // 22: morphgate.v1.SignalSource
-	(SignalFamily)(0),           // 23: morphgate.v1.SignalFamily
-	(SignalState)(0),            // 24: morphgate.v1.SignalState
-	(BotClass)(0),               // 25: morphgate.v1.BotClass
-	(Action)(0),                 // 26: morphgate.v1.Action
-	(ChallengeType)(0),          // 27: morphgate.v1.ChallengeType
-	(EntityType)(0),             // 28: morphgate.v1.EntityType
+	(*RuleHit)(nil),             // 11: morphgate.v1.RuleHit
+	(*DecisionEvent)(nil),       // 12: morphgate.v1.DecisionEvent
+	(*ChallengeResult)(nil),     // 13: morphgate.v1.ChallengeResult
+	(*EntityVerdict)(nil),       // 14: morphgate.v1.EntityVerdict
+	(*Tls_Ja4)(nil),             // 15: morphgate.v1.Tls.Ja4
+	(*Identity_Token)(nil),      // 16: morphgate.v1.Identity.Token
+	(*Identity_Proof)(nil),      // 17: morphgate.v1.Identity.Proof
+	(*Identity_Agent)(nil),      // 18: morphgate.v1.Identity.Agent
+	(*Identity_Crawler)(nil),    // 19: morphgate.v1.Identity.Crawler
+	(*Identity_Token_Bind)(nil), // 20: morphgate.v1.Identity.Token.Bind
+	(Channel)(0),                // 21: morphgate.v1.Channel
+	(UpstreamProfileKind)(0),    // 22: morphgate.v1.UpstreamProfileKind
+	(SignalSource)(0),           // 23: morphgate.v1.SignalSource
+	(SignalFamily)(0),           // 24: morphgate.v1.SignalFamily
+	(SignalState)(0),            // 25: morphgate.v1.SignalState
+	(BotClass)(0),               // 26: morphgate.v1.BotClass
+	(Action)(0),                 // 27: morphgate.v1.Action
+	(ChallengeType)(0),          // 28: morphgate.v1.ChallengeType
+	(EntityType)(0),             // 29: morphgate.v1.EntityType
 }
 var file_morphgate_v1_decision_proto_depIdxs = []int32{
-	20, // 0: morphgate.v1.RequestContext.channel:type_name -> morphgate.v1.Channel
+	21, // 0: morphgate.v1.RequestContext.channel:type_name -> morphgate.v1.Channel
 	1,  // 1: morphgate.v1.RequestContext.upstream:type_name -> morphgate.v1.UpstreamInfo
 	2,  // 2: morphgate.v1.RequestContext.net:type_name -> morphgate.v1.Net
 	3,  // 3: morphgate.v1.RequestContext.tls:type_name -> morphgate.v1.Tls
@@ -2184,33 +2314,35 @@ var file_morphgate_v1_decision_proto_depIdxs = []int32{
 	5,  // 5: morphgate.v1.RequestContext.http:type_name -> morphgate.v1.Http
 	6,  // 6: morphgate.v1.RequestContext.identity:type_name -> morphgate.v1.Identity
 	7,  // 7: morphgate.v1.RequestContext.client:type_name -> morphgate.v1.ClientSignals
-	13, // 8: morphgate.v1.RequestContext.verdicts:type_name -> morphgate.v1.EntityVerdict
-	21, // 9: morphgate.v1.UpstreamInfo.profile:type_name -> morphgate.v1.UpstreamProfileKind
-	14, // 10: morphgate.v1.Tls.ja4:type_name -> morphgate.v1.Tls.Ja4
-	22, // 11: morphgate.v1.Http.version_source:type_name -> morphgate.v1.SignalSource
-	15, // 12: morphgate.v1.Identity.token:type_name -> morphgate.v1.Identity.Token
-	16, // 13: morphgate.v1.Identity.proof:type_name -> morphgate.v1.Identity.Proof
-	17, // 14: morphgate.v1.Identity.agent:type_name -> morphgate.v1.Identity.Agent
-	18, // 15: morphgate.v1.Identity.crawler:type_name -> morphgate.v1.Identity.Crawler
-	23, // 16: morphgate.v1.Signal.family:type_name -> morphgate.v1.SignalFamily
-	24, // 17: morphgate.v1.Signal.state:type_name -> morphgate.v1.SignalState
-	22, // 18: morphgate.v1.Signal.source:type_name -> morphgate.v1.SignalSource
-	25, // 19: morphgate.v1.RiskAssessment.bot_class:type_name -> morphgate.v1.BotClass
-	26, // 20: morphgate.v1.Decision.action:type_name -> morphgate.v1.Action
-	27, // 21: morphgate.v1.Decision.challenge_type:type_name -> morphgate.v1.ChallengeType
-	0,  // 22: morphgate.v1.DecisionEvent.ctx:type_name -> morphgate.v1.RequestContext
-	8,  // 23: morphgate.v1.DecisionEvent.signals:type_name -> morphgate.v1.Signal
-	9,  // 24: morphgate.v1.DecisionEvent.risk:type_name -> morphgate.v1.RiskAssessment
-	10, // 25: morphgate.v1.DecisionEvent.decision:type_name -> morphgate.v1.Decision
-	27, // 26: morphgate.v1.ChallengeResult.type:type_name -> morphgate.v1.ChallengeType
-	28, // 27: morphgate.v1.EntityVerdict.type:type_name -> morphgate.v1.EntityType
-	22, // 28: morphgate.v1.Tls.Ja4.source:type_name -> morphgate.v1.SignalSource
-	19, // 29: morphgate.v1.Identity.Token.bind:type_name -> morphgate.v1.Identity.Token.Bind
-	30, // [30:30] is the sub-list for method output_type
-	30, // [30:30] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	14, // 8: morphgate.v1.RequestContext.verdicts:type_name -> morphgate.v1.EntityVerdict
+	22, // 9: morphgate.v1.UpstreamInfo.profile:type_name -> morphgate.v1.UpstreamProfileKind
+	15, // 10: morphgate.v1.Tls.ja4:type_name -> morphgate.v1.Tls.Ja4
+	23, // 11: morphgate.v1.Http.version_source:type_name -> morphgate.v1.SignalSource
+	16, // 12: morphgate.v1.Identity.token:type_name -> morphgate.v1.Identity.Token
+	17, // 13: morphgate.v1.Identity.proof:type_name -> morphgate.v1.Identity.Proof
+	18, // 14: morphgate.v1.Identity.agent:type_name -> morphgate.v1.Identity.Agent
+	19, // 15: morphgate.v1.Identity.crawler:type_name -> morphgate.v1.Identity.Crawler
+	24, // 16: morphgate.v1.Signal.family:type_name -> morphgate.v1.SignalFamily
+	25, // 17: morphgate.v1.Signal.state:type_name -> morphgate.v1.SignalState
+	23, // 18: morphgate.v1.Signal.source:type_name -> morphgate.v1.SignalSource
+	26, // 19: morphgate.v1.RiskAssessment.bot_class:type_name -> morphgate.v1.BotClass
+	27, // 20: morphgate.v1.Decision.action:type_name -> morphgate.v1.Action
+	28, // 21: morphgate.v1.Decision.challenge_type:type_name -> morphgate.v1.ChallengeType
+	27, // 22: morphgate.v1.RuleHit.action:type_name -> morphgate.v1.Action
+	0,  // 23: morphgate.v1.DecisionEvent.ctx:type_name -> morphgate.v1.RequestContext
+	8,  // 24: morphgate.v1.DecisionEvent.signals:type_name -> morphgate.v1.Signal
+	9,  // 25: morphgate.v1.DecisionEvent.risk:type_name -> morphgate.v1.RiskAssessment
+	10, // 26: morphgate.v1.DecisionEvent.decision:type_name -> morphgate.v1.Decision
+	11, // 27: morphgate.v1.DecisionEvent.hits:type_name -> morphgate.v1.RuleHit
+	28, // 28: morphgate.v1.ChallengeResult.type:type_name -> morphgate.v1.ChallengeType
+	29, // 29: morphgate.v1.EntityVerdict.type:type_name -> morphgate.v1.EntityType
+	23, // 30: morphgate.v1.Tls.Ja4.source:type_name -> morphgate.v1.SignalSource
+	20, // 31: morphgate.v1.Identity.Token.bind:type_name -> morphgate.v1.Identity.Token.Bind
+	32, // [32:32] is the sub-list for method output_type
+	32, // [32:32] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_morphgate_v1_decision_proto_init() }
@@ -2219,14 +2351,14 @@ func file_morphgate_v1_decision_proto_init() {
 		return
 	}
 	file_morphgate_v1_common_proto_init()
-	file_morphgate_v1_decision_proto_msgTypes[18].OneofWrappers = []any{}
+	file_morphgate_v1_decision_proto_msgTypes[19].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_morphgate_v1_decision_proto_rawDesc), len(file_morphgate_v1_decision_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   20,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
