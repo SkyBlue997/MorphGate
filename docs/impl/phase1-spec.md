@@ -33,6 +33,15 @@
 | I-17 | 阶段 1 集成，rDNS 在途标记（§7.3）：WP-E1b 构造 `CacheConfig` 时取 `inflight_ttl_ms = 2 × dns_timeout_ms + 3000`，严格大于任务的整体截止时间（`2 × dns_timeout_ms + 1 s`）加排队时间；否则标记过期后迟到的 `complete` / `abandon` 会清掉新任务的标记。截止时间到达按 `complete(job, DnsError, now)` 报告，drop guard 只在取消或 panic 时 `abandon`。hickory 的错误文本含查询名（PTR 名即客户端 IP），`DnsError::Server` 只带固定文本（如响应码） | §7.3、§9.6 |
 | I-18 | 阶段 1 集成，`mg-challenge` 的实现细化（Edge 依此接线）：`Sealer::open` 拒绝非规范的信封编码（`OpenError::Envelope`）；`SealError` 另有 `Shape`：`seal` 拒绝 `open` 会拒绝的一切（含缺 `bind.ipp`）；`seal` 对所有类型要求 `exp − iat ≤ MAX_C_LIFETIME_MS`；`verify` 要求 `sub` 与 `jti` 是 16 字节的 base64url（Edge 可据此直接把 `sub` 写入 `MG-Session` 与限速键）；`rb` 在解析 claims 时校验（未知值 → `invalid`，不像 `lvl` 那样排在过期检查之后）；`seal` / `open` 的 host 与 `pow_verify` 的 C 由调用方给出：host 先按 §9.4 规范化，C 为提交中收到的原文 | §6.2、§6.5、§6.7 |
 | I-19 | 阶段 1 集成：Phase 2 的挑战类型 `attestation`、`step_up` 与 `tarpit` 动作由 `mgctl policy check` 作为策略语言照常接受，由 `mgctl bundle build`（WP-G2）与 Edge 加载（`rule_from_proto`）拒绝，不会出现 Edge 无法加载的配置包。§2.1 的两处跨 WP 耦合已闭合：一致性套件与 golden 配置包的测试不再有 SKIPPED 分支（夹具缺失即失败）；另加两项跨语言检查：`edge-core/tests/bundle_golden.rs`（Go 签名的 golden 配置包经 `verify_bundle`，每条规则经 `rule_from_proto`）与 `intel/tests/artifacts.rs` 的 `go_crawler_sync_output_accepted`（`mgctl crawler sync` 的 golden 输出经 `mg-intel` 校验） | §2.1、§16 |
+| I-20 | 阶段 2 前：对**计算得到的 map**（`?:` 分支产生的 map）做 index / select 一律拒绝：Go 编译器报 `unsupported in policy IR: computed map`，Rust `Program::new` / `program_from_proto` 同样拒绝；只允许对字段路径直接取下标。原来锁定"计算 map"语义的一致性用例改为编译失败用例。 | §5.2、§5.3 |
+| I-21 | `ip_in` 维持当前 Go 语义并写成一致性用例：IPv4 映射 CIDR 前缀长度 < 96 → `invalid_argument`（字面量为编译错误）；ip 非法且条目非法 → `false`，不校验条目。 | §5.3 |
+| I-22 | **rDNS 后缀**：`rdns_suffixes` 每项必须以 `.` 开头，且去掉开头的点后至少两段标签；匹配只在标签边界成立（主机名以该后缀结尾，后缀含开头的点）。Go 写入端（`crawler sync` / 校验器）与 Rust 读取端（`mg-intel`）都执行；测试必须覆盖 `evilgooglebot.com` 不匹配 `.googlebot.com`、单段后缀被拒。 | §7.3、§12.3 |
+| I-23 | 限速器 id 在**整个站点**内唯一（跨环境），`mgctl bundle build`（sitecfg）与 `verify_bundle` 都校验；Valkey 键格式 `mg:rl:{site}:{limiter}:{kh}` 不变。 | §8.2、§9.7 |
+| I-24 | 路由上限：每个环境最多 64 条**声明**路由，外加构建器追加的默认路由（共 65 条）；sitecfg 与 `verify_bundle` 一致。 | §8.2 |
+| I-25 | 事件输出解耦：VictoriaLogs、文件、`mg:ev` 三个输出各自有独立的刷写任务与游标，任一输出故障只影响自己（各自按类别丢弃并计数）；由 WP-E1d 修改 `edge-core/src/events/**` 实现（此时 WP-C4 已结束，E1d 为其修复所有者）。`impl StreamWriter for StateHandle` 放在 `edge-core/src/events/stream.rs`。 | §9.11 |
+| I-26 | `RdnsJob` 增加私有作业序号，`complete()` / `abandon()` 只清除同一序号的在途标记，保证 §7.3 的"每键一个在途作业"在过期作业下也成立（WP-R3 的 API 小改，阶段 2 前完成）。 | §7.3、§7.6 |
+| I-27 | `mgctl` 的写命令（含 `cf ips sync`、`crawler sync`）在写任何工件之前先确认审计日志可用，失败则不写并返回 3。 | §14.1 |
+| I-28 | Web SDK 提交的表单解码：`+` 解码为空格；`env` 中可选字段允许 `null`（视为该探测无结果）；`build = "0000000000000000"` 合法。Edge 加载 SDK 目录时的模板校验与 `scripts/build-dist.mjs` 的 `validateTemplate` 规则一致（含占位符上下文规则）。 | §10、§11 |
 
 ## 0. 范围、决定与已落地文件
 
