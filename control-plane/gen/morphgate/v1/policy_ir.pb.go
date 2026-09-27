@@ -135,11 +135,15 @@ func (StringFunction) EnumDescriptor() ([]byte, []int) {
 }
 
 type PolicyExpr struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	IrVersion     uint32                 `protobuf:"varint,1,opt,name=ir_version,json=irVersion,proto3" json:"ir_version,omitempty"` // 1
-	Root          *Expr                  `protobuf:"bytes,2,opt,name=root,proto3" json:"root,omitempty"`                             // must evaluate to bool
-	Fields        []string               `protobuf:"bytes,3,rep,name=fields,proto3" json:"fields,omitempty"`                         // sorted unique field paths the expression reads or has()-tests (informational)
-	CostMax       uint64                 `protobuf:"varint,4,opt,name=cost_max,json=costMax,proto3" json:"cost_max,omitempty"`       // cel-go worst-case cost estimate at compile time (informational)
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	IrVersion uint32                 `protobuf:"varint,1,opt,name=ir_version,json=irVersion,proto3" json:"ir_version,omitempty"` // 1
+	Root      *Expr                  `protobuf:"bytes,2,opt,name=root,proto3" json:"root,omitempty"`                             // must evaluate to bool
+	Fields    []string               `protobuf:"bytes,3,rep,name=fields,proto3" json:"fields,omitempty"`                         // sorted unique field paths the expression reads or has()-tests (informational)
+	// Static worst-case evaluation steps of `root` under the Activation size
+	// caps (spec §5.3 "step bound"). Computed by the compiler and recomputed by
+	// the Edge at load time; the two must be equal and <= 100000, otherwise the
+	// rule is rejected. Makes the runtime step limit unreachable.
+	MaxSteps      uint64 `protobuf:"varint,4,opt,name=max_steps,json=maxSteps,proto3" json:"max_steps,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -195,9 +199,9 @@ func (x *PolicyExpr) GetFields() []string {
 	return nil
 }
 
-func (x *PolicyExpr) GetCostMax() uint64 {
+func (x *PolicyExpr) GetMaxSteps() uint64 {
 	if x != nil {
-		return x.CostMax
+		return x.MaxSteps
 	}
 	return 0
 }
@@ -1064,14 +1068,14 @@ var File_morphgate_v1_policy_ir_proto protoreflect.FileDescriptor
 
 const file_morphgate_v1_policy_ir_proto_rawDesc = "" +
 	"\n" +
-	"\x1cmorphgate/v1/policy_ir.proto\x12\fmorphgate.v1\"\x86\x01\n" +
+	"\x1cmorphgate/v1/policy_ir.proto\x12\fmorphgate.v1\"\x88\x01\n" +
 	"\n" +
 	"PolicyExpr\x12\x1d\n" +
 	"\n" +
 	"ir_version\x18\x01 \x01(\rR\tirVersion\x12&\n" +
 	"\x04root\x18\x02 \x01(\v2\x12.morphgate.v1.ExprR\x04root\x12\x16\n" +
-	"\x06fields\x18\x03 \x03(\tR\x06fields\x12\x19\n" +
-	"\bcost_max\x18\x04 \x01(\x04R\acostMax\"\xe7\x05\n" +
+	"\x06fields\x18\x03 \x03(\tR\x06fields\x12\x1b\n" +
+	"\tmax_steps\x18\x04 \x01(\x04R\bmaxSteps\"\xe7\x05\n" +
 	"\x04Expr\x121\n" +
 	"\aliteral\x18\x01 \x01(\v2\x15.morphgate.v1.LiteralH\x00R\aliteral\x12\x16\n" +
 	"\x05field\x18\x02 \x01(\tH\x00R\x05field\x12\x12\n" +

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-# challenge/ and intel/ are pre-registered Phase 1 crates (docs/impl/phase1-spec.md §2).
-members = ["core", "challenge", "intel", "edge", "proto/rust"]
+# challenge/, intel/ and edge-core/ are pre-registered Phase 1 crates (docs/impl/phase1-spec.md §2).
+members = ["core", "challenge", "intel", "edge-core", "edge", "proto/rust"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,7 @@ mg-core = { path = "core" }
 mg-proto = { path = "proto/rust" }
 mg-challenge = { path = "challenge" }
 mg-intel = { path = "intel" }
+mg-edge-core = { path = "edge-core" }
 
 # Serialization / data contract
 serde = { version = "1.0.228", features = ["derive"] }
@@ -49,6 +50,19 @@ base64 = "0.23.1"
 
 # mg-intel (Phase 1, WP-R3): IP sets, GeoLite2 mmdb, crawler registry.
 maxminddb = "0.32.0"
+
+# mg-edge-core (Phase 1, WP-C1..C4) and mg-edge: async runtime pieces that run
+# inside Pingora background services. reqwest never reads proxy environment
+# variables (the code calls ClientBuilder::no_proxy, spec §9.10); its rustls
+# stack (aws-lc-rs) is TLS-only, bundle signatures use ed25519-compact.
+tokio = { version = "1.53", default-features = false, features = ["rt", "time", "sync", "macros", "net", "io-util"] }
+redis = { version = "1.7.1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+ed25519-compact = { version = "2.6.0", default-features = false }
+getrandom = "0.4.3"
+prometheus = { version = "0.14.0", default-features = false }
+arc-swap = "1.9"
+hickory-resolver = "0.26.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

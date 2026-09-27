@@ -41,8 +41,9 @@ message Route {
   Channel channel = 6;
   RouteSensitivity sensitivity = 7;
   bool fail_closed = 8;          // behaviour when dependencies are unavailable (spec §9.9)
-  repeated string paths = 9;     // glob patterns (policy glob syntax) matched against the normalized path
+  repeated string paths = 9;     // glob patterns (policy glob syntax) matched against every path view (spec §9.4)
   bool require_clearance = 10;   // CHALLENGE unless a valid clearance token is presented
+  bool redact_path = 11;         // events and access records log "/<route name>" instead of the path (tokenized URLs)
 }
 
 message CompiledRule {
@@ -138,6 +139,7 @@ message SiteBundle {
   OriginHeaderConfig origin_headers = 21;
   bool share_ip_verdicts = 22;   // also read/write IP / prefix / ASN verdicts under site "all" (docs/01 §10)
   string source_digest = 23;     // sha256 over the site YAML and policy files it was built from (audit)
+  bool case_insensitive_paths = 24; // route patterns and path views compared lower-cased (spec §9.4)
 }
 
 message ChallengeConfig {
@@ -150,12 +152,12 @@ message ChallengeConfig {
   uint32 ttl_s = 1;              // lifetime of invisible / pow C, <= 120
   PowBits pow_bits = 2;          // SHA-256 hashcash difficulty (leading zero bits) per risk band
   string fallback_ret = 3;       // return path for challenged non-GET navigations, e.g. "/"
-  uint32 max_failures = 4;       // failed submissions per ipp per failure_window_s before 429
+  uint32 max_failures = 4;       // failed submissions per ip entity per failure_window_s before 429 (x4 per ipp)
   uint32 failure_window_s = 5;
   uint32 submit_rate = 6;        // built-in limiter mg.c.submit (per ipp)
   uint32 submit_period_s = 7;
   uint32 submit_burst = 8;
-  uint32 issue_per_ipp = 9;      // built-in limiter mg.clr.issue (signal only) per ipp ...
+  uint32 issue_per_ipp = 9;      // clearance issuance quota (enforced: 429) per ipp ...
   uint32 issue_per_asn = 10;     // ... and per ASN, per issue_period_s
   uint32 issue_period_s = 11;
 }
@@ -163,7 +165,7 @@ message ChallengeConfig {
 message ClearanceConfig {
   uint32 ttl_invisible_s = 1;    // lvl invisible
   uint32 ttl_pow_s = 2;          // lvl pow
-  uint32 session_max_s = 3;      // reuse the previous token's sub for re-issuance within this age
+  uint32 session_max_s = 3;      // reuse the previous token's sub while now - sst <= session_max_s (spec §6.5)
   bool ctp_shadow = 4;           // compute and record bind.ctp (cloudflare only, never enforced)
 }
 

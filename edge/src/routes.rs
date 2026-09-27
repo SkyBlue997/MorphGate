@@ -15,10 +15,12 @@
 //! protections.
 
 use pingora::http::{Method, ResponseHeader};
-use std::borrow::Cow;
 
-/// Reserved path prefix.
-pub const EDGE_PREFIX: &str = "/__mg";
+/// Reserved path prefix (defined in `mg_core::paths`, shared with mg-challenge).
+pub use mg_core::paths::EDGE_PREFIX;
+/// Path views used for the namespace test; they live in `mg_core::paths` so
+/// that the Edge and mg-challenge's return-path check share one implementation.
+pub use mg_core::paths::{cloudflare_view, rfc3986_view};
 /// Liveness endpoint.
 pub const HEALTHZ_PATH: &str = "/__mg/healthz";
 /// Cache policy for everything the Edge answers itself.
@@ -52,104 +54,15 @@ impl RouteKind {
 /// Only the exact raw path `/__mg/healthz` is the health check. A path is in
 /// the reserved namespace if its raw form, its RFC 3986 form or its Cloudflare
 /// form (see [`rfc3986_view`], [`cloudflare_view`]) is `/__mg` or starts with
-/// `/__mg/`.
+/// `/__mg/` ([`mg_core::paths::is_reserved`]).
 pub fn classify(path: &str) -> RouteKind {
     if path == HEALTHZ_PATH {
-        return RouteKind::Healthz;
-    }
-    let in_namespace = |p: &str| {
-        p.strip_prefix(EDGE_PREFIX)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-    };
-    if in_namespace(path)
-        || in_namespace(&rfc3986_view(path))
-        || in_namespace(&cloudflare_view(path))
-    {
+        RouteKind::Healthz
+    } else if mg_core::paths::is_reserved(path) {
         RouteKind::EdgeReserved
     } else {
         RouteKind::Origin
     }
-}
-
-/// The path as Cloudflare's "RFC 3986" URL normalization sees it: percent-encoded
-/// unreserved characters decoded, then dot segments removed.
-pub fn rfc3986_view(path: &str) -> Cow<'_, str> {
-    if !path.contains(['%', '.']) {
-        return Cow::Borrowed(path);
-    }
-    Cow::Owned(remove_dot_segments(&decode_unreserved(path)))
-}
-
-/// The path as Cloudflare's default ("Cloudflare") URL normalization sees it:
-/// unreserved characters decoded, `\` turned into `/`, runs of `/` merged,
-/// then dot segments removed.
-pub fn cloudflare_view(path: &str) -> Cow<'_, str> {
-    if !path.contains(['%', '.', '\\']) && !path.contains("//") {
-        return Cow::Borrowed(path);
-    }
-    let decoded = decode_unreserved(path).replace('\\', "/");
-    let mut merged = String::with_capacity(decoded.len());
-    for c in decoded.chars() {
-        if !(c == '/' && merged.ends_with('/')) {
-            merged.push(c);
-        }
-    }
-    Cow::Owned(remove_dot_segments(&merged))
-}
-
-/// Decodes `%XX` escapes of RFC 3986 unreserved characters
-/// (`A-Z a-z 0-9 - . _ ~`) and upper-cases the hex digits of all other escapes.
-fn decode_unreserved(path: &str) -> String {
-    let bytes = path.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let escape = (bytes[i] == b'%')
-            .then(|| bytes.get(i + 1..i + 3))
-            .flatten()
-            .and_then(|hex| std::str::from_utf8(hex).ok())
-            .and_then(|hex| u8::from_str_radix(hex, 16).ok().map(|b| (b, hex)));
-        match escape {
-            Some((b, _)) if b.is_ascii_alphanumeric() || b"-._~".contains(&b) => out.push(b),
-            Some((_, hex)) => {
-                out.push(b'%');
-                out.extend(hex.to_ascii_uppercase().bytes());
-            }
-            None => {
-                out.push(bytes[i]);
-                i += 1;
-                continue;
-            }
-        }
-        i += 3;
-    }
-    // Only ASCII bytes were decoded, so valid UTF-8 input stays valid.
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// RFC 3986 §5.2.4 `remove_dot_segments` for absolute paths; other inputs
-/// (`*`, empty) are returned unchanged.
-fn remove_dot_segments(path: &str) -> String {
-    let Some(rest) = path.strip_prefix('/') else {
-        return path.to_string();
-    };
-    let mut out: Vec<&str> = Vec::new();
-    let mut trailing_slash = false;
-    for segment in rest.split('/') {
-        trailing_slash = matches!(segment, "." | "..");
-        match segment {
-            "." => {}
-            ".." => {
-                out.pop();
-            }
-            s => out.push(s),
-        }
-    }
-    let mut result = format!("/{}", out.join("/"));
-    if trailing_slash && !result.ends_with('/') {
-        result.push('/');
-    }
-    result
 }
 
 /// A small, fixed response produced by the Edge.

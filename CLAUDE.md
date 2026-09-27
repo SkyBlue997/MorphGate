@@ -13,11 +13,12 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 
 | Path | Contents |
 |---|---|
-| `Cargo.toml` | Rust workspace (edition 2024, MSRV 1.88): `core`, `challenge`, `intel`, `edge`, `proto/rust` |
+| `Cargo.toml` | Rust workspace (edition 2024, MSRV 1.88): `core`, `challenge`, `intel`, `edge-core`, `edge`, `proto/rust` |
 | `core/` | `mg-core`: pure Decision Core. No I/O, threads, tokio or wall clock (time is passed in); must build for `wasm32-unknown-unknown` |
 | `edge/` | `mg-edge`: Pingora (`=0.9.0`, BoringSSL) binary. All Pingora-specific code stays here. Dev config in `edge/config/edge.dev.toml` |
 | `challenge/` | `mg-challenge` (Phase 1): sealed challenges, epoch keys, SHA-256 PoW, PASETO v4.local clearance tokens. No I/O; time and RNG are injected |
 | `intel/` | `mg-intel` (Phase 1): IP prefix sets, GeoLite2 mmdb lookups, crawler registry + verification (DNS behind a trait), Cloudflare IP ranges |
+| `edge-core/` | `mg-edge-core` (Phase 1): Edge components without Pingora (upstream trust and request limits, signed bundle client, Valkey state with local fallback, event sinks); `testkit` feature for shared test helpers. Async code runs only inside Pingora background services |
 | `proto/morphgate/v1/` | Shared protobuf contract. Rust: `proto/rust` (`mg-proto`, protox in build.rs). Go: generated into `control-plane/gen` and committed |
 | `control-plane/` | Go module: `cmd/mgctl`, `cmd/mg-control`, `internal/...` |
 | `lab/` | Go module: Validation Lab (`internal/guard` allowlist, `cmd/mglab`; `Dockerfile` for the isolated compose network) |
@@ -26,7 +27,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `deploy/compose/` | Dev environment: Valkey, PostgreSQL, VictoriaMetrics, VictoriaLogs (`vl-main` 30d, `vl-short` 7d), mock origin; optional profiles `grafana`, `tunnel` (cloudflared) and `lab` (Validation Lab on an internal network) |
 | `deploy/systemd/` | `mg-edge.service` (Pingora graceful upgrade via `systemctl reload`) and `edge.toml.example`, kept in sync by `edge/tests/shipped_configs.rs` |
 | `scripts/` | `gen-proto.sh`, `check_doc_links.py`, `edge-smoke.sh`, `lab-egress-check.sh` |
-| `testdata/` | Cross-component fixtures: `phase1/kat.json` (crypto / PoW known-answer vectors), `policy-ir/` (Go ↔ Rust policy IR conformance) |
+| `testdata/` | Cross-component fixtures: `phase1/kat.json` (crypto / PoW / key known-answer vectors), `phase1/keys/` and `phase1/artifacts/` (canonical valid and invalid key-file and artifact samples), `policy-ir/` (Go ↔ Rust policy IR conformance); `core/testdata/gcra-cases.json` is shared by Rust and the Valkey Lua script |
 
 ## Commands
 

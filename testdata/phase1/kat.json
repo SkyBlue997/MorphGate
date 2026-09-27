@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "Shared known-answer vectors for Phase 1 (docs/impl/phase1-spec.md \u00a76, \u00a711). Read-only for every work package; regenerate only by changing the spec.",
+  "about": "Shared known-answer vectors for Phase 1 (docs/impl/phase1-spec.md \u00a76, \u00a79.7, \u00a711). Read-only for every work package; regenerate only by changing the spec.",
   "epoch_keys": {
     "formula": "HKDF-SHA256(salt = empty, ikm = K_seal_root, info = label || 0x00 || site_id || 0x00 || u64be(epoch_no), L = 32); label mg-seal-v1 (k_epoch) or mg-bind-v1 (k_bind_epoch); epoch_no = floor(unix_ms / 86400000)",
     "root_hex": "0101010101010101010101010101010101010101010101010101010101010101",
@@ -46,6 +46,53 @@
         "epoch_no": 20724,
         "info_hex": "6d672d62696e642d76310073686f700000000000000050f4",
         "okm_hex": "fef9f3c3780b99e7c94038a322248ea4e1c0fcfdb3eaa297e1212ceafa746b4e"
+      }
+    ]
+  },
+  "accepted_epochs": {
+    "formula": "e = floor(now_ms / 86400000); accept e; also e-1 iff now_ms - e*86400000 <= 125000 (max C lifetime 120 s + 5 s skew); also e+1 iff (e+1)*86400000 - now_ms <= 5000 (spec \u00a76.1)",
+    "cases": [
+      {
+        "name": "start_of_day",
+        "now_ms": 1790553600000,
+        "min_epoch": 20723,
+        "max_epoch": 20724
+      },
+      {
+        "name": "previous_epoch_still_open",
+        "now_ms": 1790553725000,
+        "min_epoch": 20723,
+        "max_epoch": 20724
+      },
+      {
+        "name": "previous_epoch_closed",
+        "now_ms": 1790553725001,
+        "min_epoch": 20724,
+        "max_epoch": 20724
+      },
+      {
+        "name": "midday",
+        "now_ms": 1790596800000,
+        "min_epoch": 20724,
+        "max_epoch": 20724
+      },
+      {
+        "name": "next_epoch_opens_5s_before",
+        "now_ms": 1790639995000,
+        "min_epoch": 20724,
+        "max_epoch": 20725
+      },
+      {
+        "name": "next_epoch_not_yet",
+        "now_ms": 1790639994999,
+        "min_epoch": 20724,
+        "max_epoch": 20724
+      },
+      {
+        "name": "last_ms",
+        "now_ms": 1790639999999,
+        "min_epoch": 20724,
+        "max_epoch": 20725
       }
     ]
   },
@@ -138,8 +185,8 @@
       {
         "domain": "mg-ent-v1",
         "type": "ip",
-        "value": "2001:db8::1",
-        "key_hex": "f24719652c17052110eb93324ab83154"
+        "value": "2001:db8::/64",
+        "key_hex": "3b645483868f3dcc072bef9eebc3dda5"
       },
       {
         "domain": "mg-rl-v1",
@@ -152,6 +199,66 @@
         "type": "mg.c.submit",
         "value": "ip_prefix=203.0.113.0/24",
         "key_hex": "e9346385155c03e943b044f15fbb674b"
+      },
+      {
+        "domain": "mg-rl-v1",
+        "type": "login-per-ip",
+        "value": "ip=2001:db8:abcd:12::/64",
+        "key_hex": "a98aadec2a93ead3e4a81bcc62d1ea00"
+      },
+      {
+        "domain": "mg-rl-v1",
+        "type": "login-per-ip",
+        "value": "ip=?",
+        "key_hex": "fc0088f74ac76001f2bb7e6401b22bd2"
+      },
+      {
+        "domain": "mg-rl-v1",
+        "type": "mg.clr.issue.asn",
+        "value": "asn=64500",
+        "key_hex": "f5504a762e32221f7162e61d969eed7f"
+      },
+      {
+        "domain": "mg-rl-v1",
+        "type": "api-mixed",
+        "value": "ip_prefix=203.0.113.0/24&route=api",
+        "key_hex": "948f739b69a7af5fc878ab15e026a4b5"
+      }
+    ],
+    "note": "Unknown dimension values are the literal '?' (shared fallback bucket, spec \u00a79.7); ASN 0 (GeoLite2 NotFound) is unknown."
+  },
+  "ip_entity": {
+    "formula": "ip entity: IPv4 address text; IPv6 /64 network text (RFC 5952 + \"/64\"); IPv4-mapped IPv6 counts as IPv4. ip_prefix: IPv4 /24, IPv6 /48 (spec \u00a79.7)",
+    "cases": [
+      {
+        "ip": "203.0.113.7",
+        "entity": "203.0.113.7",
+        "prefix": "203.0.113.0/24"
+      },
+      {
+        "ip": "::ffff:203.0.113.7",
+        "entity": "203.0.113.7",
+        "prefix": "203.0.113.0/24"
+      },
+      {
+        "ip": "2001:db8:abcd:12:a:b:c:d",
+        "entity": "2001:db8:abcd:12::/64",
+        "prefix": "2001:db8:abcd::/48"
+      },
+      {
+        "ip": "2001:db8::1",
+        "entity": "2001:db8::/64",
+        "prefix": "2001:db8::/48"
+      },
+      {
+        "ip": "2001:db8:0:0:1::1",
+        "entity": "2001:db8::/64",
+        "prefix": "2001:db8::/48"
+      },
+      {
+        "ip": "2001:db8:abcd:ffff:ffff:ffff:ffff:ffff",
+        "entity": "2001:db8:abcd:ffff::/64",
+        "prefix": "2001:db8:abcd::/48"
       }
     ]
   },

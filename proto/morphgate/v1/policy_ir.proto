@@ -28,7 +28,11 @@ message PolicyExpr {
   uint32 ir_version = 1;       // 1
   Expr root = 2;               // must evaluate to bool
   repeated string fields = 3;  // sorted unique field paths the expression reads or has()-tests (informational)
-  uint64 cost_max = 4;         // cel-go worst-case cost estimate at compile time (informational)
+  // Static worst-case evaluation steps of `root` under the Activation size
+  // caps (spec §5.3 "step bound"). Computed by the compiler and recomputed by
+  // the Edge at load time; the two must be equal and <= 100000, otherwise the
+  // rule is rejected. Makes the runtime step limit unreachable.
+  uint64 max_steps = 4;
 }
 
 message Expr {

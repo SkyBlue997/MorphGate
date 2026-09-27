@@ -53,6 +53,10 @@ type CheckedRule struct {
 	Cost checker.CostEstimate
 	// Fields lists the context fields the expression reads, e.g. "risk.score".
 	Fields []string
+	// Lists names the named lists the expression uses via list("name"),
+	// sorted and unique (docs/impl/phase1-spec.md §8.2: every referenced
+	// list must be defined by the site).
+	Lists []string
 }
 
 // NewCompiler builds the CEL environment. It fails only on programming errors.
@@ -153,7 +157,7 @@ func (c *Compiler) compileExpr(r *Rule, diags *Diagnostics) *CheckedRule {
 	c.checkAvailability(r, refs, diags)
 	checkCorroboration(r, ast.NativeRep().Expr(), refs, diags)
 	fields := longestPaths(append(slices.Clone(refs.reads), refs.tests...))
-	return &CheckedRule{Rule: r, AST: ast, Cost: cost, Fields: fields}
+	return &CheckedRule{Rule: r, AST: ast, Cost: cost, Fields: fields, Lists: refs.lists}
 }
 
 // exprRefs are the context fields an expression refers to.
@@ -163,6 +167,8 @@ type exprRefs struct {
 	reads []string
 	// tests are the paths tested for availability with has(), e.g. "tls.ja4".
 	tests []string
+	// lists are the names passed to list("..."), sorted and unique.
+	lists []string
 }
 
 // walk performs the static checks that cel-go's type checker cannot express
@@ -196,6 +202,7 @@ func (c *Compiler) walk(r *Rule, ast *cel.Ast, diags *Diagnostics) exprRefs {
 	}))
 
 	readSet := map[string]struct{}{}
+	listSet := map[string]struct{}{}
 	celast.PostOrderVisit(native.Expr(), celast.NewExprVisitor(func(e celast.Expr) {
 		switch e.Kind() {
 		case celast.SelectKind, celast.IdentKind:
@@ -216,6 +223,8 @@ func (c *Compiler) walk(r *Rule, ast *cel.Ast, diags *Diagnostics) exprRefs {
 					report(args[0], "list() takes a string literal name so lists can be resolved when the bundle is built")
 				case !listNamePattern.MatchString(name):
 					report(args[0], "list name %q must match %s", name, listNamePattern)
+				default:
+					listSet[name] = struct{}{}
 				}
 			case "ip_in":
 				if ip, ok := stringLiteral(args[0]); ok {
@@ -243,7 +252,11 @@ func (c *Compiler) walk(r *Rule, ast *cel.Ast, diags *Diagnostics) exprRefs {
 			}
 		}
 	}))
-	return exprRefs{reads: longestPaths(slices.Collect(maps.Keys(readSet))), tests: longestPaths(slices.Collect(maps.Keys(testSet)))}
+	return exprRefs{
+		reads: longestPaths(slices.Collect(maps.Keys(readSet))),
+		tests: longestPaths(slices.Collect(maps.Keys(testSet))),
+		lists: slices.Sorted(maps.Keys(listSet)),
+	}
 }
 
 // longestPaths drops every path that is a prefix of another one ("tls.ja4"
