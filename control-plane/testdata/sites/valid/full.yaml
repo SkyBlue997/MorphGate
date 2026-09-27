@@ -1,0 +1,100 @@
+# The site YAML v1 example of docs/impl/phase1-spec.md §8.2, with policies,
+# lists and artifacts that exist in this repository.
+version: 1
+site: blog
+profile: cloudflare
+hosts: [example.com, www.example.com, staging.example.com]
+allowed_listeners: [cf-tunnel]
+monitor_only: true
+not_before: "2026-10-01T00:00:00Z"
+share_ip_verdicts: false
+case_insensitive_paths: false
+
+cloudflare:
+  zone: example.com
+  location_headers: true
+  tier1: false
+  owner_zones: [example.com]
+  pseudo_ipv4_overwrite: false
+  origin_mode: tunnel
+
+token:
+  active_kid: blog-t-20260927
+  verify_kids: []
+
+clearance: {ttl_invisible_s: 1800, ttl_pow_s: 1800, session_max_s: 86400, ctp_shadow: true}
+challenge:
+  ttl_s: 120
+  pow_bits: {low: 14, medium: 16, high: 18, very_high: 20}
+  fallback_ret: /
+  max_failures: 5
+  failure_window_s: 600
+  submit: {rate: 30, period_s: 60, burst: 10}
+  issue: {per_ipp: 60, per_asn: 600, period_s: 3600}
+scoring:
+  theta_c: 0.4
+  kappa: 0
+  z0: {low: -2.197, medium: -1.735, high: -1.386, critical: -1.099}
+  family_modes: {edge_tls: shadow}
+  weights: {http.ua_library: 2.5}
+  h_min: -4.0
+  ruleset_version: v1
+crawlers:
+  default_action: allow
+  purposes: {ai_training: block}
+events: {allow_sample_rate: 0.1, access_log: true, stream: true}
+origin_headers: {scores: true, reasons: false, session: true}
+lists:
+  owner_cidrs: [203.0.113.0/24, "2001:db8::/32"]
+list_files:
+  bad_ja4: lists/bad-ja4.txt
+artifacts:
+  cloudflare_ips: ../../../../testdata/phase1/artifacts/cloudflare-ips.json
+  crawler_registry: ../../../../testdata/phase1/artifacts/crawler-registry.json
+  datacenter_asns: ../../../../testdata/phase1/artifacts/datacenter-asns.txt
+  tor_exits: ../../../../testdata/phase1/artifacts/tor-exits.txt
+
+environments:
+  - name: production
+    hosts: [example.com, www.example.com]
+    policies: [policies/production.yaml]
+    routes:
+      - name: login
+        paths: ["/account/login", "/api/login"]
+        methods: [GET, POST]
+        channel: web
+        sensitivity: critical
+      - name: reset
+        paths: ["/account/reset/**"]
+        sensitivity: high
+        redact_path: true
+      - name: api
+        paths: ["/api/**"]
+        channel: api
+        sensitivity: medium
+    rate_limits:
+      - id: login-per-ip
+        routes: [login]
+        key: [ip]
+        rate: 20/1m
+        burst: 5
+        scope: global
+        on_exceed: {action: rate_limit, retry_after_s: 60}
+        mode: enforce
+      - id: api-per-prefix
+        routes: [api]
+        key: [ip_prefix, route]
+        rate: 600/1m
+        burst: 100
+        scope: local
+        on_exceed: {action: signal, weight: 1.5}
+      - id: reset-challenge
+        routes: [reset]
+        key: [ip]
+        rate: 5/15m
+        on_exceed: {action: challenge, type: pow}
+        mode: dry_run
+  - name: staging
+    hosts: [staging.example.com]
+    policies: [policies/staging.yaml]
+    automation_allowlist_only: true

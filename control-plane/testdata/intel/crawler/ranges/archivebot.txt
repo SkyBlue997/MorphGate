@@ -1,0 +1,4 @@
+# Example archive crawler ranges (test fixture)
+207.241.224.0/20
+
+208.70.24.0/21  # second block

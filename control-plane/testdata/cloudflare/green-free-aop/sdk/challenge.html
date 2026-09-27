@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="{{lang}}">
+<head>
+  <meta charset="utf-8">
+  <title>Checking your browser</title>
+  <style nonce="{{nonce}}">main { font-family: sans-serif; }</style>
+</head>
+<body>
+  <main id="mg-challenge" data-mg-state="{{state}}" data-mg-c="{{c}}" data-mg-type="{{type}}"
+        data-mg-pow-bits="{{pow_bits}}" data-mg-ret="{{ret}}" data-mg-rid="{{request_id}}"
+        data-mg-prefix="{{prefix}}">
+    <p id="mg-status" role="status" aria-live="polite">...</p>
+    <p>{{request_id}}</p>
+  </main>
+  <script data-cfasync="false" src="{{sdk_src}}" nonce="{{nonce}}" data-mg-path-prefix="{{prefix}}"></script>
+</body>
+</html>

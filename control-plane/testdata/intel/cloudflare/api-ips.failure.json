@@ -1,0 +1,11 @@
+{
+  "result": null,
+  "success": false,
+  "errors": [
+    {
+      "code": 10000,
+      "message": "internal error"
+    }
+  ],
+  "messages": []
+}

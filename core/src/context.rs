@@ -8,8 +8,9 @@
 //! Field paths match the policy (CEL) fields of docs/06 §2. Optional values
 //! are `Option` here where the protobuf uses `""` / `0`; absent values are
 //! omitted from JSON to keep event lines small. Whether a value is `ABSENT` or
-//! `MISSING` (docs/03 §3.1) is recorded per signal ([`crate::SignalState`])
-//! and per family ([`FamilyMask`]), not in these structs.
+//! `MISSING` (docs/03 §3.1) is recorded per signal ([`crate::SignalState`]),
+//! per family ([`FamilyMask`]) and, for policy fields, in the request's
+//! [`crate::policy::MissingSet`], not in these structs.
 
 use crate::challenge::ProviderId;
 use crate::decision::EntityVerdict;
@@ -92,7 +93,10 @@ wire_enum! {
 }
 
 /// Network-layer facts about the (trusted) client address.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Debug` never prints the client IP (spec §2.4, D-31): application logs
+/// must not carry it; the event JSON (serde) does, by design.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Net {
     /// Client IP as resolved by the upstream profile's trust rules.
@@ -128,6 +132,26 @@ pub struct Net {
     /// Client RTT reported by the upstream (`x-mg-cf-rtt` / `x-mg-cf-quic-rtt`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rtt_ms: Option<u32>,
+}
+
+impl fmt::Debug for Net {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Net")
+            .field("ip", &self.ip.map(|_| crate::REDACTED))
+            .field("ip_prefix", &self.ip_prefix)
+            .field("ip_source", &self.ip_source)
+            .field("asn", &self.asn)
+            .field("as_org", &self.as_org)
+            .field("country", &self.country)
+            .field("conn_type", &self.conn_type)
+            .field("tor", &self.tor)
+            .field("upstream_asn", &self.upstream_asn)
+            .field("upstream_country", &self.upstream_country)
+            .field("upstream_region", &self.upstream_region)
+            .field("upstream_timezone", &self.upstream_timezone)
+            .field("rtt_ms", &self.rtt_ms)
+            .finish()
+    }
 }
 
 impl Net {
@@ -455,6 +479,32 @@ pub struct Agent {
     pub method: Option<String>,
 }
 
+wire_enum! {
+    /// State of MorphGate's own verification of a crawler claim
+    /// (docs/impl/phase1-spec.md §3.4, §9.6).
+    pub enum CrawlerVerification {
+        /// The request does not claim to be a known crawler.
+        None => "none",
+        /// Claimed; the reverse-DNS check is still running (D-18).
+        Pending => "pending",
+        /// Verified by official IP ranges or forward-confirmed reverse DNS.
+        Verified => "verified",
+        /// The claim is false: the IP is outside the operator's ranges or rDNS failed.
+        Failed => "failed",
+        /// Claimed, but cannot be verified (e.g. client IP unknown). Never
+        /// becomes `VERIFIED_CRAWLER`.
+        Unverifiable => "unverifiable",
+    }
+}
+
+wire_enum! {
+    /// How a `verified` / `failed` crawler result was reached.
+    pub enum CrawlerMethod {
+        IpRange => "ip_range",
+        Rdns => "rdns",
+    }
+}
+
 /// Crawler verification (docs/05 §3, CEL `identity.crawler`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -478,6 +528,32 @@ pub struct Crawler {
     /// Cloudflare verified-bot category (`x-mg-cf-vbot-cat`), corroboration only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cf_vbot_cat: Option<String>,
+    /// MorphGate's verification state; `None` when no crawler registry is loaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<CrawlerVerification>,
+    /// How a `verified` / `failed` result was reached.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<CrawlerMethod>,
+    /// `pending` only: the operator publishes IP ranges and the client IP is
+    /// outside them while the rDNS verdict is still out (D-18).
+    #[serde(skip_serializing_if = "is_false")]
+    pub outside_ranges: bool,
+}
+
+impl Crawler {
+    /// MorphGate verified the claim (both the flag and, when present, the
+    /// verification state agree; an inconsistent pair is not trusted).
+    pub fn is_verified(&self) -> bool {
+        self.verified
+            && self
+                .verification
+                .is_none_or(|v| v == CrawlerVerification::Verified)
+    }
+
+    /// MorphGate proved the claim false.
+    pub fn is_failed(&self) -> bool {
+        self.verification == Some(CrawlerVerification::Failed)
+    }
 }
 
 /// Identity layer (L0, CEL `identity.*`).
@@ -855,6 +931,42 @@ mod tests {
     }
 
     #[test]
+    fn crawler_json_and_verification_helpers() {
+        let c = Crawler {
+            claimed: true,
+            operator: Some("google".into()),
+            verification: Some(CrawlerVerification::Pending),
+            outside_ranges: true,
+            ..Crawler::default()
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["verification"], "pending");
+        assert_eq!(v["outside_ranges"], true);
+        assert!(v.get("method").is_none());
+        assert_eq!(serde_json::from_value::<Crawler>(v).unwrap(), c);
+        let quiet = serde_json::to_value(Crawler::default()).unwrap();
+        assert!(quiet.get("outside_ranges").is_none(), "false is omitted");
+        assert!(!c.is_verified() && !c.is_failed());
+        let failed = Crawler {
+            verification: Some(CrawlerVerification::Failed),
+            method: Some(CrawlerMethod::Rdns),
+            ..c.clone()
+        };
+        assert!(failed.is_failed());
+        assert_eq!(serde_json::to_value(&failed).unwrap()["method"], "rdns");
+        // verified needs the flag, and a state that agrees when present.
+        let mut v = Crawler {
+            verified: true,
+            ..Crawler::default()
+        };
+        assert!(v.is_verified());
+        v.verification = Some(CrawlerVerification::Verified);
+        assert!(v.is_verified());
+        v.verification = Some(CrawlerVerification::Failed);
+        assert!(!v.is_verified());
+    }
+
+    #[test]
     fn prefixes() {
         assert_eq!(
             Net::prefix_of("192.0.2.200".parse().unwrap()),
@@ -868,6 +980,20 @@ mod tests {
             Net::prefix_of("::ffff:192.0.2.200".parse().unwrap()),
             "192.0.2.0/24"
         );
+    }
+
+    /// Spec §2.4: Debug output never contains the client IP.
+    #[test]
+    fn debug_redacts_the_client_ip() {
+        let ctx = sample();
+        let dbg = format!("{ctx:?}");
+        assert!(!dbg.contains("203.0.113.7"), "{dbg}");
+        assert!(dbg.contains("<redacted>"));
+        assert!(
+            dbg.contains("203.0.113.0/24"),
+            "the /24 prefix is not the address"
+        );
+        assert!(format!("{:?}", Net::default()).contains("ip: None"));
     }
 
     /// Spec §9.7: the `ip` entity is the address for IPv4 and the /64 for IPv6

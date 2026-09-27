@@ -138,9 +138,38 @@ wire_enum! {
     }
 }
 
+impl RiskBand {
+    /// Band sealed into the new challenge attached after a failed
+    /// `/__mg/c` submission (spec §6.3, D-27): one band up, capped at
+    /// `High`, and never below the failed challenge's band, so `VeryHigh`
+    /// stays `VeryHigh` (the PoW difficulty never drops after a failure).
+    pub const fn after_failure(self) -> Self {
+        match self {
+            Self::Low => Self::Medium,
+            Self::Medium | Self::High => Self::High,
+            Self::VeryHigh => Self::VeryHigh,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §6.3 / D-27: escalation after a failed submission never lowers the band.
+    #[test]
+    fn risk_band_after_failure() {
+        use RiskBand::*;
+        for (band, next) in [
+            (Low, Medium),
+            (Medium, High),
+            (High, High),
+            (VeryHigh, VeryHigh),
+        ] {
+            assert_eq!(band.after_failure(), next, "{band:?}");
+            assert!(band.after_failure() >= band);
+        }
+    }
 
     #[test]
     fn evidence_clamps_and_neutralises_nan() {

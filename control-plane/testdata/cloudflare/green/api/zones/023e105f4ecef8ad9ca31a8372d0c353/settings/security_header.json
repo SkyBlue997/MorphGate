@@ -1,0 +1,19 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "security_header",
+    "value": {
+      "strict_transport_security": {
+        "enabled": true,
+        "max_age": 31536000,
+        "include_subdomains": true,
+        "preload": false,
+        "nosniff": true
+      }
+    },
+    "editable": true,
+    "modified_on": "2026-09-01T00:00:00.000000Z"
+  }
+}

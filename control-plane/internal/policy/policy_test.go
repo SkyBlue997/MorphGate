@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	morphgatev1 "morphgate/control-plane/gen/morphgate/v1"
 )
@@ -73,6 +76,10 @@ func TestValidTestdata(t *testing.T) {
 	for _, f := range files {
 		t.Run(filepath.Base(f), func(t *testing.T) {
 			checked, diags := checkFiles(t, f)
+			// The only expected diagnostic: D-08 for challenge type interactive.
+			diags = slices.DeleteFunc(diags, func(d Diagnostic) bool {
+				return d.Severity == SeverityWarning && d.Field == "params.type" && strings.Contains(d.Message, "(D-08)")
+			})
 			if len(diags) != 0 {
 				t.Fatalf("unexpected diagnostics:\n  %s", strings.Join(diagStrings(diags), "\n  "))
 			}
@@ -229,12 +236,18 @@ func TestSemanticWarnings(t *testing.T) {
   - {id: old, phase: bot, expr: 'true', action: log, temporary: true, expires_at: 2020-01-01T00:00:00Z}
   - {id: zero, phase: bot, expr: 'true', action: log, rollout: 0}
 `
-	_, diags := checkSource(t, Options{}, src)
+	_, diags := checkSource(t, Options{}, src+`  - {id: phase2, phase: bot, expr: 'true', action: challenge, params: {type: interactive}}
+  - {id: phase1, phase: bot, expr: 'true', action: challenge, params: {type: pow}}
+`)
 	if diags.HasErrors() {
 		t.Fatalf("unexpected errors: %v", diagStrings(diags))
 	}
 	requireDiag(t, diags, `warning: rule "old": expires_at: rule expired at 2020-01-01T00:00:00Z`)
 	requireDiag(t, diags, `warning: rule "zero": rollout: rollout 0 means the rule never applies`)
+	requireDiag(t, diags, `test.yaml:4:63: warning: rule "phase2": params.type: interactive challenges arrive in Phase 2; the Phase 1 Edge runs this challenge as pow (D-08)`)
+	if len(diags) != 3 {
+		t.Errorf("want 3 warnings, got %v", diagStrings(diags))
+	}
 }
 
 // rulesWithDiags returns the ids of the rules that have a diagnostic containing sub.
@@ -293,13 +306,32 @@ func TestMissingFieldWarnings(t *testing.T) {
 
 	t.Run("declared direct_tls", func(t *testing.T) {
 		_, diags := checkSource(t, Options{}, "profile: direct_tls\n"+rules)
-		want := []string{"docs-fallback", "edge", "vbot-cat"}
+		want := []string{"docs-fallback", "edge", "ja4", "vbot-cat"}
 		if got := rulesWithDiags(diags, missing); !slices.Equal(got, want) {
 			t.Errorf("warned rules = %v, want %v\n  %s", got, want, strings.Join(diagStrings(diags), "\n  "))
 		}
 		requireDiag(t, diags, `rule "edge": expr: edge_tls.ext_sha1 is always MISSING under the direct_tls profile`)
 		requireDiag(t, diags, `rule "edge": expr: edge_tls.hello_len is always MISSING under the direct_tls profile`)
 		requireDiag(t, diags, `rule "vbot-cat": expr: identity.crawler.cf_vbot_cat is always MISSING under the direct_tls profile`)
+		requireDiag(t, diags, `rule "ja4": expr: tls.ja4.value is always MISSING under the direct_tls profile (JA4 is a Phase 1 spike only)`)
+	})
+
+	// Spec §4.4: identity.proof (Phase 2) and identity.agent (Phase 3) are
+	// always MISSING under both Phase 1 profiles.
+	t.Run("phase 2 and 3 identities", func(t *testing.T) {
+		const later = `policies:
+  - {id: proof, phase: bot, expr: 'route.name == "login" && !identity.proof.valid', action: challenge}
+  - {id: agent, phase: identity, expr: 'identity.agent.id != ""', action: allow}
+  - {id: agent-guarded, phase: identity, expr: 'has(identity.agent) && identity.agent.grant_id != ""', action: allow}
+`
+		for _, profile := range CheckedProfiles {
+			_, diags := checkSource(t, Options{}, "profile: "+profile+"\n"+later)
+			if got := rulesWithDiags(diags, missing); !slices.Equal(got, []string{"agent", "proof"}) {
+				t.Errorf("%s: warned rules = %v\n  %s", profile, got, strings.Join(diagStrings(diags), "\n  "))
+			}
+			requireDiag(t, diags, `rule "proof": expr: identity.proof.valid is always MISSING under the `+profile+` profile (proof of possession arrives in Phase 2)`)
+			requireDiag(t, diags, `rule "agent": expr: identity.agent.id is always MISSING under the `+profile+` profile (agent identities arrive in Phase 3); comparisons on it evaluate to unknown, guard them with has(identity.agent)`)
+		}
 	})
 
 	t.Run("compiler default applies to files without profile", func(t *testing.T) {
@@ -427,7 +459,7 @@ func TestReferencedLists(t *testing.T) {
 
 func TestReferencedFields(t *testing.T) {
 	src := `policies:
-  - {id: f, phase: bot, expr: 'tls.ja4.value != "" && "x" in labels && rate["a"] > 0.5 && [1].all(v, v > 0)', action: log}
+  - {id: f, phase: bot, expr: 'tls.ja4.value != "" && "x" in labels && rate["a"] > 0.5', action: log}
   - {id: g, phase: bot, expr: 'has(tls.ja4) && has(identity.crawler.cf_vbot) && net.tor', action: log}
 `
 	checked, diags := checkSource(t, Options{}, src)
@@ -478,7 +510,7 @@ func TestDocsExamplesEvaluate(t *testing.T) {
 		{"test-env-default-deny", staging(func(in *Input) { in.Net.IP = "::ffff:203.0.113.9" }), false},
 		{"test-env-default-deny", staging(func(in *Input) { in.Risk.Class = "AUTHORIZED_AGENT" }), false},
 		{"test-env-default-deny", staging(func(in *Input) { in.Route.Env = "production" }), false},
-		// Phase 0 has(): an empty IP counts as unavailable, so the rule does not need the list.
+		// An ABSENT (empty) IP is available to has() but in no network.
 		{"test-env-default-deny", staging(func(in *Input) { in.Net.IP = "" }), true},
 		{"block-impersonators", staging(func(in *Input) { in.Risk.Class = "IMPERSONATOR" }), true},
 		{"block-impersonators", staging(nil), false},
@@ -534,18 +566,28 @@ func TestHasFallbackEvaluates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// MISSING sets per spec §4.4 (and a direct_tls Edge with JA4, which is a
+	// Phase 1 spike only).
+	cloudflare := []string{"tls", "http.header_order", "identity.proof", "identity.agent"}
+	directTLS := []string{"edge_tls", "identity.crawler.cf_vbot", "identity.crawler.cf_vbot_cat", "tls.ja4", "identity.proof", "identity.agent"}
+	directTLSWithJA4 := []string{"edge_tls", "identity.crawler.cf_vbot", "identity.crawler.cf_vbot_cat", "identity.proof", "identity.agent"}
 	cases := []struct {
-		name string
-		in   Input
-		want bool
+		name    string
+		in      Input
+		missing []string
+		want    Result
 	}{
-		{"cloudflare, bad cipher list", Input{EdgeTLS: EdgeTLS{CiphersSHA1: "cf_bad"}}, true},
-		{"cloudflare, fine cipher list", Input{EdgeTLS: EdgeTLS{CiphersSHA1: "cf_ok"}}, false},
-		{"direct_tls, bad JA4", Input{TLS: TLS{JA4: JA4{Value: "t13d_bad", Source: "self", Authenticated: true}}}, true},
-		{"direct_tls, JA4 wins over edge_tls", Input{TLS: TLS{JA4: JA4{Value: "t13d_ok"}}, EdgeTLS: EdgeTLS{CiphersSHA1: "cf_bad"}}, false},
+		{"cloudflare, bad cipher list", Input{EdgeTLS: EdgeTLS{CiphersSHA1: "cf_bad"}}, cloudflare, ResultTrue},
+		{"cloudflare, fine cipher list", Input{EdgeTLS: EdgeTLS{CiphersSHA1: "cf_ok"}}, cloudflare, ResultFalse},
+		{"direct_tls with JA4, bad JA4", Input{TLS: TLS{JA4: JA4{Value: "t13d_bad", Source: "self", Authenticated: true}}}, directTLSWithJA4, ResultTrue},
+		{"direct_tls with JA4, JA4 wins over edge_tls", Input{TLS: TLS{JA4: JA4{Value: "t13d_ok"}}, EdgeTLS: EdgeTLS{CiphersSHA1: "cf_bad"}}, directTLSWithJA4, ResultFalse},
+		// Phase 1 direct_tls has neither signal: the rule cannot decide.
+		{"direct_tls, neither signal", Input{EdgeTLS: EdgeTLS{CiphersSHA1: "cf_bad"}}, directTLS, ResultUnknown},
+		// Without MISSING paths has() is true: the (ABSENT) JA4 branch is taken.
+		{"no MISSING paths", Input{EdgeTLS: EdgeTLS{CiphersSHA1: "cf_bad"}}, nil, ResultFalse},
 	}
 	for _, tc := range cases {
-		got, err := ev.Eval(rule, &tc.in)
+		got, err := ev.EvalWithMissing(rule, &tc.in, tc.missing)
 		if err != nil || got != tc.want {
 			t.Errorf("%s: got %v, %v; want %v", tc.name, got, err, tc.want)
 		}
@@ -573,9 +615,15 @@ func TestProtoMapping(t *testing.T) {
 	}
 	for _, cr := range checked {
 		pb := cr.Proto()
-		if pb.GetId() != cr.ID || pb.GetIrVersion() != 0 || len(pb.GetExprIr()) != 0 ||
+		if pb.GetId() != cr.ID || pb.GetIrVersion() != IRVersion || !bytes.Equal(pb.GetExprIr(), cr.ExprIR) ||
 			pb.GetAction() != ActionEnum(cr.Action) || pb.GetRolloutPercent() != uint32(cr.Rollout) {
 			t.Errorf("proto mismatch for %s: %v", cr.ID, pb)
+		}
+		var ir morphgatev1.PolicyExpr
+		if err := proto.Unmarshal(pb.GetExprIr(), &ir); err != nil {
+			t.Errorf("%s: expr_ir does not decode: %v", cr.ID, err)
+		} else if !proto.Equal(&ir, cr.IR) || ir.GetIrVersion() != IRVersion || ir.GetMaxSteps() == 0 {
+			t.Errorf("%s: expr_ir decodes to %v, want %v", cr.ID, &ir, cr.IR)
 		}
 		if cr.ID == "maintenance-window-tarpit" && pb.GetExpiresAtMs() != time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli() {
 			t.Errorf("expires_at_ms = %d", pb.GetExpiresAtMs())

@@ -1,0 +1,11 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "always_use_https",
+    "value": "off",
+    "editable": true,
+    "modified_on": "2026-09-01T00:00:00.000000Z"
+  }
+}

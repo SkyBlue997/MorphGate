@@ -3,6 +3,7 @@
 use crate::challenge::{ProviderId, VerdictOutcome};
 use crate::context::{RequestContext, TokenLevel};
 use crate::enums::{Action, BotClass, ChallengeType, EntityType};
+use crate::policy::RuleMode;
 use crate::signal::Signal;
 use crate::values::{Confidence, RiskBand, Score};
 use serde::{Deserialize, Serialize};
@@ -55,6 +56,10 @@ pub struct Decision {
     pub rule_id: Option<String>,
     /// Record what would have happened, but let the request through.
     pub dry_run: bool,
+    /// Labels added by TAG rules, forwarded to the origin as `MG-Tags`
+    /// (only with `action == Tag`; see [`Decision::validate`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 fn is_unspecified_challenge(t: &ChallengeType) -> bool {
@@ -72,6 +77,9 @@ pub enum DecisionError {
     UnexpectedProvider,
     /// Status not allowed for the action (see [`Decision::validate`]).
     InvalidStatus(u16),
+    /// `tags` on a non-TAG decision, more than [`Decision::MAX_TAGS`] tags, or
+    /// a tag outside `[a-z0-9_.-]{1,32}`.
+    InvalidTags,
 }
 
 impl fmt::Display for DecisionError {
@@ -85,6 +93,9 @@ impl fmt::Display for DecisionError {
                 f.write_str("provider_id is only valid for interactive challenges")
             }
             Self::InvalidStatus(s) => write!(f, "status {s} is not valid for this action"),
+            Self::InvalidTags => {
+                f.write_str("tags must be at most 8 labels of [a-z0-9_.-]{1,32} on a tag decision")
+            }
         }
     }
 }
@@ -92,6 +103,17 @@ impl fmt::Display for DecisionError {
 impl std::error::Error for DecisionError {}
 
 impl Decision {
+    /// Most tags one decision forwards (docs/impl/phase1-spec.md §5.4).
+    pub const MAX_TAGS: usize = 8;
+
+    /// Whether `label` is a valid tag / rule label: `[a-z0-9_.-]{1,32}`.
+    pub fn is_valid_tag(label: &str) -> bool {
+        (1..=32).contains(&label.len())
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b))
+    }
+
     /// Let the request through untouched.
     pub fn allow() -> Self {
         Self {
@@ -118,7 +140,9 @@ impl Decision {
     /// * `provider_id` only for `Interactive` challenges;
     /// * `status`, when present, is `100..=599`; a challenge uses `403` or `429`
     ///   (never 2xx, which caches may store); `RateLimit` uses `429`;
-    ///   `Block` uses a 4xx.
+    ///   `Block` uses a 4xx;
+    /// * `tags` only on a `Tag` decision: at most [`Decision::MAX_TAGS`]
+    ///   labels, each [`Decision::is_valid_tag`].
     pub fn validate(&self) -> Result<(), DecisionError> {
         if self.action == Action::Unspecified {
             return Err(DecisionError::MissingAction);
@@ -142,8 +166,44 @@ impl Decision {
                 return Err(DecisionError::InvalidStatus(status));
             }
         }
+        if !self.tags.is_empty()
+            && (self.action != Action::Tag
+                || self.tags.len() > Self::MAX_TAGS
+                || !self.tags.iter().all(|t| Self::is_valid_tag(t)))
+        {
+            return Err(DecisionError::InvalidTags);
+        }
         Ok(())
     }
+}
+
+wire_enum! {
+    /// How a policy rule (or rate limiter) fared on one request.
+    pub enum HitOutcome {
+        /// The rule's expression evaluated to `true` (or the limiter was exceeded).
+        Matched => "matched",
+        /// The expression read a MISSING field and came out UNKNOWN: no match.
+        MissingInput => "missing_input",
+        /// The expression came out as an error: no match.
+        EvalError => "eval_error",
+    }
+}
+
+/// One policy rule (or rate limiter) that matched, or could not be
+/// evaluated, on this request (`morphgate.v1.RuleHit`,
+/// docs/impl/phase1-spec.md §3.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleHit {
+    /// `CompiledRule.id`, or `ratelimit.<limiter id>`.
+    pub rule_id: String,
+    pub outcome: HitOutcome,
+    pub mode: RuleMode,
+    /// The rule's (would-be) action.
+    pub action: Action,
+    /// `missing_input`: the MISSING field paths read (sorted); `eval_error`:
+    /// `[error kind]`; `matched`: annotations such as `phase1.interactive_as_pow`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
 }
 
 /// Near-line judgement about an entity, fed back to the Edge (docs/03 §4.1 `R_e`).
@@ -261,6 +321,10 @@ pub struct DecisionEvent {
     /// The global monitor switch was on (the decision was not enforced).
     #[serde(default)]
     pub monitor_only: bool,
+    /// Rules and limiters that matched or could not be evaluated, at most
+    /// [`DecisionEvent::MAX_HITS`], in evaluation order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hits: Vec<RuleHit>,
 }
 
 fn full_sample_rate() -> f32 {
@@ -268,6 +332,9 @@ fn full_sample_rate() -> f32 {
 }
 
 impl DecisionEvent {
+    /// Most hits one event carries (docs/impl/phase1-spec.md §3.4).
+    pub const MAX_HITS: usize = 16;
+
     /// Serializes to a single JSON line (no trailing newline).
     pub fn to_json_line(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
@@ -312,6 +379,13 @@ mod tests {
             edge_id: "edge-a".into(),
             bundle_version: 7,
             monitor_only: true,
+            hits: vec![RuleHit {
+                rule_id: "login-high-risk".into(),
+                outcome: HitOutcome::Matched,
+                mode: RuleMode::DryRun,
+                action: Action::Challenge,
+                fields: vec!["phase1.interactive_as_pow".into()],
+            }],
         }
     }
 
@@ -339,6 +413,63 @@ mod tests {
         assert_eq!(v["bundle_version"], 7);
         assert_eq!(v["monitor_only"], true);
         assert_eq!(v["risk"]["shadow_score"], 0);
+        assert_eq!(
+            v["hits"][0],
+            serde_json::json!({"rule_id": "login-high-risk", "outcome": "matched",
+                "mode": "dry_run", "action": "challenge",
+                "fields": ["phase1.interactive_as_pow"]})
+        );
+        assert!(
+            v["decision"].get("tags").is_none(),
+            "empty tags are omitted"
+        );
+    }
+
+    /// Spec §3.5: tags only on TAG decisions, at most 8, each `[a-z0-9_.-]{1,32}`.
+    #[test]
+    fn decision_tags_validation() {
+        let tag = |tags: &[&str]| Decision {
+            action: Action::Tag,
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..Decision::default()
+        };
+        assert_eq!(tag(&["old_tls.stack-1"]).validate(), Ok(()));
+        assert_eq!(tag(&[]).validate(), Ok(()));
+        let eight: Vec<String> = (0..8).map(|i| format!("t{i}")).collect();
+        let eight: Vec<&str> = eight.iter().map(String::as_str).collect();
+        assert_eq!(tag(&eight).validate(), Ok(()));
+        let nine: Vec<String> = (0..9).map(|i| format!("t{i}")).collect();
+        let nine: Vec<&str> = nine.iter().map(String::as_str).collect();
+        assert_eq!(tag(&nine).validate(), Err(DecisionError::InvalidTags));
+        for bad in ["", "Upper", "has space", "a,b", &"x".repeat(33), "\u{e9}"] {
+            assert_eq!(
+                tag(&[bad]).validate(),
+                Err(DecisionError::InvalidTags),
+                "{bad:?}"
+            );
+        }
+        assert!(Decision::is_valid_tag(&"x".repeat(32)));
+        // Tags on anything but TAG are invalid: MG-Tags is only sent on TAG.
+        let mut block = tag(&["a"]);
+        block.action = Action::Block;
+        assert_eq!(block.validate(), Err(DecisionError::InvalidTags));
+        let mut allow = tag(&["a"]);
+        allow.action = Action::Allow;
+        assert_eq!(allow.validate(), Err(DecisionError::InvalidTags));
+        let json = serde_json::to_value(tag(&["a", "b"])).unwrap();
+        assert_eq!(json["tags"], serde_json::json!(["a", "b"]));
+    }
+
+    #[test]
+    fn hit_outcomes_match_spec() {
+        let names: Vec<_> = HitOutcome::ALL.iter().map(|o| o.as_str()).collect();
+        assert_eq!(names, ["matched", "missing_input", "eval_error"]);
+        let hit: RuleHit = serde_json::from_str(
+            r#"{"rule_id":"r","outcome":"missing_input","mode":"enforce","action":"block"}"#,
+        )
+        .unwrap();
+        assert!(hit.fields.is_empty());
+        assert_eq!(hit.mode, RuleMode::Enforce);
     }
 
     #[test]

@@ -1,0 +1,30 @@
+# Site YAML for the internal/cfaudit tests (docs/impl/phase1-spec.md §8.2).
+version: 1
+site: blog
+profile: cloudflare
+hosts: [example.com, www.example.com]
+allowed_listeners: [cf-tunnel]
+monitor_only: true
+cloudflare:
+  zone: example.com
+  location_headers: true
+  tier1: false
+  owner_zones: [example.com]
+  pseudo_ipv4_overwrite: false
+  origin_mode: tunnel
+  account_id: 01a7362d577a6c3019a474fd6f485823
+  tunnel_id: f70ff985-a4ef-4643-bbbc-4a0ed4fc8415
+token:
+  active_kid: blog-t-20260927
+  verify_kids: []
+environments:
+  - name: production
+    hosts: [example.com, www.example.com]
+    policies: []
+    routes:
+      - name: login
+        paths: ["/account/login", "/api/login"]
+        sensitivity: critical
+      - name: reset
+        paths: ["/account/reset/**"]
+        sensitivity: high

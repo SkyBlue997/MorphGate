@@ -33,7 +33,11 @@ pub struct PowParams {
 ///
 /// Presence-aware like the protobuf `optional bytes` fields: `None` means not
 /// bound; `Some` is checked even when the hash is empty.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// `Debug` shows only which bindings are present: the hashes are short and
+/// unsalted (an `ipp` hash of a /24 is reversed by trying every prefix), so
+/// printing them would leak the client prefix (spec §2.4 item 5, D-31).
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ChallengeBind {
     /// `hash(UA family + major version)`: hard (Phase 1).
     pub uah: Option<Vec<u8>>,
@@ -204,6 +208,27 @@ impl SealedChallengeClaims {
     }
 }
 
+impl fmt::Debug for ChallengeBind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        /// `Some(..)` / `None` without the bytes.
+        struct Presence(bool);
+        impl fmt::Debug for Presence {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(if self.0 { "Some(..)" } else { "None" })
+            }
+        }
+        let p = |b: &Option<Vec<u8>>| Presence(b.is_some());
+        f.debug_struct("ChallengeBind")
+            .field("uah", &p(&self.uah))
+            .field("ipp", &p(&self.ipp))
+            .field("jkt", &p(&self.jkt))
+            .field("ctp", &p(&self.ctp))
+            .field("tfp", &p(&self.tfp))
+            .field("ipa", &p(&self.ipa))
+            .finish()
+    }
+}
+
 impl fmt::Debug for SealedChallengeClaims {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SealedChallengeClaims")
@@ -234,6 +259,23 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_790_000_000_000;
+
+    /// §2.4 item 5 / D-31: binding hashes never appear in `Debug` output.
+    #[test]
+    fn challenge_bind_debug_shows_presence_only() {
+        let bind = ChallengeBind {
+            uah: Some(vec![0xa1; 16]),
+            ipp: Some(vec![0xb2; 16]),
+            ipa: Some(vec![]),
+            ..Default::default()
+        };
+        let s = format!("{bind:?}");
+        assert_eq!(
+            s,
+            "ChallengeBind { uah: Some(..), ipp: Some(..), jkt: None, ctp: None, tfp: None, ipa: Some(..) }"
+        );
+        assert!(!s.contains("161") && !s.contains("178"), "{s}");
+    }
 
     fn interactive() -> SealedChallengeClaims {
         SealedChallengeClaims {

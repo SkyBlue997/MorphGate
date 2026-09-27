@@ -1,0 +1,14 @@
+# mg-challenge is a pure library (docs/impl/phase1-spec.md §1.2, §6): time is
+# a parameter and randomness comes from the injected `Rng`. The only OS
+# randomness is the PASETO nonce drawn inside pasetors.
+disallowed-methods = [
+  { path = "std::time::SystemTime::now", reason = "time is a parameter (now_ms / now_s)" },
+  { path = "std::time::Instant::now", reason = "time is a parameter (now_ms / now_s)" },
+  { path = "std::thread::spawn", reason = "mg-challenge must not spawn threads" },
+  { path = "std::env::var", reason = "configuration is passed in, never read from the environment" },
+]
+disallowed-types = [
+  { path = "std::fs::File", reason = "mg-challenge performs no file I/O; callers pass key file bytes" },
+  { path = "std::net::TcpStream", reason = "mg-challenge performs no network I/O" },
+  { path = "std::net::UdpSocket", reason = "mg-challenge performs no network I/O" },
+]

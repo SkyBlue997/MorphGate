@@ -14,8 +14,10 @@ pub mod morphgate {
     /// Package `morphgate.v1`.
     pub mod v1 {
         // Generated code: lint hygiene is prost-build's concern, and newer
-        // clippy releases must not break CI on it.
-        #![allow(clippy::all)]
+        // clippy releases must not break CI on it. The doc comments are the
+        // .proto comments verbatim (`<limiter id>`, `[[listeners]]`, ...),
+        // which rustdoc would read as HTML tags and intra-doc links.
+        #![allow(clippy::all, rustdoc::all)]
         include!(concat!(env!("OUT_DIR"), "/morphgate.v1.rs"));
     }
 }

@@ -1,0 +1,20 @@
+# Site YAML for the internal/cfaudit tests: Free zone behind AOP.
+version: 1
+site: shop
+profile: cloudflare
+hosts: [example.org, www.example.org]
+allowed_listeners: [aop]
+cloudflare:
+  zone: example.org
+  location_headers: false
+  owner_zones: [example.org]
+  origin_mode: aop
+token:
+  active_kid: shop-t-20260927
+environments:
+  - name: production
+    hosts: [example.org, www.example.org]
+    routes:
+      - name: checkout
+        paths: ["/checkout/**"]
+        sensitivity: critical

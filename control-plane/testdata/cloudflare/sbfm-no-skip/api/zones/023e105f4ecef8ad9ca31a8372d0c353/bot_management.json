@@ -1,0 +1,12 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "fight_mode": false,
+    "sbfm_definitely_automated": "allow",
+    "sbfm_likely_automated": "managed_challenge",
+    "sbfm_verified_bots": "allow",
+    "ai_bots_protection": "disabled"
+  }
+}
