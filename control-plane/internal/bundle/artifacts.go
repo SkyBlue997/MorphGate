@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/oschwald/maxminddb-golang/v2"
@@ -300,8 +301,11 @@ func validateCrawlerRegistry(data []byte) (string, error) {
 			return "", fmt.Errorf("%s: mode %s needs rdns_suffixes", where, op.Verify.Mode)
 		}
 		for _, sfx := range op.Verify.RDNSSuffixes {
-			if sfx == "" || len(sfx) > 253 || sfx != strings.ToLower(sfx) {
+			if sfx == "" || len(sfx) > 253 || sfx != strings.ToLower(sfx) || strings.ContainsFunc(sfx, isUpperCase) {
 				return "", fmt.Errorf("%s: rdns suffix %q must be lower-case and 1-253 bytes", where, sfx)
+			}
+			if !rdnsSuffixShape(sfx) {
+				return "", fmt.Errorf("%s: rdns suffix %q must start with '.' followed by at least two labels", where, sfx)
 			}
 		}
 		if op.Verify.Mode == "ip_ranges" && len(op.CIDRs) == 0 {
@@ -328,6 +332,29 @@ func validateCrawlerRegistry(data []byte) (string, error) {
 		}
 	}
 	return f.GeneratedAt, nil
+}
+
+// isUpperCase is Rust's char::is_uppercase, the Unicode Uppercase property
+// (Lu plus Other_Uppercase), which mg-intel uses to reject an rDNS suffix.
+// strings.ToLower alone misses upper-case characters that have no lower-case
+// mapping (U+210B) or lie outside Lu (U+1F130), and the Edge would then
+// reject the whole bundle.
+func isUpperCase(r rune) bool {
+	return unicode.IsUpper(r) || unicode.Is(unicode.Other_Uppercase, r)
+}
+
+// rdnsSuffixShape reports whether an rDNS suffix is a leading '.' followed by
+// at least two non-empty labels (ruling I-22), as the Edge's reader
+// (mg-intel) and the writer (intelsync) require: the Edge matches suffixes
+// on a label boundary only, and a bare or one-label suffix would make rDNS
+// verification trivially satisfiable.
+func rdnsSuffixShape(s string) bool {
+	rest, ok := strings.CutPrefix(s, ".")
+	if !ok {
+		return false
+	}
+	labels := strings.Split(rest, ".")
+	return len(labels) >= 2 && !slices.Contains(labels, "")
 }
 
 // checkCrawlerCIDR: canonical network (a bare address counts as a host

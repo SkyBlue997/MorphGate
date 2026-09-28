@@ -37,12 +37,12 @@ Go 模块 `morphgate/control-plane`：`mgctl`（所有者工作站上的运维 C
 | `mgctl audit verify` | 校验审计日志哈希链；打印条数与最后的 hash，断链时指出行号 | — |
 | `mgctl cf audit --site-config <site.yaml> [--cf-ips <artifact>] [--vm-url <url>] [--sdk-dir <dir>] [--ack <check>=<note>]… [--strict] [--json] [--metrics-textfile <path>]` | 用只读 API Token（`CLOUDFLARE_API_TOKEN`）审计所有者 zone 的 21 项设置（规格 §14.3）；任一 error 级失败（`--strict` 下含 `manual`）退出码 1 | — |
 | `mgctl cf ips sync --out <file> [flags]` | 同步 Cloudflare IP 段工件（`cloudflare-ips.json`，规格 §12.2、§14.4）；条数变化超过 30% 需 `--accept-change`；写 `<out>.state.json` | `cf.ips.sync` |
-| `mgctl crawler sync --registry <src.yaml> --out <file> [--previous <file>] [--accept-change]` | 抓取各爬虫运营方的官方 IP 段并写注册表工件（规格 §12.3、§14.5）；变化保护同上（50%） | `crawler.sync` |
+| `mgctl crawler sync --registry <src.yaml> --out <file> [--previous <file>] [--accept-change]` | 抓取各爬虫运营方的官方 IP 段并写注册表工件（规格 §12.3、§14.5）；变化保护同上（50%）；`rdns_suffixes` 每项以 `.` 开头、其后至少两段标签（如 `.googlebot.com`，裁决 I-22；Edge 只按标签边界匹配） | `crawler.sync` |
 
 ### 约定
 
 - **退出码**：`0` 成功；`1` 输入无效或检查失败；`2` 用法错误或尚未实现；`3` I/O 或内部错误（含审计追加失败）。
-- **全局标志 `--audit-log <path>`**：可写在命令行任意位置（`--` 之前），所有写入类命令（含 `cf ips sync`、`crawler sync`）都追加到同一个日志。
+- **全局标志 `--audit-log <path>`**：可写在命令行任意位置（`--` 之前），所有写入类命令（含 `cf ips sync`、`crawler sync`）都追加到同一个日志，并且在抓取或写入任何文件之前先确认日志可用，不可用时什么都不写、退出码 3（集成者裁决 I-27）。
 - **环境变量**：`MGCTL_PASSPHRASE_FILE`（口令文件，取第一行；测试与自动化用，否则从终端无回显读取，生成时输入两次；口令从不出现在命令行）、`MGCTL_AGE_WORK_FACTOR`（10–22，缺省 18；小于 18 必须加 `--insecure-test-key`，只用于测试与 Lab）、`MGCTL_AUDIT_LOG`、`CLOUDFLARE_API_TOKEN`、`MGCTL_CF_API_BASE`（缺省 `https://api.cloudflare.com/client/v4`，测试指向 httptest）。
 - **文件写入**：一律先写临时文件、fsync 后再 `rename`（或硬链接）；密钥文件与工件从不覆盖已有文件（轮换命令原子替换 `--file` 指定的文件）。
 - **出站请求**（`cf audit`、`cf ips sync`、`crawler sync`）：User-Agent 一律为 `morphgate-dev-tooling`（集成者裁决 I-7，覆盖规格 §14.1 的 `mgctl/<version>`），不带所有者的邮箱或其他身份信息。
@@ -53,7 +53,8 @@ Go 模块 `morphgate/control-plane`：`mgctl`（所有者工作站上的运维 C
 
 - 未知键、YAML 锚点 / 别名、多文档都是错误；诊断信息带 `文件:行:列`。相对路径相对于 YAML 文件所在目录。
 - 缺省值：`monitor_only: true`；`channel: web`；`require_clearance` 与 `fail_closed` 在 `sensitivity: critical` 时为 true；限速器 `burst: 1`、`scope: global`、`mode: enforce`；`automation_allowlist_only` 对 `production` 以外的环境为 true。`sensitivity`、限速器的 `key`、`rate`、`on_exceed` 必填。
-- 每个环境末尾追加 `{name: default, paths: ["/**"], channel: web, sensitivity: low}`，除非已有一个 `paths: ["/**"]` 且不限定 `hosts` / `methods` 的路由；`default` 这个名字只能用于这样的路由。
+- 每个环境末尾追加 `{name: default, paths: ["/**"], channel: web, sensitivity: low}`，除非已有一个 `paths: ["/**"]` 且不限定 `hosts` / `methods` 的路由；`default` 这个名字只能用于这样的路由。每个环境至多 64 条**声明**路由，追加的 `default` 不计入（配置包中至多 65 条，与 Edge 的校验一致，裁决 I-24）。
+- 限速器 id 在整个站点内唯一（跨环境，裁决 I-23）：Valkey 键 `mg:rl:{site}:{limiter}:{kh}` 不含环境，两个环境共用一个 id 会共用同一组 GCRA 桶。
 - 构建时额外检查：策略规则只允许 Phase 1 参数（`challenge` 的 `type: invisible|pow|interactive`、`tag` 必需的 `label`、`rate_limit` 的 `limiter` 与 `retry_after_s`）；`tarpit` 报错（D-09），`interactive` 告警（D-08，按 `pow` 执行）；规则引用的名单都必须在 `lists` / `list_files` 中定义，IR 中 `ip_in()` 用到的名单必须全是 IP 或 CIDR；规则缺 IR（`ir_version != 1` 或 `expr_ir` 为空）时构建失败，所以不会产生 Edge 无法加载的配置包；工件按 Edge（mg-intel）的解析规则校验：MaxMind DB 完整校验并检查 `database_type`；JSON 工件逐字段严格读取（成员名大小写须一致，重复成员、缺失成员与 `null` 都是错误，只有注册表的 `test` 可省略）；IPv6 段只接受全球单播 `2000::/3` 且不与 `2001::/23`、文档段 `3fff::/20` 相交；时间戳为 `Z` 或 `±hh:mm`（小时 ≤ 23）的 RFC 3339；`tor-exits` 至多 1,000,000 条，ASN 至多 10 位数字。任何一项 Edge 会拒绝的内容都会让整个配置包被拒，所以构建时就报错。
 - 构建结果是确定性的：同样的输入与 `--version` 得到同样的字节；`challenge`、`clearance`、`scoring`、`crawler_policy`、`events`、`origin_headers` 总是完整写出（proto3 无法区分"未设置"与零值）。
 
@@ -97,4 +98,4 @@ go run ./cmd/mg-control -listen 127.0.0.1:8090
 - 策略文件可在顶层声明站点的 UpstreamProfile：`profile: cloudflare`（取值为 UpstreamProfileKind 小写名；目前只有 `cloudflare`、`direct_tls` 有字段可用性表，其他取值跳过检查并给出告警）。声明后，读取该 profile 下恒为 `MISSING` 的字段（规格 §4.4）且表达式中没有同路径 `has()` 守卫的规则会得到告警。未声明时不检查；`-profile` 只作用于未声明的文件，与声明冲突是错误。`bundle build` 按站点的 `profile` 检查它引用的策略文件。
 - `allow` / `block` 规则读取 `identity.crawler.cf_vbot` 或 `cf_vbot_cat`，但顶层 `&&` 条件中没有 MorphGate 自有验证（`identity.crawler.verified` 或 `risk.class == "..."`）时告警：Cloudflare 标记只作佐证。
 - 扩展函数：`ip_in(string, list(string)) bool`、`list(string) list(string)`（命名列表，参数必须是字符串字面量）、`glob(string, string) bool`（`*` 不跨 `/`，`**` 跨 `/`，`?` 单个非 `/` 字符；模式必须是字面量）。
-- 编译器把 CEL 降级为受限 IR（规格 §5.1）；不支持的构造（算术、宏、类型转换等，§5.2）与静态步数上界超过 100,000 的规则是编译错误。`internal/policy` 的参考求值器与 Rust IR 求值器按 `testdata/policy-ir/` 的一致性用例对齐；数据面不运行 cel-go。
+- 编译器把 CEL 降级为受限 IR（规格 §5.1）；不支持的构造（算术、宏、类型转换等，§5.2）与静态步数上界超过 100,000 的规则是编译错误。只能对 map 字段直接取下标（`req.headers["accept"]`、`req.headers.accept`、`rate["login"]`）；对 `?:` 算出的 map 取下标或选择报 `unsupported in policy IR: computed map`，改写为 `c ? m[k] : m[k]`（裁决 I-20）。`internal/policy` 的参考求值器与 Rust IR 求值器按 `testdata/policy-ir/` 的一致性用例对齐；数据面不运行 cel-go。

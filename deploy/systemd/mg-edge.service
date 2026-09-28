@@ -3,24 +3,48 @@
 # Install:
 #   useradd --system --no-create-home --shell /usr/sbin/nologin morphgate
 #   install -m 0755 target/release/mg-edge /usr/local/bin/mg-edge
-#   install -d -m 0750 -o root -g morphgate /etc/morphgate
+#   install -d -m 0750 -o root -g morphgate /etc/morphgate /etc/morphgate/owner-keys
 #   install -m 0640 -o root -g morphgate deploy/systemd/edge.toml.example /etc/morphgate/edge.toml
-#   (edit site_id / origin / metrics_listen first)
+#   (edit edge_id / listeners / sites / metrics_listen first)
+#   install -m 0644 owner-2026.pub /etc/morphgate/owner-keys/
+#   cp -r sdk/web/dist/sdk /opt/morphgate/sdk
 #   cp deploy/systemd/mg-edge.service /etc/systemd/system/ && systemctl daemon-reload
 #   systemctl enable --now mg-edge
 #
+# Credentials (docs/impl/phase1-spec.md §17 step 4): key files never touch the
+# Edge host's disk in clear. From the owner workstation, per credential:
+#   mgctl keys export --in blog/token.keys.json.age \
+#     | ssh edge 'sudo systemd-creds encrypt --name=mg-blog-token-keys - /etc/credstore.encrypted/mg-blog-token-keys'
+# The LoadCredentialEncrypted= lines below decrypt them into
+# $CREDENTIALS_DIRECTORY, where edge.toml's cred://<name> references point.
+# One line per cred:// name in edge.toml (shipped_configs.rs checks the pair);
+# add mg-edge-tls-key / mg-edge-client-key when those listeners or the bundle
+# client certificate are used. For a test host without TPM/host key,
+# LoadCredential=<name>:/path/to/plain-0600-file works the same way.
+#
+# StateDirectory=morphgate creates /var/lib/morphgate (edge.toml state_dir):
+# the last-known-good bundle per site and the artifact cache survive restarts,
+# upgrades and reboots, so a restarted Edge never falls back to bootstrap.
+#
 # Flags: -d/--daemon forks into the background and writes the PID file
 # (Type=forking; requires [server] pid_file); -u/--upgrade takes over the
-# listening sockets of the running process; --check-config validates edge.toml
-# and exits. edge/tests/shipped_configs.rs runs every mg-edge command line below
-# against edge.toml.example, so flags and paths here cannot drift from the binary.
+# listening sockets of the running process; --check-config validates edge.toml,
+# the credentials, key files, SDK directory and every site's last-known-good
+# bundle, then exits (1: an LKG exists but cannot be used; 2: invalid
+# configuration). edge/tests/shipped_configs.rs runs every mg-edge command line
+# below against edge.toml.example, so flags and paths here cannot drift from
+# the binary.
 #
 # Zero-downtime binary/config upgrade (Pingora graceful upgrade):
 #   systemctl reload mg-edge
-# ExecReload sends SIGQUIT to the running process, which hands its listening
-# sockets to the new process started with -u over the upgrade socket, then
-# drains in-flight requests and exits. systemd follows the new main PID through
-# PIDFile. Plain `systemctl restart` drops connections; prefer reload.
+# ExecReload first runs mg-edge --check-config: if the new configuration,
+# credentials or LKG are unusable, the reload fails there and the running
+# process keeps serving (systemd runs the next ExecReload= line only after the
+# previous one succeeded). Then it sends SIGQUIT to the running process, which
+# hands its listening sockets to the new process started with -u over the
+# upgrade socket, drains in-flight requests and exits. systemd follows the new
+# main PID through PIDFile. Plain `systemctl restart` drops connections; prefer
+# reload.
 #
 # /etc/morphgate/edge.toml must move Pingora's PID file and upgrade socket out
 # of /tmp (Pingora's defaults), which PrivateTmp= hides from systemd; the
@@ -47,8 +71,13 @@ After=network-online.target
 [Service]
 Type=forking
 PIDFile=/run/morphgate/mg-edge.pid
-ExecStartPre=/usr/local/bin/mg-edge --check-config --config /etc/morphgate/edge.toml
+# No ExecStartPre check: mg-edge validates the configuration, credentials and
+# SDK directory before it forks, so a broken configuration still fails the
+# start; but a site whose LKG is unusable must still start, answer 503 (fail
+# closed, or bootstrap-open with on_lkg_invalid = "open") and recover by
+# polling, which --check-config (exit 1) would prevent.
 ExecStart=/usr/local/bin/mg-edge -d --config /etc/morphgate/edge.toml
+ExecReload=/usr/local/bin/mg-edge --check-config --config /etc/morphgate/edge.toml
 ExecReload=/bin/kill -QUIT $MAINPID
 ExecReload=/usr/local/bin/mg-edge -u -d --config /etc/morphgate/edge.toml
 # SIGTERM = Pingora graceful shutdown (stop accepting, drain, exit).
@@ -64,6 +93,14 @@ RuntimeDirectory=morphgate
 RuntimeDirectoryMode=0750
 ConfigurationDirectory=morphgate
 StateDirectory=morphgate
+StateDirectoryMode=0750
+
+# edge.toml cred://<name> -> $CREDENTIALS_DIRECTORY/<name> (see the header).
+LoadCredentialEncrypted=mg-upstream-keys:/etc/credstore.encrypted/mg-upstream-keys
+LoadCredentialEncrypted=mg-blog-token-keys:/etc/credstore.encrypted/mg-blog-token-keys
+LoadCredentialEncrypted=mg-blog-seal-root:/etc/credstore.encrypted/mg-blog-seal-root
+LoadCredentialEncrypted=mg-pseudo-key:/etc/credstore.encrypted/mg-pseudo-key
+LoadCredentialEncrypted=mg-valkey-password:/etc/credstore.encrypted/mg-valkey-password
 UMask=0027
 LimitNOFILE=1048576
 

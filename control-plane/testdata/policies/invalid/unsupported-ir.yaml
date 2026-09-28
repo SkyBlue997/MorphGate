@@ -30,3 +30,8 @@ policies:
       && glob(req.path, "/eeeeeeeeeeeeeeeeeeeeeeeeeeeee/*") && glob(req.path, "/fffffffffffffffffffffffffffff/*")
       && glob(req.path, "/ggggggggggggggggggggggggggggg/*")
     action: block
+
+  - id: computed-map
+    phase: protocol
+    expr: '(has(tls.ja4) ? req.headers : req.headers)["accept"] == "text/html"'
+    action: log

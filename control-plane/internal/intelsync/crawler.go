@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // Crawler registry constants (docs/impl/phase1-spec.md §12.1, §12.3).
@@ -179,8 +180,26 @@ func validateOperatorMeta(id, name, purpose string, uaTokens []string, mode stri
 		if !suffixPattern.MatchString(s) {
 			return fmt.Errorf("%q: rdns suffix %q must be lower-case letters, digits, '.', '-' or '_'", id, s)
 		}
+		if !validRDNSSuffix(s) {
+			return fmt.Errorf("%q: rdns suffix %q must start with '.' followed by at least two labels (e.g. .googlebot.com)", id, s)
+		}
 	}
 	return nil
+}
+
+// validRDNSSuffix reports whether s has the rDNS suffix shape of ruling I-22:
+// a leading '.' and at least two non-empty labels after it. The Edge
+// (mg-intel) matches a suffix only on a label boundary, so ".googlebot.com"
+// never matches "evilgooglebot.com"; a bare "googlebot.com" or a one-label
+// ".com" would make forward-confirmed rDNS trivially satisfiable, and the
+// reader rejects such an artifact, so the writer never produces one.
+func validRDNSSuffix(s string) bool {
+	rest, ok := strings.CutPrefix(s, ".")
+	if !ok {
+		return false
+	}
+	labels := strings.Split(rest, ".")
+	return len(labels) >= 2 && !slices.Contains(labels, "")
 }
 
 func validateOperatorRanges(op *CrawlerOperator, test bool) error {

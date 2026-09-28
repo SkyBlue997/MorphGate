@@ -106,9 +106,12 @@ type Log struct {
 	path string
 }
 
-// Open prepares the log at path: it creates missing directories (0700) and
-// checks that the last record of an existing file is intact, so that a
-// command can fail before it writes anything when the log is unusable.
+// Open prepares the log at path: it creates missing directories (0700),
+// checks that the last record of an existing file is intact and that the file
+// can be appended to (creating an empty log if there is none), so that a
+// command can fail before it writes anything when the log is unusable
+// (ruling I-27). A read-only log would otherwise pass here and fail only in
+// Append, after the command's change was made.
 func Open(path string) (*Log, error) {
 	if path == "" {
 		return nil, errors.New("audit log path is empty")
@@ -124,6 +127,15 @@ func Open(path string) (*Log, error) {
 	defer unlock()
 	if _, err := l.tailHash(); err != nil {
 		return nil, err
+	}
+	// The same open as Append's, without writing: an existing log's bytes
+	// are unchanged, a missing one becomes a valid empty log.
+	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("audit log: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("audit log: %w", err)
 	}
 	return l, nil
 }

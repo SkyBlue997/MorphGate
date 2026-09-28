@@ -68,6 +68,9 @@ var ArtifactKeys = []struct{ Key, Name string }{
 
 // Structural limits (spec §8.2, §4.1).
 const (
+	// MaxRoutesPerEnv bounds the declared routes of one environment; the
+	// implicit "default" route comes on top (ruling I-24: at most 65 routes
+	// in the bundle).
 	MaxRoutesPerEnv   = 64
 	MaxLimitersPerEnv = 64
 	MaxPathsPerRoute  = 16

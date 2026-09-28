@@ -47,17 +47,16 @@ func TestEvalWithMissingSemantics(t *testing.T) {
 		{`req.headers["cookie"] == "x"`, nil, ResultError, nil},
 		{`req.headers["cookie"] == "x" || edge_tls.version == ""`, []string{"edge_tls"}, ResultUnknown, []string{"edge_tls"}},
 		{`req.headers["cookie"] == edge_tls.version`, []string{"edge_tls"}, ResultError, nil},
-		// index_map is strict (spec §5.3): an ERROR key beats an UNKNOWN map,
-		// also when the map is computed. cel-go resolves an index on a
-		// computed operand as a relative attribute and returns the unknown
-		// operand without evaluating the key; the reference evaluator must
-		// not inherit that.
-		{`(net.tor ? req.headers : req.headers)[req.headers["cookie"]] == "x"`, []string{"net"}, ResultError, nil},
-		{`(net.tor ? rate : rate)[req.headers["cookie"]] > 0.5`, []string{"net"}, ResultError, nil},
-		{`(net.tor ? req.headers : req.headers)[req.headers["accept"]] == "x"`, []string{"net"}, ResultUnknown, []string{"net"}},
-		{`(net.tor ? req.headers : req.headers)["accept"] == "text/html"`, []string{"net"}, ResultUnknown, []string{"net"}},
-		{`(net.tor ? req.headers : req.headers).accept == "text/html"`, nil, ResultTrue, nil},
-		{`(net.tor ? req.headers : req.headers)[req.headers["cookie"]] == "x"`, nil, ResultError, nil},
+		// index_map is strict (spec §5.3): the first ERROR among map and key
+		// wins over UNKNOWN. Only map fields can be indexed (ruling I-20), so
+		// a conditional index is written inside the branches, and an UNKNOWN
+		// condition makes it UNKNOWN without evaluating either index.
+		{`req.headers[req.headers["cookie"]] == edge_tls.version`, []string{"edge_tls"}, ResultError, nil},
+		{`rate[req.headers["cookie"]] > 0.5`, []string{"net"}, ResultError, nil},
+		{`(net.tor ? req.headers[req.headers["cookie"]] : req.headers[req.headers["cookie"]]) == "x"`, []string{"net"}, ResultUnknown, []string{"net"}},
+		{`(net.tor ? req.headers["accept"] : req.headers["accept"]) == "text/html"`, []string{"net"}, ResultUnknown, []string{"net"}},
+		{`(net.tor ? req.headers.accept : req.headers.accept) == "text/html"`, nil, ResultTrue, nil},
+		{`(net.tor ? req.headers[req.headers["cookie"]] : req.headers["accept"]) == "x"`, nil, ResultFalse, nil},
 	}
 	for _, tc := range cases {
 		cr := compileExpr(t, tc.expr)

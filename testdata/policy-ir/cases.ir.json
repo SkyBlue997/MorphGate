@@ -720,20 +720,20 @@
       "ir": "CAESLUorCAESIGIeCg0SC3JlcS5oZWFkZXJzEg0SC3Rscy52ZXJzaW9uGgUKAyIBeBoLcmVxLmhlYWRlcnMaC3Rscy52ZXJzaW9uIIcB"
     },
     {
-      "name": "node.index_map.cond-map",
-      "ir": "CAESUEpOCAESO2I5CitCKQoJEgduZXQudG9yEg0SC3JlcS5oZWFkZXJzGg0SC3JlcS5oZWFkZXJzEgoKCCIGYWNjZXB0Gg0KCyIJdGV4dC9odG1sGgduZXQudG9yGgtyZXEuaGVhZGVycyCJAQ=="
+      "name": "node.index_map.branch-index",
+      "ir": "CAESY0phCAESTkJMCgkSB25ldC50b3ISIGIeCg0SC3JlcS5oZWFkZXJzEg0KCyIJeC1taXNzaW5nGh1iGwoNEgtyZXEuaGVhZGVycxIKCggiBmFjY2VwdBoNCgsiCXRleHQvaHRtbBoHbmV0LnRvchoLcmVxLmhlYWRlcnMgiQE="
     },
     {
-      "name": "node.index_map.computed-map-unknown",
-      "ir": "CAESXkpcCAESSWJHCjlCNwoXEhV0bHMuamE0LmF1dGhlbnRpY2F0ZWQSDRILcmVxLmhlYWRlcnMaDRILcmVxLmhlYWRlcnMSCgoIIgZhY2NlcHQaDQoLIgl0ZXh0L2h0bWwaC3JlcS5oZWFkZXJzGhV0bHMuamE0LmF1dGhlbnRpY2F0ZWQgiQE="
+      "name": "node.index_map.branch-index-unknown",
+      "ir": "CAESbkpsCAESWUJXChcSFXRscy5qYTQuYXV0aGVudGljYXRlZBIdYhsKDRILcmVxLmhlYWRlcnMSCgoIIgZhY2NlcHQaHWIbCg0SC3JlcS5oZWFkZXJzEgoKCCIGYWNjZXB0Gg0KCyIJdGV4dC9odG1sGgtyZXEuaGVhZGVycxoVdGxzLmphNC5hdXRoZW50aWNhdGVkIIkB"
     },
     {
-      "name": "node.index_map.computed-map-error-key",
-      "ir": "CAESZ0plCAESWmJYCjlCNwoXEhV0bHMuamE0LmF1dGhlbnRpY2F0ZWQSDRILcmVxLmhlYWRlcnMaDRILcmVxLmhlYWRlcnMSG2IZCg0SC3JlcS5oZWFkZXJzEggKBiIEbm9wZRoFCgMiAXgaC3JlcS5oZWFkZXJzGhV0bHMuamE0LmF1dGhlbnRpY2F0ZWQgjAE="
+      "name": "node.index_map.branch-index-error",
+      "ir": "CAESY0phCAESTkJMCgkSB25ldC50b3ISHWIbCg0SC3JlcS5oZWFkZXJzEgoKCCIGYWNjZXB0GiBiHgoNEgtyZXEuaGVhZGVycxINCgsiCXgtbWlzc2luZxoNCgsiCXRleHQvaHRtbBoHbmV0LnRvchoLcmVxLmhlYWRlcnMgiQE="
     },
     {
-      "name": "node.index_map.computed-rate-error-key",
-      "ir": "CAESX0pdCAUSTGJKCitCKQoXEhV0bHMuamE0LmF1dGhlbnRpY2F0ZWQSBhIEcmF0ZRoGEgRyYXRlEhtiGQoNEgtyZXEuaGVhZGVycxIICgYiBG5vcGUaCwoJGQAAAAAAAOA/GgRyYXRlGgtyZXEuaGVhZGVycxoVdGxzLmphNC5hdXRoZW50aWNhdGVkIAs="
+      "name": "node.index_map.branch-index-rate",
+      "ir": "CAESVEpSCAUSQUI/CgkSB25ldC50b3ISFGISCgYSBHJhdGUSCAoGIgRub3BlGhxiGgoGEgRyYXRlEhAKDiIMbG9naW4tcGVyLWlwGgsKCRmamZmZmZm5PxoHbmV0LnRvchoEcmF0ZSAI"
     },
     {
       "name": "node.size.string.code-points",
@@ -890,6 +890,38 @@
     {
       "name": "node.ip_in.mapped-cidr-short-prefix",
       "ir": "CAESHXobCggSBm5ldC5pcBIPggEMbWFwcGVkX3Nob3J0GgZuZXQuaXAgk04="
+    },
+    {
+      "name": "node.ip_in.mapped-cidr-short-prefix-after-match",
+      "ir": "CAESInogCggSBm5ldC5pcBIUggERbWFwcGVkX3Nob3J0X2xhdGUaBm5ldC5pcCCTTg=="
+    },
+    {
+      "name": "node.ip_in.mapped-cidr-short-prefix-v6-address",
+      "ir": "CAESHXobCggSBm5ldC5pcBIPggEMbWFwcGVkX3Nob3J0GgZuZXQuaXAgk04="
+    },
+    {
+      "name": "node.ip_in.mapped-cidr-short-prefix-mapped-address",
+      "ir": "CAESHXobCggSBm5ldC5pcBIPggEMbWFwcGVkX3Nob3J0GgZuZXQuaXAgk04="
+    },
+    {
+      "name": "node.ip_in.invalid-address-mapped-short-entry",
+      "ir": "CAESIHoeCgsSCXJlcS5xdWVyeRIPggEMbWFwcGVkX3Nob3J0GglyZXEucXVlcnkgk04="
+    },
+    {
+      "name": "node.ip_in.invalid-address-zoned-entry",
+      "ir": "CAESGXoXCgsSCXJlcS5xdWVyeRIIggEFem9uZWQaCXJlcS5xdWVyeSCTTg=="
+    },
+    {
+      "name": "node.ip_in.zoned-address-invalid-entry",
+      "ir": "CAESL3otChtiGQoNEgtyZXEuaGVhZGVycxIICgYiBHgtaXASDoIBC21peGVkX2NpZHJzGgtyZXEuaGVhZGVycyCWTg=="
+    },
+    {
+      "name": "node.ip_in.mapped-cidr-96-boundary",
+      "ir": "CAESI3ohCggSBm5ldC5pcBIVIhMKEQoPIg06OmZmZmY6MDowLzk2GgZuZXQuaXAgBQ=="
+    },
+    {
+      "name": "node.ip_in.mapped-cidr-96-v6-address",
+      "ir": "CAESI3ohCggSBm5ldC5pcBIVIhMKEQoPIg06OmZmZmY6MDowLzk2GgZuZXQuaXAgBQ=="
     },
     {
       "name": "node.ip_in.unknown",

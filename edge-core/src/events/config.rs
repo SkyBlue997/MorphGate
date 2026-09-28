@@ -22,17 +22,20 @@ pub struct EventsConfig {
     pub vl_short: Option<String>,
     /// Optional JSONL file sink (tests, the Lab); every line of both sinks.
     pub file: Option<PathBuf>,
-    /// Flush at least this often (ms).
+    /// Each output flushes at least this often (ms).
     pub flush_interval_ms: u64,
-    /// Flush as soon as this many records are pending; also the per-batch cap.
+    /// An output flushes as soon as it holds this many records; also the
+    /// per-batch cap.
     pub max_batch_lines: usize,
-    /// Flush as soon as this many line bytes are pending; also the per-batch cap.
+    /// An output flushes as soon as it holds this many line bytes; also the
+    /// per-batch cap.
     pub max_batch_bytes: usize,
-    /// P0 queue capacity (non-allow decisions, feedback).
+    /// P0 capacity (non-allow decisions, feedback): of the request queue and
+    /// of each output's backlog (ruling I-25).
     pub queue_priority: usize,
-    /// P1 queue capacity (`kind=access`).
+    /// P1 capacity (`kind=access`), as `queue_priority`.
     pub queue_access: usize,
-    /// P2 queue capacity (sampled allow decisions, telemetry).
+    /// P2 capacity (sampled allow decisions, telemetry), as `queue_priority`.
     pub queue_sampled: usize,
     /// `XADD mg:ev MAXLEN ~ <stream_maxlen>`.
     pub stream_maxlen: u64,

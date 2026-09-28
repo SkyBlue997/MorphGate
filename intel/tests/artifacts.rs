@@ -157,6 +157,14 @@ const INVALID: &[(&str, &str)] = &[
     ("crawler-registry.too-broad-v6.json", "shorter than /32"),
     ("crawler-registry.unknown-mode.json", "unknown verify.mode"),
     ("crawler-registry.uppercase-suffix.json", "lower-case"),
+    (
+        "crawler-registry.suffix-without-dot.json",
+        "must start with '.' followed by at least two labels",
+    ),
+    (
+        "crawler-registry.single-label-suffix.json",
+        "must start with '.' followed by at least two labels",
+    ),
     ("datacenter-asns.bad-line.txt", "line 2"),
     ("datacenter-asns.zero.txt", "line 1: \"0\": ASN 0"),
     ("tor-exits.bad-line.txt", "line 2"),
@@ -337,6 +345,46 @@ fn registry_verify_rules() {
     let mut v = registry();
     v["operators"][0]["verify"]["rdns_suffixes"] = json!([".Google.com"]);
     reject(&v, "lower-case");
+    // Unicode upper case without a lower-case mapping (U+210B) or outside Lu
+    // (U+1F130, Other_Uppercase) is still upper case; the Go bundle builder
+    // (bundle/artifacts.go) rejects the same suffixes.
+    for upper in [".\u{210b}x.googlebot.com", ".\u{1f130}x.googlebot.com"] {
+        let mut v = registry();
+        v["operators"][0]["verify"]["rdns_suffixes"] = json!([upper]);
+        reject(&v, "lower-case");
+    }
+    // Ruling I-22: a leading '.' and at least two labels after it, so the
+    // suffix matches on a label boundary and never names a whole TLD.
+    for bad in [
+        "googlebot.com",
+        "evilgooglebot.com",
+        ".com",
+        "com",
+        ".",
+        "..",
+        ".googlebot..com",
+        "..googlebot.com",
+        ".googlebot.com.",
+        "googlebot.com.",
+    ] {
+        let mut v = registry();
+        v["operators"][0]["verify"]["rdns_suffixes"] = json!([".google.com", bad]);
+        reject(&v, "must start with '.' followed by at least two labels");
+    }
+    for good in [
+        ".googlebot.com",
+        ".a.b",
+        ".crawl.search.msn.com",
+        ".xn--bcher-kva.example",
+    ] {
+        let mut v = registry();
+        v["operators"][0]["verify"]["rdns_suffixes"] = json!([good]);
+        assert_eq!(accept(&v).operators()[0].rdns_suffixes, [good]);
+    }
+    // ip_ranges operators carry no suffixes, and an empty list stays valid.
+    let mut v = registry();
+    v["operators"][2]["verify"]["rdns_suffixes"] = json!([]);
+    accept(&v);
     // rDNS-only operators may publish no ranges.
     let mut v = registry();
     v["operators"][1]["verify"]["mode"] = json!("rdns");

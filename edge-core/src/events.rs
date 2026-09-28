@@ -2,37 +2,45 @@
 //! `/insert/jsonline` batches with retries, the JSONL file sink and `mg:ev`
 //! stream entries.
 //!
-//! Implemented by work package WP-C4 (docs/impl/phase1-spec.md §15); mg-edge
-//! (WP-E1d) assembles the individual events and wires the flusher into the
+//! Implemented by work package WP-C4 (docs/impl/phase1-spec.md §15) and
+//! reworked by WP-E1d for ruling I-25 (independent outputs); mg-edge (WP-E1d)
+//! assembles the individual events and wires the flusher into the
 //! `mg-events` background service (§9.1.1).
 //!
 //! # Data flow
 //!
 //! ```text
-//! proxy (request path)                         mg-events background service
-//!   EventRecord ──try_send──> P0 queue ─┐
-//!   (never blocks; full ─> drop + count)  P1 queue ─┼─> Flusher ──> VlClient: vl_main / vl_short (§13.1)
-//!                                        P2 queue ─┘          ├──> JSONL file sink (optional)
-//!                                                             └──> StreamWriter: XADD mg:ev (§13.6)
+//! proxy (request path)                  mg-events background service
+//!
+//! EventRecord                                           ┌─> vl_main backlog ──> flush loop ─> vl_main  (§13.1)
+//!   ─try_send─> P0 / P1 / P2 queues ─> dispatcher ──────┼─> vl_short backlog ─> flush loop ─> vl_short (§13.1)
+//!   (never blocks; full: drop + count)  (P0 first)      ├─> file backlog ─────> flush loop ─> JSONL file (optional)
+//!                                                       └─> mg:ev backlog ────> flush loop ─> StreamWriter: XADD mg:ev (§13.6)
 //! ```
 //!
 //! * [`EventQueues`] is the request-path handle ([`EventSink`]); it only does
 //!   a bounded `try_send`, so writing an event never blocks a request.
 //!   Everything it needs is runtime-free, so it can be created in `main()`
 //!   before Pingora daemonizes (§9.1.1).
-//! * [`Flusher::run`] drains the queues in P0, P1, P2 order every
-//!   `flush_interval_ms`, or as soon as `max_batch_lines` / `max_batch_bytes`
-//!   are pending, and delivers each batch to every configured sink. It must
-//!   run on the `mg-events` service's runtime, and the [`VlClient`] must be
-//!   built there as well.
+//! * [`Flusher::run`] moves every record at once into a bounded backlog per
+//!   output, and each output (each VictoriaLogs instance, the file, `mg:ev`)
+//!   runs its own flush loop over its own backlog (ruling I-25): a
+//!   VictoriaLogs outage never slows the file or the stream, a `vl_short`
+//!   outage never slows `vl_main`, and vice versa. Each loop sends
+//!   every `flush_interval_ms`, or as soon as `max_batch_lines` /
+//!   `max_batch_bytes` are pending, in P0, P1, P2 order. It must run on the
+//!   `mg-events` service's runtime, and the [`VlClient`] must be built there
+//!   as well.
 //! * Lost records are counted in `mg_event_dropped_total{sink, class}`
-//!   ([`EventMetrics`]): full queue (`buffer`), VictoriaLogs refusal or
-//!   exhausted retries (`victorialogs`), failed `XADD` (`stream`), failed
-//!   append (`file`). The one blind spot is a file append or `XADD` already
+//!   ([`EventMetrics`]): a full request queue (`buffer`); and per output
+//!   (`victorialogs`, `file`, `stream`) a refusal, exhausted retries or a
+//!   failed write, a full backlog, or a record still held when the shutdown
+//!   budget ran out. The one blind spot is a file append or `XADD` already
 //!   in progress when shutdown interrupts it.
 //! * [`envelope`], [`StreamEntry`], [`TelemetryEnv`] / [`TelemetryAuto`] and
 //!   the sampling / redaction helpers are the pure encodings E1d uses to build
-//!   the records.
+//!   the records. `StateHandle` implements [`StreamWriter`] (one pipelined
+//!   `XADD` batch on the `mg-state` runtime).
 //!
 //! # Privacy (D-31, §2.4)
 //!
@@ -42,6 +50,7 @@
 
 mod config;
 mod encode;
+mod output;
 mod queue;
 mod stream;
 mod telemetry;
@@ -52,7 +61,7 @@ use std::fmt;
 pub use config::EventsConfig;
 pub use encode::{
     ACCESS_PATH_MAX_BYTES, SampleInputs, access_path, decision_sample_rate, envelope,
-    redacted_path, sample_keep,
+    redacted_path, sample_keep, sampling_exempt,
 };
 pub use queue::{DropSink, EventMetrics, EventQueues, FINAL_FLUSH_BUDGET, Flusher};
 pub use stream::{
@@ -69,8 +78,9 @@ pub use vl::{
 };
 
 /// Queue class of an event record (§9.11). Each class has its own bounded
-/// queue; the flusher always drains P0 before P1 before P2, so a flood of
-/// sampled allow decisions can never displace enforcement or feedback events.
+/// request queue and, in every output, its own bounded backlog; batches
+/// always take P0 before P1 before P2, so a flood of sampled allow decisions
+/// can never displace enforcement or feedback events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventClass {
     /// P0: non-allow decisions, `kind=feedback`, anything that must survive.

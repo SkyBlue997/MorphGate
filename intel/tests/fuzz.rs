@@ -147,11 +147,7 @@ fn fuzz_static_resolver() {
         let bytes = input(&mut rng, &seeds);
         if let Ok(r) = StaticResolver::from_json(&bytes) {
             accepted += 1;
-            let job = RdnsJob {
-                ip: ip("198.51.100.7"),
-                operator_id: "x".into(),
-                suffixes: vec![".googlebot.com".into()],
-            };
+            let job = RdnsJob::new(ip("198.51.100.7"), "x", vec![".googlebot.com".into()]);
             let _ = block_on(resolve_rdns(&job, &r));
         }
     }
@@ -183,11 +179,7 @@ fn fuzz_rdns_names() {
             };
             r.fwd.insert(n.clone(), answer);
         }
-        let job = RdnsJob {
-            ip: ip("192.0.2.1"),
-            operator_id: "x".into(),
-            suffixes,
-        };
+        let job = RdnsJob::new(ip("192.0.2.1"), "x", suffixes);
         let _ = block_on(resolve_rdns(&job, &r));
         let forward_queries = r.calls().len() - 1;
         assert!(forward_queries <= 5, "{forward_queries} forward queries");

@@ -60,6 +60,14 @@ pub const FAMILY_NAMES: [&str; 7] = [
 /// (§9.3 step 3). `upgrade` is kept for a WebSocket upgrade ([`hop_by_hop`]).
 pub const HOP_BY_HOP: [&str; 4] = ["keep-alive", "proxy-connection", "te", "upgrade"];
 
+/// The HTTP/1 message framing fields. A `Connection` listing never removes
+/// them ([`hop_by_hop`]): the proxy reads the request body by this framing
+/// (Pingora 0.9 decides how to read the body from the request header as it
+/// stands when the body is first read), so removing `Content-Length` or
+/// `Transfer-Encoding` would make the body look empty and leave it on the
+/// connection to be parsed as a second, smuggled request.
+pub const FRAMING: [&str; 2] = ["content-length", "transfer-encoding"];
+
 /// Whether `name` belongs to a known upstream header family (§9.3): after
 /// ASCII lower-casing and replacing `_` with `-`, it starts with one of
 /// [`FAMILY_PREFIXES`] or equals one of [`FAMILY_NAMES`]. So
@@ -127,7 +135,10 @@ pub fn connection_listed(headers: &[(&str, &[u8])]) -> Vec<String> {
 /// forwarded. Listed end-to-end names such as `host` are returned too:
 /// removing those can only take away the client's own input (a request
 /// whose `Host` is removed before §9.4 resolves it gets a 400), never a
-/// header the Edge writes afterwards.
+/// header the Edge writes afterwards. The [`FRAMING`] fields are the
+/// exception: a listing of `Content-Length` or `Transfer-Encoding` is
+/// ignored, because removing them would desynchronise the request body from
+/// the connection (request smuggling).
 ///
 /// Listed upstream-family names ([`is_upstream_family`]) are the exception:
 /// step 5 strips every one of them anyway, and removing them here, before
@@ -144,7 +155,11 @@ pub fn hop_by_hop(headers: &[(&str, &[u8])]) -> Vec<String> {
         .filter(|name| !listed.iter().any(|listed| listed.as_str() == **name))
         .map(|name| (*name).to_owned());
     for name in listed.iter().cloned().chain(extra) {
-        if name == "connection" || (websocket && name == "upgrade") || is_upstream_family(&name) {
+        if name == "connection"
+            || (websocket && name == "upgrade")
+            || is_upstream_family(&name)
+            || FRAMING.contains(&name.as_str())
+        {
             continue;
         }
         names.push(name);

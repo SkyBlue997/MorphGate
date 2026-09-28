@@ -271,6 +271,37 @@ func TestDefaultPath(t *testing.T) {
 	}
 }
 
+// Ruling I-27: Open is the "audit log usable" check that write commands run
+// before they write anything, so it must fail for a log that can be read but
+// not appended to (a read-only file), not only later in Append.
+func TestOpenFailsWhenTheLogIsNotWritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("file permissions do not bind root")
+	}
+	l := newLog(t)
+	appendN(t, l, 1)
+	if err := os.Chmod(l.Path(), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(l.Path(), 0o600) })
+	before, _ := os.ReadFile(l.Path())
+	if _, err := Open(l.Path()); err == nil {
+		t.Error("Open of a read-only log succeeded; the append after the write would fail")
+	}
+	if after, _ := os.ReadFile(l.Path()); !bytes.Equal(after, before) {
+		t.Error("Open changed the log")
+	}
+	// A missing log in a writable directory is usable, and Open leaves it a
+	// valid empty log.
+	fresh := filepath.Join(t.TempDir(), "audit.jsonl")
+	if _, err := Open(fresh); err != nil {
+		t.Fatalf("Open of a new log: %v", err)
+	}
+	if n, _, err := Verify(fresh); err != nil || n != 0 {
+		t.Errorf("new log after Open: %d records, %v", n, err)
+	}
+}
+
 func TestOpenFailsWhenTheDirectoryCannotBeCreated(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "file")
 	os.WriteFile(file, nil, 0o600)

@@ -224,6 +224,9 @@ type crawlerDiffEntry struct {
 // previous ranges of an operator whose download failed (marked stale), apply
 // the D-36 change protection and write the artifact atomically.
 func SyncCrawlers(ctx context.Context, env cli.Env, fc fetchConfig, opts CrawlerOptions) (*CrawlerResult, error) {
+	if err := auditPreflight(env); err != nil {
+		return nil, err
+	}
 	srcData, err := readLimited(opts.Registry, maxSourceFileSize)
 	if err != nil {
 		return nil, invalidErr(fmt.Errorf("--registry: %w", err))

@@ -22,6 +22,12 @@ func (p *parser) parseEnvironments(n *yaml.Node, s *Site) []Environment {
 	}
 	var out []Environment
 	seen := map[string]bool{}
+	// Limiter id -> the environment that declared it first. Limiter ids are
+	// unique across the whole site (ruling I-23): the Valkey key
+	// mg:rl:{site}:{limiter}:{kh} has no environment part, so two
+	// environments reusing an id would share GCRA buckets per client key,
+	// possibly with different rate parameters.
+	limiterEnvs := map[string]string{}
 	for i, it := range items {
 		path := fmt.Sprintf("environments[%d]", i)
 		o := p.object(it, path)
@@ -66,12 +72,19 @@ func (p *parser) parseEnvironments(n *yaml.Node, s *Site) []Environment {
 		if routesNode != nil {
 			env.Routes = p.parseRoutes(routesNode, o.sub("routes"), env.Hosts)
 		}
-		env.Routes = p.appendDefaultRoute(it, path, env.Routes)
-		if len(env.Routes) > MaxRoutesPerEnv {
-			p.errorf(routesNode, "%s: %d routes (including default), at most %d", o.sub("routes"), len(env.Routes), MaxRoutesPerEnv)
+		// At most 64 declared routes; the implicit default route the builder
+		// appends is not counted (ruling I-24: 65 in the bundle at most,
+		// which is what the Edge's bundle verification accepts).
+		declared := len(env.Routes)
+		if routesNode != nil && routesNode.Kind == yaml.SequenceNode {
+			declared = len(routesNode.Content) // also items that failed to parse
 		}
+		if declared > MaxRoutesPerEnv {
+			p.errorf(routesNode, "%s: %d declared routes, at most %d (plus the implicit default)", o.sub("routes"), declared, MaxRoutesPerEnv)
+		}
+		env.Routes = p.appendDefaultRoute(it, path, env.Routes)
 		if v := o.get("rate_limits"); v != nil {
-			env.RateLimits = p.parseRateLimits(v, o.sub("rate_limits"), env.Routes, s)
+			env.RateLimits = p.parseRateLimits(v, o.sub("rate_limits"), env.Routes, s, path, limiterEnvs)
 		}
 		o.finish()
 		out = append(out, env)
@@ -215,7 +228,11 @@ func literalPrefix(pat string) string {
 	return pat
 }
 
-func (p *parser) parseRateLimits(n *yaml.Node, path string, routes []Route, s *Site) []RateLimit {
+// parseRateLimits reads one environment's rate_limits. siteIDs maps every
+// limiter id already declared in the site to the path of its environment
+// (envPath, e.g. "environments[production]"); ids of this environment are
+// added to it.
+func (p *parser) parseRateLimits(n *yaml.Node, path string, routes []Route, s *Site, envPath string, siteIDs map[string]string) []RateLimit {
 	items, ok := p.seq(n, path)
 	if !ok {
 		return nil
@@ -241,8 +258,13 @@ func (p *parser) parseRateLimits(n *yaml.Node, path string, routes []Route, s *S
 					p.errorf(v, "%s: the \"mg.\" prefix is reserved for built-in limiters", o.sub("id"))
 				case seen[id]:
 					p.errorf(v, "%s: duplicate limiter id %q in this environment", o.sub("id"), id)
+				case siteIDs[id] != "":
+					p.errorf(v, "%s: limiter id %q is already used by %s; limiter ids are unique across the site (their Valkey keys have no environment part)", o.sub("id"), id, siteIDs[id])
 				}
 				seen[id] = true
+				if _, ok := siteIDs[id]; !ok {
+					siteIDs[id] = envPath
+				}
 				l.ID = id
 			}
 		}

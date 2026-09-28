@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="{{lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>安全验证 · Security check</title>
+<style nonce="{{nonce}}">
+/* Inline only: the page may load nothing but the first-party SDK (spec §11.2). */
+:root {
+  color-scheme: light dark;
+  --bg: #f5f6f8;
+  --fg: #1c2230;
+  --muted: #5a6376;
+  --card: #ffffff;
+  --line: #dce0e7;
+  --accent: #2d6cdf;
+  --on-accent: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #13161b;
+    --fg: #e6e9ef;
+    --muted: #9aa3b3;
+    --card: #1b1f26;
+    --line: #2b313b;
+    --accent: #7ba6ff;
+    --on-accent: #0d1117;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+main {
+  width: 100%;
+  max-width: 30rem;
+  padding: 2rem 1.5rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  text-align: center;
+}
+h1 { margin: 0 0 0.5rem; font-size: 1.3rem; font-weight: 600; }
+p { margin: 0.5rem 0; }
+.lead { color: var(--muted); }
+/* Spinner only while the SDK is working (it sets data-mg-phase). */
+.spin {
+  display: none;
+  width: 28px;
+  height: 28px;
+  margin: 0 auto 1rem;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: mg-spin 0.9s linear infinite;
+}
+[data-mg-phase="start"] .spin, [data-mg-phase="work"] .spin { display: block; }
+@keyframes mg-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+}
+#mg-status { min-height: 1.55em; font-weight: 500; }
+#mg-retry {
+  display: inline-block;
+  margin-top: 0.75rem;
+  padding: 0.55rem 1.4rem;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--on-accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+#mg-retry[hidden] { display: none; }
+#mg-retry:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }
+.rid { margin-top: 1.5rem; font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+/* Both languages ship in the page; show the one the Edge chose for <html lang>. */
+html[lang|="zh"] [lang="en"], html:not([lang|="zh"]) [lang|="zh"] { display: none; }
+</style>
+</head>
+<body>
+<main id="mg-challenge" data-mg-state="{{state}}" data-mg-c="{{c}}" data-mg-type="{{type}}"
+      data-mg-pow-bits="{{pow_bits}}" data-mg-ret="{{ret}}" data-mg-rid="{{request_id}}"
+      data-mg-prefix="{{prefix}}">
+  <div class="spin" aria-hidden="true"></div>
+  <h1><span lang="zh-CN">安全验证</span><span lang="en">Security check</span></h1>
+  <p class="lead"><span lang="zh-CN">本站正在确认访问来自正常浏览器，通常只需几秒，完成后自动返回。</span><span lang="en">This site is checking that your visit comes from a regular browser. It usually takes a few seconds, then you are returned automatically.</span></p>
+  <p id="mg-status" role="status" aria-live="polite"><span lang="zh-CN">请稍候…</span><span lang="en">Please wait…</span></p>
+  <a id="mg-retry" href="{{ret}}" hidden><span lang="zh-CN">重试</span><span lang="en">Try again</span></a>
+  <noscript><p><span lang="zh-CN">此验证需要 JavaScript。请启用 JavaScript 后刷新页面。</span><span lang="en">This check needs JavaScript. Please enable JavaScript and reload the page.</span></p></noscript>
+  <p class="rid"><span lang="zh-CN">请求编号</span><span lang="en">Request ID</span> <code>{{request_id}}</code></p>
+</main>
+<script data-cfasync="false" src="{{sdk_src}}" nonce="{{nonce}}" data-mg-path-prefix="{{prefix}}"></script>
+</body>
+</html>

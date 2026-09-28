@@ -300,6 +300,13 @@ func TestLowerRejects(t *testing.T) {
 		{`net.tor && tls.ja4 == tls.ja4`, `:4:26: error: rule "r": expr: unsupported in policy IR: tls.ja4 used as a value; read one of its fields`},
 		{`req == req`, `unsupported in policy IR: req used as a value`},
 		{`(net.tor ? tls.ja4 : tls.ja4).value == ""`, `unsupported in policy IR: tls.ja4 used as a value`},
+		// Ruling I-20: only a map field can be indexed or selected, never a
+		// map computed by ?: (whichever branch types or keys).
+		{`net.tor && (net.tor ? req.headers : req.headers)["accept"] == "x"`, `:4:60: error: rule "r": expr: unsupported in policy IR: computed map; index or select a map field directly`},
+		{`(net.tor ? req.headers : req.headers).accept == "x"`, `unsupported in policy IR: computed map`},
+		{`(net.tor ? rate : rate)["login"] > 0.5`, `unsupported in policy IR: computed map`},
+		{`(net.tor ? req.headers : req.headers)[req.headers["k"]] == "x"`, `unsupported in policy IR: computed map`},
+		{`(net.tor ? req.headers : (risk.score > 50 ? req.headers : req.headers)).accept == "x"`, `unsupported in policy IR: computed map`},
 		{`net.tor && has(req.headers.accept)`, `:4:26: error: rule "r": expr: unsupported in policy IR: has() on a map key; use "accept" in <map> instead`},
 		{`has(rate.login)`, `unsupported in policy IR: has() on a map key`},
 		// Optional syntax is a parse error in this environment; it still
@@ -411,6 +418,7 @@ func TestUnsupportedIRFile(t *testing.T) {
 		`unsupported-ir.yaml:17:27: error: rule "regex": expr: unsupported in policy IR: matches() (regular expressions)`,
 		`unsupported-ir.yaml:22:14: error: rule "has-on-header": expr: unsupported in policy IR: has() on a map key; use "cookie" in <map> instead`,
 		`unsupported-ir.yaml:28: error: rule "step-bound": expr: rule exceeds the evaluation step bound: 114703 > 100000 (at expr 1:`,
+		`unsupported-ir.yaml:36:54: error: rule "computed-map": expr: unsupported in policy IR: computed map`,
 	}
 	for _, w := range want {
 		requireDiag(t, diags, w)

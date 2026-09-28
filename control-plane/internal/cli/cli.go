@@ -39,6 +39,12 @@ type Env struct {
 	// calls it once after the write succeeded; a non-nil error must make the
 	// command exit with ExitInternal.
 	Audit AuditFunc
+	// AuditReady confirms that the audit log behind Audit is usable (the
+	// dispatcher opens it). Every write command calls it before it writes
+	// any file; a non-nil error must make the command exit with ExitInternal
+	// without writing anything (ruling I-27). nil means nothing to check
+	// (tests that supply their own Audit).
+	AuditReady func() error
 }
 
 // AuditEvent is what a subcommand reports to the audit log; the log adds id,

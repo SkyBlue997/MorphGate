@@ -22,11 +22,52 @@ func TestCrawlerRegistrySamples(t *testing.T) {
 			t.Errorf("%s does not round-trip:\n%s", name, enc)
 		}
 	}
+	// The reason for the samples of ruling I-22 (the Rust reader rejects
+	// them for the same rule).
+	reasons := map[string]string{
+		"crawler-registry.suffix-without-dot.json":  "must start with '.' followed by at least two labels",
+		"crawler-registry.single-label-suffix.json": "must start with '.' followed by at least two labels",
+	}
 	for _, f := range mustGlob(t, filepath.Join(phase1Artifacts, "invalid", "crawler-registry.*.json")) {
-		if _, err := ParseCrawlerRegistry(mustRead(t, f)); err == nil {
-			t.Errorf("%s: accepted, want rejection", filepath.Base(f))
-		} else {
-			t.Logf("%s: %v", filepath.Base(f), err)
+		name := filepath.Base(f)
+		_, err := ParseCrawlerRegistry(mustRead(t, f))
+		switch {
+		case err == nil:
+			t.Errorf("%s: accepted, want rejection", name)
+		case reasons[name] != "" && !strings.Contains(err.Error(), reasons[name]):
+			t.Errorf("%s: %v, want an error containing %q", name, err, reasons[name])
+		default:
+			t.Logf("%s: %v", name, err)
+		}
+		delete(reasons, name)
+	}
+	for name := range reasons {
+		t.Errorf("sample %s is missing", name)
+	}
+}
+
+// TestValidRDNSSuffix pins the suffix shape of ruling I-22.
+func TestValidRDNSSuffix(t *testing.T) {
+	for s, want := range map[string]bool{
+		".googlebot.com":       true,
+		".google.com":          true,
+		".search.msn.com":      true,
+		".applebot.apple.com":  true,
+		".a.b":                 true,
+		"googlebot.com":        false, // would also match evilgooglebot.com
+		"evilgooglebot.com":    false,
+		".com":                 false, // a whole TLD
+		"com":                  false,
+		".":                    false,
+		"":                     false,
+		"..googlebot.com":      false,
+		".googlebot..com":      false,
+		".googlebot.com.":      false,
+		"crawl.googlebot.com.": false,
+		" .googlebot.com":      false,
+	} {
+		if got := validRDNSSuffix(s); got != want {
+			t.Errorf("validRDNSSuffix(%q) = %v, want %v", s, got, want)
 		}
 	}
 }
@@ -60,6 +101,15 @@ func TestCrawlerRegistryValidation(t *testing.T) {
 			r.Operators[0].Verify.RDNSSuffixes = []string{"." + strings.Repeat("a", 253)}
 		}, "rdns suffix"},
 		"empty suffix": {func(r *CrawlerRegistry) { r.Operators[0].Verify.RDNSSuffixes = []string{""} }, "rdns suffix"},
+		// Ruling I-22: a leading '.' and at least two labels after it.
+		"suffix without dot": {func(r *CrawlerRegistry) { r.Operators[0].Verify.RDNSSuffixes = []string{"googlebot.com"} }, "must start with '.' followed by at least two labels"},
+		"single-label suffix": {func(r *CrawlerRegistry) {
+			r.Operators[0].Verify.RDNSSuffixes = []string{".googlebot.com", ".com"}
+		}, "must start with '.' followed by at least two labels"},
+		"bare dot suffix":     {func(r *CrawlerRegistry) { r.Operators[1].Verify.RDNSSuffixes = []string{"."} }, "at least two labels"},
+		"empty label suffix":  {func(r *CrawlerRegistry) { r.Operators[1].Verify.RDNSSuffixes = []string{".search..msn.com"} }, "at least two labels"},
+		"trailing dot suffix": {func(r *CrawlerRegistry) { r.Operators[1].Verify.RDNSSuffixes = []string{".search.msn.com."} }, "at least two labels"},
+		"double leading dot":  {func(r *CrawlerRegistry) { r.Operators[1].Verify.RDNSSuffixes = []string{"..msn.com"} }, "at least two labels"},
 		"sha256": {func(r *CrawlerRegistry) {
 			r.Operators[0].Sources[0].SHA256 = strings.ToUpper(r.Operators[0].Sources[0].SHA256)
 		}, "sha256"},
@@ -118,6 +168,8 @@ func TestRegistrySourceValidation(t *testing.T) {
 		"mode":              {strings.Replace(good, "mode: rdns\n", "mode: dns\n", 1), "verify.mode"},
 		"rdns no suffixes":  {strings.Replace(good, "rdns_suffixes: [.crawl.example.net]", "rdns_suffixes: []", 1), "needs rdns_suffixes"},
 		"upper suffix":      {strings.Replace(good, ".crawl.example.net", ".Crawl.example.net", 1), "lower-case"},
+		"suffix no dot":     {strings.Replace(good, "[.crawl.example.net]", "[crawl.example.net]", 1), "must start with '.'"},
+		"one-label suffix":  {strings.Replace(good, "[.crawl.example.net]", "[.net]", 1), "at least two labels"},
 		"ip_ranges no urls": {strings.Replace(good, "      ip_ranges:\n        - url: https://openai.com/gptbot.json\n          format: prefixes_json\n", "", 1), "needs verify.ip_ranges"},
 		"duplicate url":     {strings.Replace(good, "archivebot-extra.txt", "archivebot.txt", 1), "duplicate ip_ranges url"},
 		"empty":             {"", "empty file"},

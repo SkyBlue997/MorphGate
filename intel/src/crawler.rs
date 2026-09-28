@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::Deserialize;
@@ -79,7 +80,8 @@ pub struct Operator {
     pub ua_tokens: Vec<String>,
     /// Verification mode.
     pub mode: VerifyMode,
-    /// Lower-case rDNS suffixes (non-empty when `mode` uses rDNS).
+    /// Lower-case rDNS suffixes (non-empty when `mode` uses rDNS), each a
+    /// leading `.` followed by at least two labels (ruling I-22).
     pub rdns_suffixes: Vec<String>,
     /// The operator's published ranges.
     pub cidrs: IpSet,
@@ -167,7 +169,9 @@ impl CrawlerRegistry {
     /// * operator ids match `[a-z0-9][a-z0-9_-]{0,31}` and are unique;
     ///   `purpose` and `verify.mode` take the listed values; 1–8 `ua_tokens`
     ///   of 3–64 characters;
-    /// * modes with rDNS have `rdns_suffixes`, each lower-case and 1–253 bytes;
+    /// * modes with rDNS have `rdns_suffixes`, each lower-case, 1–253 bytes,
+    ///   starting with `.` and naming at least two non-empty labels after it
+    ///   (`.googlebot.com`; not `googlebot.com`, `.com` or `.a..b`; I-22);
     ///   `ip_ranges` operators have `cidrs`; at most 20,000 CIDRs each;
     /// * every CIDR is a canonical network address with an IPv4 prefix of at
     ///   least /16 or an IPv6 prefix of at least /32 that intersects no
@@ -258,6 +262,25 @@ impl CrawlerRegistry {
     }
 }
 
+/// The shape of an rDNS suffix (ruling I-22): a leading `.` followed by at
+/// least two non-empty labels, so a suffix always matches on a label
+/// boundary and never names a whole top-level domain (`.com`) or a bare
+/// registrable name without its dot (`googlebot.com`, which would also match
+/// `evilgooglebot.com`). Case and length are checked separately.
+pub(crate) fn is_rdns_suffix(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix('.') else {
+        return false;
+    };
+    let mut labels = 0usize;
+    for label in rest.split('.') {
+        if label.is_empty() {
+            return false;
+        }
+        labels += 1;
+    }
+    labels >= 2
+}
+
 fn validate_operator(op: OperatorDoc, test: bool) -> Result<Operator, String> {
     if !valid_id(&op.id) {
         return Err("id must match [a-z0-9][a-z0-9_-]{0,31}".into());
@@ -287,6 +310,13 @@ fn validate_operator(op: OperatorDoc, test: bool) -> Result<Operator, String> {
         }
         if s.chars().any(char::is_uppercase) {
             return Err(format!("rdns_suffix {} must be lower-case", quote(s)));
+        }
+        if !is_rdns_suffix(s) {
+            return Err(format!(
+                "rdns_suffix {} must start with '.' followed by at least two labels \
+                 (e.g. .googlebot.com)",
+                quote(s)
+            ));
         }
     }
     if mode == VerifyMode::IpRanges && op.cidrs.is_empty() {
@@ -394,6 +424,14 @@ pub enum CrawlerStatus {
 }
 
 /// A reverse-DNS verification to run off the request path.
+///
+/// A job issued by [`CrawlerVerifier::check`] carries a private identity: the
+/// verifier that issued it and the sequence number of the in-flight mark it
+/// owns (ruling I-26). [`CrawlerVerifier::complete`] and
+/// [`CrawlerVerifier::abandon`] clear that mark only while it is still this
+/// job's, so a late job whose mark expired (and was replaced by a newer
+/// job's) never releases the newer one: at most one job per `(ip, operator)`
+/// is in flight (spec §7.3), also when jobs outlive `inflight_ttl_ms`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RdnsJob {
     /// The client address (canonical form).
@@ -402,6 +440,31 @@ pub struct RdnsJob {
     pub operator_id: String,
     /// The operator's `rdns_suffixes`.
     pub suffixes: Vec<String>,
+    /// The issuing [`CrawlerVerifier`]'s id; 0 for a detached job.
+    issuer: u64,
+    /// The sequence number of the in-flight mark this job owns.
+    seq: u64,
+}
+
+impl RdnsJob {
+    /// A detached job, not issued by any verifier: for running
+    /// [`crate::resolve_rdns`] on its own (tests, the Validation Lab).
+    /// [`CrawlerVerifier::complete`] and [`CrawlerVerifier::abandon`] ignore
+    /// it, so it can neither release an in-flight mark nor seed the cache.
+    pub fn new(ip: IpAddr, operator_id: impl Into<String>, suffixes: Vec<String>) -> Self {
+        Self {
+            ip,
+            operator_id: operator_id.into(),
+            suffixes,
+            issuer: 0,
+            seq: 0,
+        }
+    }
+
+    /// Whether `verifier` issued this job with [`CrawlerVerifier::check`].
+    pub fn issued_by(&self, verifier: &CrawlerVerifier) -> bool {
+        self.issuer != 0 && self.issuer == verifier.id
+    }
 }
 
 impl fmt::Debug for RdnsJob {
@@ -411,6 +474,8 @@ impl fmt::Debug for RdnsJob {
             .field("ip", &"<redacted>")
             .field("operator_id", &self.operator_id)
             .field("suffixes", &self.suffixes)
+            .field("issuer", &self.issuer)
+            .field("seq", &self.seq)
             .finish()
     }
 }
@@ -459,10 +524,16 @@ impl Default for CacheConfig {
 /// the in-flight job set. Cheap for requests that claim no crawler (no lock);
 /// claimed requests take one short mutex. All time comes from the caller.
 pub struct CrawlerVerifier {
+    /// Process-unique (never 0), so that a job is only ever reported to the
+    /// verifier that issued it (see [`RdnsJob`]).
+    id: u64,
     registry: Arc<CrawlerRegistry>,
     config: CacheConfig,
     state: Mutex<State>,
 }
+
+/// Source of [`CrawlerVerifier`] ids; 0 is reserved for detached jobs.
+static NEXT_VERIFIER_ID: AtomicU64 = AtomicU64::new(1);
 
 impl fmt::Debug for CrawlerVerifier {
     /// Sizes only: the cache is keyed by client addresses.
@@ -527,6 +598,14 @@ impl<V> ExpiringMap<V> {
         }
     }
 
+    /// Removes `key` only while its entry is the one inserted with `seq`
+    /// (expired or not); a newer entry for the same key is left alone.
+    fn remove_if_seq(&mut self, key: &Key, seq: u64) {
+        if self.map.get(key).is_some_and(|t| t.seq == seq) {
+            self.remove(key);
+        }
+    }
+
     /// Removes `key` from `map` only if it is still the entry indexed by
     /// `seq` (the index and the map never disagree, but a stale index entry
     /// must never delete a newer value).
@@ -571,7 +650,8 @@ enum Probe {
     Cached(RdnsOutcome),
     InFlight,
     Saturated,
-    NewJob,
+    /// A new in-flight mark with this sequence number.
+    NewJob(u64),
 }
 
 struct State {
@@ -599,6 +679,7 @@ impl CrawlerVerifier {
             inflight_ttl_ms: cache.inflight_ttl_ms.max(0),
         };
         Self {
+            id: NEXT_VERIFIER_ID.fetch_add(1, Ordering::Relaxed),
             registry,
             config,
             state: Mutex::new(State {
@@ -704,11 +785,13 @@ impl CrawlerVerifier {
         match self.probe((ip, idx), now_ms) {
             Probe::Cached(outcome) => (status(Some(outcome)), None),
             Probe::InFlight | Probe::Saturated => (status(None), None),
-            Probe::NewJob => {
+            Probe::NewJob(seq) => {
                 let job = RdnsJob {
                     ip,
                     operator_id: op.id.clone(),
                     suffixes: op.rdns_suffixes.clone(),
+                    issuer: self.id,
+                    seq,
                 };
                 (status(None), Some(job))
             }
@@ -735,30 +818,33 @@ impl CrawlerVerifier {
         let seq = st.next_seq();
         let until = now_ms.saturating_add(self.config.inflight_ttl_ms);
         st.inflight.insert(key, (), until, seq);
-        Probe::NewJob
+        Probe::NewJob(seq)
     }
 
-    /// Records a finished job: clears its in-flight mark and caches the
+    /// Records a finished job: clears its in-flight mark if the mark is still
+    /// this job's (ruling I-26: a late job whose mark expired and was taken
+    /// over by a newer job leaves the newer mark alone) and caches the
     /// outcome (`Pass` 24 h, `Fail` 1 h, `DnsError` 5 min by default). When
-    /// the cache is full, the entry that expires first is evicted. Jobs for
-    /// operators not in this verifier's registry are ignored.
+    /// the cache is full, the entry that expires first is evicted. Jobs this
+    /// verifier did not issue (detached jobs, jobs of another verifier such
+    /// as one replaced on a bundle reload, whose suffixes may be stale) and
+    /// jobs for operators not in this verifier's registry are ignored.
     ///
     /// A `DnsError` never replaces a live `Pass` or `Fail`: it only arrives
     /// for a key that already has a conclusive result when a late job (one
     /// that outlived its in-flight mark, so a newer job ran meanwhile)
     /// reports its timeout, and that must not downgrade the newer verdict.
     pub fn complete(&self, job: &RdnsJob, outcome: RdnsOutcome, now_ms: i64) {
-        let Some(&idx) = self.registry.index.get(&job.operator_id) else {
+        let Some(key) = self.job_key(job) else {
             return;
         };
-        let key = (job.ip.to_canonical(), idx);
         let ttl = match outcome {
             RdnsOutcome::Pass => self.config.pass_ttl_ms,
             RdnsOutcome::Fail => self.config.fail_ttl_ms,
             RdnsOutcome::DnsError => self.config.error_ttl_ms,
         };
         let mut st = self.lock();
-        st.inflight.remove(&key);
+        st.inflight.remove_if_seq(&key, job.seq);
         if outcome == RdnsOutcome::DnsError
             && matches!(
                 st.cache.get(&key, now_ms),
@@ -780,10 +866,22 @@ impl CrawlerVerifier {
     /// Releases the in-flight mark without caching a result (the job will
     /// not run: queue full, per-prefix limit, shutdown, or the task was
     /// cancelled). The next `check` for the same address issues a new job.
+    /// Like [`CrawlerVerifier::complete`], it releases only the job's own
+    /// mark (ruling I-26) and ignores jobs this verifier did not issue.
     pub fn abandon(&self, job: &RdnsJob) {
-        let Some(&idx) = self.registry.index.get(&job.operator_id) else {
+        let Some(key) = self.job_key(job) else {
             return;
         };
-        self.lock().inflight.remove(&(job.ip.to_canonical(), idx));
+        self.lock().inflight.remove_if_seq(&key, job.seq);
+    }
+
+    /// The cache key of a job this verifier issued, or `None` for any other
+    /// job (detached, another verifier's, or an unknown operator).
+    fn job_key(&self, job: &RdnsJob) -> Option<Key> {
+        if !job.issued_by(self) {
+            return None;
+        }
+        let &idx = self.registry.index.get(&job.operator_id)?;
+        Some((job.ip.to_canonical(), idx))
     }
 }

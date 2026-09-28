@@ -13,9 +13,9 @@
 use crate::v1;
 use mg_core::enums::{Action, ChallengeType};
 use mg_core::policy::{
-    CompareOp, Expr, FieldId, Glob, GlobError, HasPath, ListId, Literal, MAX_DEPTH,
-    MAX_LIST_LITERAL, MAX_NODES, MAX_STRING_LITERAL, NamedLists, Phase, Program, ProgramError,
-    Rule, RuleAction, RuleMode, StringFn,
+    COMPUTED_MAP_INDEX, CompareOp, Expr, FieldId, Glob, GlobError, HasPath, ListId, Literal,
+    MAX_DEPTH, MAX_LIST_LITERAL, MAX_NODES, MAX_STRING_LITERAL, NamedLists, Phase, Program,
+    ProgramError, Rule, RuleAction, RuleMode, StringFn,
 };
 use mg_core::{Decision, policy};
 use prost::Message;
@@ -190,6 +190,12 @@ fn convert(
         }
         Kind::InList(b) | Kind::InMap(b) | Kind::IndexMap(b) | Kind::IpIn(b) => {
             let (l, r) = (sub(operand(&b.lhs)?)?, sub(operand(&b.rhs)?)?);
+            // Ruling I-20: only a map field is indexed. Checked here, before
+            // the step bound is compared, so that a computed-map index is
+            // always reported as such (`Program::new` enforces it as well).
+            if matches!(kind, Kind::IndexMap(_)) && !matches!(l, Expr::Field(_)) {
+                return Err(IrError::Malformed(COMPUTED_MAP_INDEX));
+            }
             let (l, r) = (Box::new(l), Box::new(r));
             match kind {
                 Kind::InList(_) => Expr::InList(l, r),
@@ -696,6 +702,81 @@ mod tests {
         );
         assert!(malformed(bin(Kind::InMap, i(1), f("rate"))));
         assert!(malformed(glob(f("risk.score"), "*")));
+    }
+
+    fn cond(c: v1::Expr, a: v1::Expr, b: v1::Expr) -> v1::Expr {
+        node(Kind::Cond(Box::new(v1::Cond {
+            cond: bx(c),
+            then_expr: bx(a),
+            else_expr: bx(b),
+        })))
+    }
+
+    /// Ruling I-20: an index or select on a map computed by `?:` is rejected
+    /// as such, whatever step bound is declared (137 is what the compiler
+    /// emitted for it before the ruling); indexing inside each branch and
+    /// key presence on a computed map still load.
+    #[test]
+    fn computed_map_index_is_rejected() {
+        use v1::CompareOp as Op;
+        let computed = |m: &str| cond(f("net.tor"), f(m), f(m));
+        let headers = cmp(
+            Op::Eq,
+            bin(Kind::IndexMap, computed("req.headers"), s("accept")),
+            s("text/html"),
+        );
+        for declared in [137, 0, u64::MAX] {
+            let p = v1::PolicyExpr {
+                ir_version: 1,
+                root: Some(headers.clone()),
+                fields: vec![],
+                max_steps: declared,
+            };
+            assert_eq!(
+                decode_program(&p.encode_to_vec(), &lists()).unwrap_err(),
+                IrError::Malformed(COMPUTED_MAP_INDEX),
+                "declared {declared}"
+            );
+        }
+        let rate = cmp(
+            Op::Gt,
+            bin(Kind::IndexMap, computed("rate"), s("login")),
+            lit(v1::literal::Value::DoubleValue(0.5)),
+        );
+        let nested = cond(
+            f("net.tor"),
+            f("req.headers"),
+            cond(t(), f("req.headers"), f("req.headers")),
+        );
+        let nested = and(vec![
+            has("net.ip"),
+            cmp(Op::Eq, bin(Kind::IndexMap, nested, s("a")), s("b")),
+        ]);
+        // An index whose map is itself an index result is not a field either
+        // (ill-typed as well, but rejected as a computed map first).
+        let index_of_index = cmp(
+            Op::Eq,
+            bin(
+                Kind::IndexMap,
+                bin(Kind::IndexMap, f("req.headers"), s("a")),
+                s("b"),
+            ),
+            s("c"),
+        );
+        for e in [rate, nested, index_of_index] {
+            assert_eq!(load(e).unwrap_err(), IrError::Malformed(COMPUTED_MAP_INDEX));
+        }
+        let branches = cmp(
+            Op::Eq,
+            cond(
+                f("net.tor"),
+                bin(Kind::IndexMap, f("req.headers"), s("accept")),
+                bin(Kind::IndexMap, f("req.headers"), s("accept")),
+            ),
+            s("text/html"),
+        );
+        assert_eq!(load(branches).unwrap().max_steps(), 137);
+        assert!(load(bin(Kind::InMap, s("accept"), computed("req.headers"))).is_ok());
     }
 
     fn rule(action: Action, params: &[(&str, &str)]) -> v1::CompiledRule {

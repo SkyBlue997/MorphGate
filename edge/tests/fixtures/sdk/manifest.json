@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "build": "1df90640e0c5fec4",
+  "sdk": "mg.1df90640e0c5fec4.js",
+  "files": {
+    "mg.1df90640e0c5fec4.js": "1df90640e0c5fec453e91982f72b7e8a4d7102bd05e2f679840e9121b0f4f6ce"
+  },
+  "templates": {
+    "challenge.html": "c4a273a58befeb565f96ee7d634d014fddb02f0f93c5eb1650b201aec870e4fe"
+  }
+}

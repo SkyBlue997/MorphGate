@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -375,6 +376,127 @@ func TestAuditFailureExitsThree(t *testing.T) {
 	e2 := newTestEnv(t)
 	e2.audit = func(cli.AuditEvent) error { return errors.New("disk full") }
 	e2.expect(cli.ExitInternal, "audit record could not be written: disk full", "keys", "gen-pseudo", "--out", e2.path("p.age"), "--insecure-test-key")
+}
+
+// failingTransport fails every request and remembers that one was tried: the
+// syncs below must not reach it (they stop at the audit check), and even if
+// they did, nothing would leave the process.
+type failingTransport struct{ tried *int }
+
+func (f failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	*f.tried++
+	return nil, errors.New("no network in tests")
+}
+
+// Ruling I-27: the dispatcher binds the audit log check to the intelligence
+// syncs of internal/intelsync too, so `cf ips sync` and `crawler sync` with
+// an unusable audit log exit 3 before they fetch or write anything.
+func TestSyncWriteCommandsCheckAuditLogFirst(t *testing.T) {
+	e := newTestEnv(t)
+	if err := os.WriteFile(e.path("file"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.vars[audit.EnvAuditLog] = e.path("file/audit.jsonl") // below a regular file
+	source := e.path("crawler-source.yaml")
+	if err := os.WriteFile(source, []byte(`version: 1
+operators:
+  - id: examplebot
+    name: Example bot
+    purpose: search
+    ua_tokens: [ExampleBot]
+    verify:
+      mode: ip_ranges
+      ip_ranges:
+        - url: https://127.0.0.1:9/examplebot.json
+          format: prefixes_json
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tried := 0
+	for _, args := range [][]string{
+		{"cf", "ips", "sync", "--out", e.path("out/cloudflare-ips.json"), "--url", "https://127.0.0.1:9/ips", "--metrics-textfile", e.path("out/cf.prom")},
+		{"crawler", "sync", "--registry", source, "--out", e.path("out/crawler-registry.json")},
+	} {
+		if err := os.MkdirAll(e.path("out"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		code := RunEnv(args, cli.Env{
+			Stdout: &out, Stderr: &errb, Stdin: strings.NewReader(""),
+			Now:    func() time.Time { return cliNow },
+			Getenv: func(k string) string { return e.vars[k] },
+			HTTP:   &http.Client{Transport: failingTransport{&tried}},
+		})
+		if code != cli.ExitInternal || !strings.Contains(errb.String(), "audit log") {
+			t.Errorf("mgctl %s: exit %d, stderr %q; want exit 3 naming the audit log", strings.Join(args, " "), code, errb.String())
+		}
+		if entries, _ := os.ReadDir(e.path("out")); len(entries) != 0 {
+			t.Errorf("mgctl %s wrote %d file(s) although the audit log was unusable", strings.Join(args, " "), len(entries))
+		}
+	}
+	if tried != 0 {
+		t.Errorf("%d request(s) attempted although the audit log was unusable", tried)
+	}
+}
+
+// Ruling I-27 with a log that exists and reads fine but cannot be appended
+// to (a read-only file): the preflight must catch it, not the append after
+// the key, artifact, state file or textfile was written.
+func TestReadOnlyAuditLogFailsBeforeAnyWrite(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("file permissions do not bind root")
+	}
+	e := newTestEnv(t)
+	e.must("keys", "gen-pseudo", "--out", e.path("first.age"), "--insecure-test-key")
+	logPath := e.vars[audit.EnvAuditLog]
+	if err := os.Chmod(logPath, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(logPath, 0o600) })
+	if err := os.MkdirAll(e.path("out"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := e.path("crawler-source.yaml")
+	if err := os.WriteFile(source, []byte(`version: 1
+operators:
+  - id: examplebot
+    name: Example bot
+    purpose: search
+    ua_tokens: [ExampleBot]
+    verify:
+      mode: ip_ranges
+      ip_ranges:
+        - url: https://127.0.0.1:9/examplebot.json
+          format: prefixes_json
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tried := 0
+	for _, args := range [][]string{
+		{"keys", "gen-pseudo", "--out", e.path("out/p.age"), "--insecure-test-key"},
+		{"cf", "ips", "sync", "--out", e.path("out/cloudflare-ips.json"), "--url", "https://127.0.0.1:9/ips", "--metrics-textfile", e.path("out/cf.prom")},
+		{"crawler", "sync", "--registry", source, "--out", e.path("out/crawler-registry.json")},
+	} {
+		var out, errb bytes.Buffer
+		code := RunEnv(args, cli.Env{
+			Stdout: &out, Stderr: &errb, Stdin: strings.NewReader(""),
+			Now:    func() time.Time { return cliNow },
+			Getenv: func(k string) string { return e.vars[k] },
+			HTTP:   &http.Client{Transport: failingTransport{&tried}},
+		})
+		if code != cli.ExitInternal || !strings.Contains(errb.String(), "audit log") || strings.Contains(errb.String(), "the change was made") {
+			t.Errorf("mgctl %s: exit %d, stderr %q; want exit 3 from the audit log check, before any change", strings.Join(args, " "), code, errb.String())
+		}
+		if entries, _ := os.ReadDir(e.path("out")); len(entries) != 0 {
+			t.Errorf("mgctl %s wrote %d file(s) although the audit log was read-only", strings.Join(args, " "), len(entries))
+		}
+	}
+	if tried != 0 {
+		t.Errorf("%d request(s) attempted although the audit log was read-only", tried)
+	}
+	if n, _, err := audit.Verify(logPath); err != nil || n != 1 {
+		t.Errorf("audit log after the refused commands: %d records, %v", n, err)
+	}
 }
 
 func TestAuditLogFlagPlacement(t *testing.T) {
