@@ -1,7 +1,7 @@
 # ADR-0003：以 UpstreamProfile 描述上游，Cloudflare 优先
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：删除清单、信号三态、`auth_method` 取值）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：删除清单、信号三态、`auth_method` 取值）；2026-09-28 勘误：Phase 1 实现口径（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-07、D-14、D-23、I-12、I-29，见文末"勘误"）
 - 相关：[08 上游接入与 Cloudflare 集成](../08-upstream-and-cloudflare.md)（规范细节以 08 为准）、[01 整体架构](../01-architecture.md)、[03 信号与风险评分](../03-risk-scoring.md)、[ADR-0004](0004-origin-protection-tunnel-aop.md)
 
 ## 背景
@@ -36,6 +36,18 @@
 - `x-mg-cf-tls-*`（尤其扩展哈希）的稳定性未文档化，需 shadow 实测后才能提高权重或用于绑定。
 - 新增上游只需新增 profile 与映射，不改 Decision Core。
 - 需要 `mgctl cf audit` 核对 Cloudflare 侧配置与 profile 的假设是否一致。
+
+## 勘误（2026-09-28，Phase 1 实现）
+
+结论不变。Phase 1 按下表实现（D-xx 见规格 [§0.3](../impl/phase1-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](../impl/phase1-spec.md#集成者裁决2026-09-28优先于正文)）：
+
+| 决策 | Phase 1 实际做法 |
+|---|---|
+| 1 | profile 绑定在主机本地 `edge.toml` 的 `[[listeners]]`；站点 YAML 的 `profile` 进入签名配置包的 `upstream.kind`，必须等于服务该站点的每个监听器的 profile，混用是配置错误（D-14，规格 [§8.1](../impl/phase1-spec.md#81-edgetoml-v1wp-e1a)、[§9.10](../impl/phase1-spec.md#910-配置包加载与站点状态wp-c2-实现wp-e1a-接线)）。`expected_mask`：`cloudflare` 为 NETWORK、HTTP、EDGE_TLS、IDENTITY、RATE、EXTERNAL；`direct_tls` 为 NETWORK、TLS、HTTP、IDENTITY、RATE |
+| 3 | `auth_method` 只有 `loopback`、`origin_mtls`、`secret_header`、`none`（`src_cidr` 随 `proxy_protocol` 在 Phase 5）；`secret_header` 是叠加在 `cloudflare` 监听器上的 `upstream_keys`。头族按名称小写、`_` 换成 `-` 后匹配，前缀另含 `mg-`，全名另加 I-29 的客户端 IP、URL 改写与方法覆盖类头（共 19 个）；`Connection` 列出的头族名不在逐跳删除中删掉，留给解析后统一剥离（I-12）。清单以 [08 §1.2](../08-upstream-and-cloudflare.md#12-信任规则) 为准 |
+| 4 | `tls.ja4` 恒为 MISSING（`direct_tls` 的 JA4 只在 WP-J1 预研中写入事件，D-07）；`net.ip_source` 只有 `cf_connecting_ip`、`cf_connecting_ipv6`、`tcp_peer` |
+| 5 | `x-mg-cf-hdr-names` 的缺失照常计数，但不计入告警的缺失率：任何客户端发一个超过 64 字节的头名就能让它缺失（I-12）；TLS 字段只对 https 访客计缺失 |
+| 6 | `CF-Connecting-IP` 缺失、非法或重复 → 客户端 IP 未知，Edge 从不因此更宽松；外部 zone 的 `CF-Worker` 直接 403（D-23，[08 §2.2](../08-upstream-and-cloudflare.md#22-客户端-ip)） |
 
 ## 参考
 

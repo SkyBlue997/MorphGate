@@ -46,6 +46,9 @@
 | I-30 | 在重放存储不可用时以 `ic.replay_unchecked` 兑换出的凭证带声明 `ruc = true`（缺省省略）。`fail_closed` 路由不接受 `ruc = true` 的凭证：视为级别不足，重新挑战（重放存储仍不可用时按 §9.7 返回 429）；其他路由照常接受。事件中记录 `token.replay_unchecked`。 | §6.4、§9.7、§9.8 |
 | I-31 | `mg_edge_added_latency_seconds` 增加标签 `kind = "site" \| "mg"`（`/__mg/*` 请求为 `mg`）；Phase 1 验收的 p99 < 5 ms 只看 `kind="site"`。 | §13.7、§18 |
 | I-32 | `kind=telemetry` 只在 `POST /__mg/c` 的提交携带 `env` 时写出（§10.3）；没有 `env` 的提交不写 telemetry 行。 | §10.3、§13 |
+| I-33 | 阶段 3 集成，接受阶段 2 的执行层细化（都不比正文更宽松）：(a) CHALLENGE 且客户端 IP 未知 → 429 + `Retry-After: 5`、不签发 C，事件中的决定**保持引擎的**（§5.4）；`rule_id = "hard.client_ip_unknown"` 只用于 `fail_closed` 路由的替换，且引擎已给出 BLOCK / RATE_LIMIT 时保持原决定。(b) `Early-Data`：任一实例（不论取值，`Connection` 列出的也算）即 `http.early_data = true`；`critical` 路由上只有本应转发的决定（ALLOW / TAG / LOG）改为 425，BLOCK 仍 403、CHALLENGE 仍挑战。(c) 路由 `methods` 不区分大小写，`GET` 同时接受 `HEAD`（RFC 9110 §9.3.2；否则 `HEAD` 能绕过只列 `GET` 的 `require_clearance` 路由） | §9.3.2、§9.4 第 6 步、§9.5、§9.9 |
+| I-34 | 阶段 3 集成，正文未列而实现已有的字段与接口：§13.2 决定事件可有顶层 `upstream_as_org`（Tier 1 `x-mg-cf-as-org`，Phase 1 只记录）、`oversize`（`hard.oversize_skipped` 时超出的上限，取值同 I-2 的 `kind`）与 `token: {"replay_unchecked": true}`（I-30）；`ja4_spike = true` 的 `direct_tls` 监听器上 `ctx.tls.ja4 = {value, source: self, authenticated: true}`（WP-J1），MissingSet 仍含 `tls.ja4`（D-07）；§7.6 `RdnsJob` 另有私有的签发者 id 与序号（I-26），公共接口增加 `RdnsJob::new`（独立作业，`complete` / `abandon` 忽略它）与 `RdnsJob::issued_by`；§14.2 `cli.Env.AuditReady`（I-27 的预检，同时要求审计日志可追加）。接受 WP-J1 的 `Cargo.lock` 一行变化（开发依赖 `reqwest` 已在工作区中，无新 crate） | §7.6、§9.5、§13.2、§14.2 |
+| I-35 | 阶段 3 集成，接受为 Phase 1 的已知限制（Phase 2 复审）：(a) 选中路由之前就应答或不求值转发的请求（外部 Worker 403、监听器 403、站点不可用 503、monitor / bootstrap 下原样转发的超限请求）不做 `redact_path` 改写（10 R-12；bootstrap 与 `lkg_invalid` 时根本没有路由表）；(b) Pingora 关闭信号之后才完成的请求，其事件计为 `mg_event_dropped_total{sink="buffer"}` 丢弃（02 §2.3、10 EVT-03） | §9.11、D-31 |
 
 ## 0. 范围、决定与已落地文件
 
@@ -122,7 +125,7 @@
 | D-28 | 失败配额分两级：`mg.c.fail` 按 `ip` 实体（`max_failures`），`mg.c.fail.prefix` 按 `ipp`（4 × `max_failures`）；`ic.c_expired`、`ic.replay_unavailable`、`ic.no_client_ip`、`ic.issue_quota`、`ic.rate_limited`、`ic.too_early` 不计为失败 | 只按 /24 计时，同一 CGNAT / 移动网段中的一个客户端能让整个前缀无法通过挑战；Phase 1 挑战前没有会话，04 §4.1 的"按会话"由 `ip` 实体代替 | 是（04 §4.1） |
 | D-29 | 凭证 claims 增加 `sst`（会话开始时间，Unix 秒）；`sub` 只从通过站点 / 环境校验、没有硬绑定失败且 `now − sst ≤ session_max_s` 的凭证沿用（可以已过期）；凭证必须带 `bind.ipp`；未知或已退役 kid 的凭证按 `expired`（ABSENT）处理；只用 pasetors 的底层 `LocalToken` 接口，`iat` / `exp` 保持 Unix 秒 | 原规则允许把别的浏览器的会话接到新客户端上，且每次重签都重置 `iat`，会话可以无限续期 | 是（04 §5、ADR-0005） |
 | D-30 | `seal.root.json` 含 1–2 个根密钥：`roots[0]` 封装，全部用于打开（按顺序试 AEAD）；轮换分三步（§17） | 多台 Edge 逐台更换根密钥时，cloudflared 按连接选择副本，另一台签发的 C 会打不开 | 是（ADR-0005、06 §8） |
-| D-31 | 路由可设 `redact_path`：事件与访问记录以 `/<route name>` 代替路径；Edge 应用日志（Pingora 错误日志、`log` 输出、journald）从不写客户端 IP、Cookie、C、凭证、上游密钥与 `x-mg-cf-tls-random`；遥测 `env` 只按 SDK schema 的已知字段、带长度上限重新序列化 | 路径里可能有找回密码、邮箱验证等一次性令牌；06 §7 的数据最小化 | 是（06 §6、§7） |
+| D-31 | 路由可设 `redact_path`：事件与访问记录以 `/<route name>` 代替路径；Edge 应用日志（Pingora 错误日志、`log` 输出、journald）从不写客户端 IP、Cookie、C、凭证、上游密钥与 `x-mg-cf-tls-random`；遥测 `env` 只按 SDK schema 的已知字段、带长度上限重新序列化 | 路径里可能有找回密码、邮箱验证等一次性令牌；06 §7 的数据最小化 | 是（06 §7） |
 | D-32 | `cloudflare` profile 下访客协议为 http 时，CHALLENGE 对 GET / HEAD 改为 308 跳转到 https；`mgctl cf audit` 新增 error 级检查 `always_use_https` | `__Host-` Cookie 要求 Secure，http 访客永远拿不到凭证，`require_clearance` 路由会无限挑战 | 是（04 §5、08 §2.10） |
 | D-33 | 不依赖 Pingora 的 Edge 代码放在预注册 crate `mg-edge-core`（`edge-core/`），由 4 个阶段 1 WP 并行完成；阶段 2 拆成按顺序合入的 E1a–E1d；WP 合入后的缺陷按 §2.1 的修复规则处理 | 原稿的单个阶段 2 WP 是整个关键路径，且合入后的缺陷没有修复负责人 | 否 |
 | D-34 | 源站契约补充：内容随 `MG-*` 头变化的响应必须带 `Cache-Control: private` 或 `no-store`；源站不得因为 `REMOTE_ADDR` 是回环地址就信任请求；客户端 IP 未知时 `MG-Client-IP: unknown`；Edge 把上游请求的 `Host` 设为用于选站点的规范化主机名，并先删除客户端 `Connection` 头及其列出的头 | Cloudflare 对非图片内容不理会 `Vary`；Edge 与源站同主机时回环地址不代表可信；逐跳头滥用可以删掉 Edge 写入的头 | 是（02 §8） |
@@ -1612,7 +1615,7 @@ Cloudflare 自身的上限（URL 约 16 KiB、请求头合计约 32 KiB）比这
 | 带 `CF-Worker` 且其 zone 不在 `owner_zones`（含值非法） | §9.4 第 4 步：403 纯文本 `forbidden`、`no-store`，计 `mg_cf_foreign_worker_total{site}`，写访问记录；不进入决策（ADR-0004、08 §2.2、10 CF-02） |
 | 认证通过但 `CF-Connecting-IP` 缺失或非法 | 继续处理，`net.ip` 与 NETWORK 族 MISSING，加 label `client_ip_unknown`，计 `mg_cf_connecting_ip_missing_total{site}`（应恒为 0，§17 告警） |
 | 限速维度 `ip` / `ip_prefix` / `asn` 未知 | 使用共享兜底值 `?`（§9.7），不跳过限速器；内置限速器同样适用 |
-| 决定为 CHALLENGE | 不签发 C：429 + `Retry-After: 5`，`rule_id = "hard.client_ip_unknown"`（§9.9） |
+| 决定为 CHALLENGE | 不签发 C：429 + `Retry-After: 5`，事件中的决定保持引擎的（§9.9、I-33） |
 | `POST /__mg/c` | 429 + `Retry-After: 5`，reason `ic.no_client_ip`，不签发凭证（§10.3） |
 | 带凭证 | `ipp` 比较结果为 `mismatch` → `binding_mismatch`（§6.4），因此不会作为有效凭证 |
 | `fail_closed` 路由 | 429（§9.9） |
@@ -1628,7 +1631,7 @@ Cloudflare 自身的上限（URL 约 16 KiB、请求头合计约 32 KiB）比这
 3. **站点状态**（§9.10）：`lkg_invalid` 或 `bootstrap = "closed"` 的 `bootstrap` → 503 纯文本、`Retry-After: 30`，计 `mg_site_unavailable_total{site}`（`/__mg/healthz` 照常）；`bootstrap = "open"` 继续。
 4. **外部 Worker**：`cloudflare` 且 `CF-Worker` 存在但不属于 `owner_zones` → 403（§9.3.2）。bootstrap 状态下没有 `owner_zones`：任何 `CF-Worker` 都视为外部。
 5. **环境**：`hosts` 含该 Host 的环境。
-6. **路由**（D-25）：去掉查询串后，用 `mg_core::paths::route_candidates(path, site.case_insensitive_paths)` 得到候选串（原始路径、`rfc3986_view`、`cloudflare_view`、`decoded_view`，各自再加切换末尾 `/` 的形式，去重）。对每个候选串，按声明顺序找第一个命中的路由：`hosts` 为空或含该 Host、`methods` 为空或含该方法、任一 `paths` 模式（`mg_core::policy::Glob`，§5.3 语义）命中。所有候选串命中的路由中，取**敏感度最高**者为选中路由（相同时取声明在前者）；其 `RouteInfo.require_clearance` 与 `fail_closed` 是所有命中路由对应值的"或"。都不命中时用 `default`。
+6. **路由**（D-25）：去掉查询串后，用 `mg_core::paths::route_candidates(path, site.case_insensitive_paths)` 得到候选串（原始路径、`rfc3986_view`、`cloudflare_view`、`decoded_view`，各自再加切换末尾 `/` 的形式，去重）。对每个候选串，按声明顺序找第一个命中的路由：`hosts` 为空或含该 Host、`methods` 为空或含该方法（不区分大小写，`GET` 同时接受 `HEAD`，I-33）、任一 `paths` 模式（`mg_core::policy::Glob`，§5.3 语义）命中。所有候选串命中的路由中，取**敏感度最高**者为选中路由（相同时取声明在前者）；其 `RouteInfo.require_clearance` 与 `fail_closed` 是所有命中路由对应值的"或"。都不命中时用 `default`。
    - 例：`paths: ["/account/login"]` 的 `critical` 路由同样命中 `/account/login/`、`/account%2Flogin`、`/account/login;jsessionid=1`、`//account/./login`；`case_insensitive_paths` 时还命中 `/Account/Login`。
    - 成本：路由匹配不经过 IR 求值器，不计步数（§5.3）；§8.2 的上限（每环境 ≤ 64 个路由、每个 ≤ 16 个模式、模式 ≤ 128 字节且至多 4 个通配符）加上 8 KiB 路径上限约束了最坏情况；`Glob::matches` 先比较字面前缀，只有前缀命中才运行 DP；相同的候选串只匹配一次。
    - `/__mg/*` 在第 4 步之后、第 5 步之前分派（§10.1）；归属仍按 `mg_core::paths::is_reserved`（原始路径与 Cloudflare 的两种规范化），不用 `decoded_view`。
@@ -1642,7 +1645,7 @@ Cloudflare 自身的上限（URL 约 16 KiB、请求头合计约 32 KiB）比这
 | `site_id`、`env`、`route_id`、`channel` | §9.4（`route_id` 为选中路由） |
 | `upstream` | `profile`、`authenticated`、`auth_method`、`cf_ray`、`client_ip_header_missing` |
 | `net` | `ip` / `ip_prefix` / `ip_source`；`asn` / `as_org` / `country`（GeoLite2，§7.2）；`conn_type`、`tor`（§4.1）；`upstream_*`、`rtt_ms`（§9.3） |
-| `tls` | `direct_tls`：`available = true`、`version`（`SslDigest`）、`alpn` 与 `sni`（`EdgeTlsAccept` 的 `TlsFacts`，§9.2）；`ja4` 为空（WP-J1 在 `ja4_spike = true` 的监听器上只写入事件，D-07） |
+| `tls` | `direct_tls`：`available = true`、`version`（`SslDigest`）、`alpn` 与 `sni`（`EdgeTlsAccept` 的 `TlsFacts`，§9.2）；`ja4`：`ja4_spike = true` 的监听器上为 `{value, source: self, authenticated: true}`，只进决定事件，MissingSet 仍含 `tls.ja4`（WP-J1、I-34、D-07），其他监听器为空 |
 | `edge_tls` | §9.3（`cloudflare` 且至少一项有值时为 `Some`） |
 | `http` | `version` / `version_source`；`method`、`host`、`path`（原始；路由 `redact_path` 时事件中改写，§9.11）；`query_keys`（至多 32 个，每个 ≤ 64 字节）；`header_order`（§4.1）；`header_names`；`user_agent`（≤ 512 字节）；`cookie_names`（至多 32 个，排除 Cloudflare Cookie `__cf_bm`、`cf_clearance`、`_cfuvid`、`__cflb`、`__cfseq`、`__cfwaitingroom`、`cf_chl_*` 与 `__Host-mg_clr`）；`body_size`（`Content-Length`）；`content_type`（`;` 之前，≤ 64 字节）；`early_data`（`Early-Data: 1`）；Tier 1 字段 |
 | `identity.token` | §9.6 |
@@ -1854,12 +1857,12 @@ return out
 | 最终动作 | Edge 行为 |
 |---|---|
 | ALLOW / TAG / LOG | 转发源站。`upstream_request_filter`：`Host` 设为 §9.4 的规范化主机名；删除 §9.3 的逐跳头与头族；写入 `MG-Client-IP`（客户端 IP，未知时为字面量 `unknown`）、`MG-Request-Id`；`origin_headers.scores` 时 `MG-Bot-Score`（0–100）、`MG-Bot-Class`（小写 wire 名）、`MG-Verified`（已验证爬虫：`crawler:<operator>`）；`origin_headers.session` 且有会话时 `MG-Session`；TAG 时 `MG-Tags: a,b`；`origin_headers.reasons` 时 `MG-Reasons`（`top_reasons` 逗号分隔）。`X-Forwarded-For` 改写为单值客户端 IP（未知时删除）；`X-Forwarded-Proto`：`cloudflare` 取 `cf-visitor` 的 scheme，`direct_tls` 为 `https`。认证通过的 `cloudflare` 请求原样转发 `CF-IPCountry`（仅 `location_headers`）、`Cf-Ray`、`CF-Visitor`，以及**客户端 IP 已知时**的 `CF-Connecting-IP`（未知或非法时不转发）。`response_filter` 删除源站响应中的 `MG-*` 与 `MG_*` 头 |
-| CHALLENGE | 客户端 IP 未知 → 429 + `Retry-After: 5`，`rule_id = "hard.client_ip_unknown"`，不签发 C（D-23）。`cloudflare` 且访客 scheme 为 http、方法为 GET / HEAD → 308 到 `https://<host><path>[?query]`，计 `mg_https_redirect_total{site}`（D-32；其他方法照常挑战）。否则 403：导航请求（`sec-fetch-mode: navigate`，或没有该头且 `accept` 含 `text/html`）返回挑战页（§10.2），其余返回 JSON。C 按 §6.2 签发、难度按 §6.3；`ret`：GET / HEAD 导航为原始 `path[?query]`（校验失败或 > 512 字节时用 `fallback_ret`），其他方法为 `fallback_ret`。计 `mg_challenge_total{type, provider="none", result="issued"}` |
+| CHALLENGE | 客户端 IP 未知 → 429 + `Retry-After: 5`，不签发 C（D-23），事件中的决定保持引擎的（I-33）。`cloudflare` 且访客 scheme 为 http、方法为 GET / HEAD → 308 到 `https://<host><path>[?query]`，计 `mg_https_redirect_total{site}`（D-32；其他方法照常挑战）。否则 403：导航请求（`sec-fetch-mode: navigate`，或没有该头且 `accept` 含 `text/html`）返回挑战页（§10.2），其余返回 JSON。C 按 §6.2 签发、难度按 §6.3；`ret`：GET / HEAD 导航为原始 `path[?query]`（校验失败或 > 512 字节时用 `fallback_ret`），其他方法为 `fallback_ret`。计 `mg_challenge_total{type, provider="none", result="issued"}` |
 | RATE_LIMIT | 429 + `Retry-After`；导航请求返回简短 HTML（中英文"请求过多"+ request_id），否则 `{"error":"mg_rate_limited","retry_after":N,"request_id":"…"}` |
 | BLOCK | 403；导航请求返回通用阻断页（只含 request_id 与"如有疑问请联系站点所有者"），否则 `{"error":"mg_blocked","request_id":"…"}` |
 | monitor（`SiteBundle.monitor_only`）与 bootstrap-open | 引擎给出的决定原样记入事件，`decision.dry_run = true`、`monitor_only = true`；按 ALLOW 转发（带 `MG-*` 头，`MG-Bot-Class` 等反映评分结果）。§9.3.1 的协议拒绝、§9.4 的外部 Worker 403 与站点不可用 503 不受 monitor 影响 |
-| `fail_closed` 路由且客户端 IP 未知 | 决定改为 RATE_LIMIT 429、`Retry-After: 5`、`rule_id = "hard.client_ip_unknown"`（monitor 时同样只记录） |
-| `Early-Data: 1` | `http.early_data = true`：不签发凭证、不消费 nonce；`critical` 路由直接 425（monitor 时只记录） |
+| `fail_closed` 路由且客户端 IP 未知 | 决定改为 RATE_LIMIT 429、`Retry-After: 5`、`rule_id = "hard.client_ip_unknown"`（monitor 时同样只记录）；引擎已给出 BLOCK / RATE_LIMIT 时保持原决定（I-33） |
+| `Early-Data: 1` | 任一 `Early-Data` 实例即 `http.early_data = true`：不签发凭证、不消费 nonce；`critical` 路由上本应转发的决定改为 425，BLOCK 与 CHALLENGE 不变（I-33；monitor 时只记录） |
 | 随机数失败 | 生成 `request_id`、C、CSP nonce 或凭证时 `getrandom` 失败 → 503，计 `mg_edge_request_errors_total`，不 panic |
 
 - Edge 自己生成的所有响应（上表、§9.3.1、§9.4、§10）都带 `Cache-Control: no-store, private`（`/__mg/s/*` 除外）与 `X-Content-Type-Options: nosniff`；HTML 另加 `X-Robots-Tag: noindex`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY`。Edge 生成的响应里不出现 `MG-*` 头，唯一例外是 JSON Challenge 的 `MG-Challenge: <type>`。
@@ -2771,7 +2774,7 @@ impl FaultProxy {
 | Tunnel 下 `CF-Connecting-IP` 等头是否到达 | 客户端 IP | monitor 周首日确认 `mg_cf_connecting_ip_missing_total` 为 0 |
 | 普通访客自己发送的 `CF-Worker` 头是否被 Cloudflare 删除或覆盖 | 若不删除，任何访客都能让自己的请求被 403（只影响自己，不再能获得更宽松的处理，D-23） | monitor 周用 `curl -H 'CF-Worker: example.org'` 对自有站点实测，结果写入 WP-D1 的 08 §2.2 更新 |
 | `GET /zones/{z}/bot_management` 在各套餐下的字段（BFM、SBFM、AI bot） | `cf audit` 9 / 10 / 16 | 字段缺失时 `manual`，所有者确认后 `--ack` |
-| Valkey ACL 选择器（`%R~`、`%W~`）在 9.1 上对脚本内访问的键是否按预期生效 | VK-02 | `edge/tests/valkey_acl.rs` 实测；结果写入 WP-D1 的文档更新 |
+| Valkey ACL 选择器（`%R~`、`%W~`）在 9.1 上对脚本内访问的键是否按预期生效 | VK-02 | 已实测（阶段 2）：`edge/tests/valkey_acl.rs` 在 Valkey 9.1.2 上通过，键选择器对 `EVALSHA` 传入的键同样生效（10 VK-02） |
 | 挑战页在 Cloudflare 之后 403 + `no-store` 是否被缓存 | CH-09 | monitor 周用 `cf-cache-status` 抽查（应为 `DYNAMIC` / `BYPASS`） |
 | Cloudflare 是否把源站的 `425`、`414`、`431` 原样回传浏览器 | 早期数据与协议上限的用户体验 | monitor 周抽查；414 / 431 只影响超长请求 |
 

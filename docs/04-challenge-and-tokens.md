@@ -7,6 +7,21 @@
 - 分工：本文负责通用 Challenge、凭证、持有证明、防重放、限速与协议约定；交互式 Challenge（按住验证、无障碍路径、密封 C 字段、Provider、Turnstile、交互评分）见 [09](09-interactive-challenge.md)；Cloudflare 侧配置见 [08](08-upstream-and-cloudflare.md)。
 - Web SDK 是重点；移动端（设备证明、Mobile SDK）后期 / 按需。
 
+**Phase 1 实现状态**（2026-09-28 勘误）：下表是 Phase 1 实际交付的做法，细节只写在 [Phase 1 实现规格](impl/phase1-spec.md)（两者冲突时以规格为准；D-xx 见规格 [§0.3](impl/phase1-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](impl/phase1-spec.md#集成者裁决2026-09-28优先于正文)）。正文各节的"Phase 1"段落给出与设计的差异。
+
+| 主题 | Phase 1 做法 | 规格 |
+|---|---|---|
+| Challenge 类型 | 只有 `invisible` 与 `pow`；规则或矩阵要求 `interactive` 时按 `pow` 执行（D-08）；`step_up`、`attestation` 与 TARPIT 在配置包构建与 Edge 加载时被拒（I-19、D-09） | [§5.5](impl/phase1-spec.md#55-默认处置矩阵wp-r1)、[§6.2](impl/phase1-spec.md#62-密封-c) |
+| 端点 | `POST /__mg/c`、`GET /__mg/s/<file>`、`/__mg/healthz`；`/__mg/c/renew`、`/__mg/r`、`/__mg/t` 返回 404 | [§10.1](impl/phase1-spec.md#101-端点) |
+| 失败后升级 | 新 C 一律为 `pow`，风险段升一级（`very_high` 不变）；失败配额两级；没有交互式可升（D-27、D-28、I-10） | [§6.3](impl/phase1-spec.md#63-pow)、[§9.8](impl/phase1-spec.md#98-限速wp-e1b-接线) |
+| PoW | Web Worker 中的纯 JS SHA-256，WebCrypto 只做自检（D-12） | [§11.4](impl/phase1-spec.md#114-pow-实现) |
+| 凭证 | PASETO v4.local；`lvl` 只有 `invisible` / `pow`（缺省 1800 s）；新增 `sst`、`bind.ipa`、`ruc`；`ipp` 必有（D-29、D-05、I-30） | [§6.5](impl/phase1-spec.md#65-清关凭证paseto-v4local) |
+| 绑定 | `uah` 硬；`ipp` 按签发时的 ASN（`ipa`）判软 / 硬；`cnf.jkt` 在 Phase 2 | [§6.4](impl/phase1-spec.md#64-绑定哈希与返回路径) |
+| 配额 | 提交限速、失败配额、签发配额都强制执行（429，D-37） | [§9.8](impl/phase1-spec.md#98-限速wp-e1b-接线) |
+| 客户端 IP 未知 | 不签发 C 与凭证（429 + `Retry-After: 5`，D-23） | [§9.3.2](impl/phase1-spec.md#932-客户端-ip-未知d-23) |
+| http 访客 | 挑战前 308 到 https（D-32） | [§9.9](impl/phase1-spec.md#99-动作执行wp-e1a-转发与源站头e1b-阻断与限速e1c-挑战) |
+| 未实现 | 持有证明（`MG-Proof`、`cnf.jkt`）、凭证刷新、吊销集、SDK 页面注入与遥测、交互式与 Provider（Phase 2–3） | [§0.1](impl/phase1-spec.md#01-范围) |
+
 ## 1. 各机制的防护目标
 
 | 机制 | 防什么 | 不防什么 |
@@ -59,6 +74,7 @@ CLEARED --binding violation / replay / risk spike--> REVOKED --> NONE
 | refresh | 见 §5 |
 
 - 升级路径与 Provider 都由服务端决定。
+- **Phase 1**：只有 `invisible` / `pow`，状态机简化为 `ISSUED(invisible | pow) --failed--> ISSUED(pow, risk_band = after_failure(rb))`（新 C 附在失败响应中）；失败配额用尽 → `429` + `Retry-After`；没有 renew 与 refresh（端点返回 404），凭证过期后重新挑战（D-27、D-28）。
 - Provider 返回 `Unavailable` / `Misconfigured` 不算用户失败，按其 `on_unavailable` 回退（[09](09-interactive-challenge.md) §7.2）。
 - 收到 Cloudflare 的 `cf-mitigated: challenge`（上游挑战）不改变 MorphGate 状态，也不计入失败（§7）。
 
@@ -81,7 +97,7 @@ sequenceDiagram
     B->>CF: POST /__mg/c {C, solution, signals, [jwk, sig]}
     CF->>E: forward (cache Bypass + Skip rule, see 08)
     E->>E: checks in section 4.1 order
-    E->>V: SET mg:n:{site}:{nonce} NX EX ttl
+    E->>V: EVALSHA mg_nonce_issue (SET mg:n:{site}:{nonce} NX PX ttl + issuance quotas)
     E-->>B: 303 -> ret + Set-Cookie __Host-mg_clr, no-store, via Cloudflare
     B->>CF: GET /product/42 + cookie
     CF->>E: forward
@@ -130,6 +146,8 @@ sequenceDiagram
 
 **无状态**：签发时不写存储，大量索取 Challenge 不能耗尽后端状态。所有类型共用一种格式：prost 编码的 protobuf 消息 `SealedChallengeClaims`，外层 XChaCha20-Poly1305，`aad = host ‖ type ‖ kid`，**绝不用字符串拼接**（ALTCHA CVE-2025-68113 的教训）。字段与编码细节见 [09](09-interactive-challenge.md) §4。密钥：每站点一把长期根密钥 `K_seal_root`（systemd credential 交付，年更或泄露时轮换）；每日 `k_epoch = HKDF-SHA256(K_seal_root, info = "mg-seal-v1" ‖ site ‖ epoch_no)`，Turnstile `cData` 的 `k_bind_epoch` 同法以 info `"mg-bind-v1"` 派生；各 Edge 确定性派生同一 epoch 密钥，无需每日分发，接受当前与上一个 epoch；epoch 密钥泄露不暴露根密钥（[ADR-0005](adr/0005-token-and-sealed-challenge-format.md)）。
 
+**Phase 1 实现**（[规格 §6.1–§6.2](impl/phase1-spec.md#61-密钥与-epoch)）：站点密钥文件 `seal.root.json` 含 1–2 个根，`roots[0]` 封装、全部用于打开，轮换分 add / promote / retire 三步（D-30）；kid 为 `e<epoch_no>`；HKDF info 各段以 `0x00` 分隔、`epoch_no` 为 u64be；接受的 epoch 收紧为：当前 epoch，日界后 125 s 内另接受上一个，日界前 5 s 内另接受下一个；`aad` 各段带 u16be 长度前缀；`len(C) ≤ 1024`；`open` 拒绝非规范的信封编码，`seal` 拒绝 `open` 会拒绝的一切（I-18）。
+
 | 类型 | C 有效期 | 到期后 |
 |---|---|---|
 | `invisible` / `pow` | `exp − iat ≤ 120 s` | 重新请求原资源获取新 C |
@@ -150,16 +168,32 @@ sequenceDiagram
 11. `provider.verify`（仅需要出站校验的 Provider，有截止时间）。
 12. 评分（交互评分 + 挑战前风险）→ 签发凭证，或统一失败（§9）。
 
+**Phase 1 顺序**（[规格 §10.3](impl/phase1-spec.md#103-post-mgc)；没有 Provider 与会话密钥签名）：
+
+| # | 检查 | 失败 |
+|---|---|---|
+| 0 | 客户端 IP 未知 | `429`（`ic.no_client_ip`），不计失败 |
+| 1 | `Early-Data`（§4.3） | `425`（`ic.too_early`） |
+| 2 | Valkey 往返 1：提交限速、失败配额、签发配额 | `429`（`ic.rate_limited` / `ic.issue_quota`） |
+| 3 | 请求体：媒体类型、≤ 8 KiB、5 s 内读完、不带 `Content-Encoding`（按收到的原始头判断，`Connection` 选项藏不住它）、字段规则 | 统一失败（`ic.body`），不附新 C |
+| 4 | 打开 C | 统一失败（`ic.c_*`），不附新 C |
+| 5–8 | 绑定（§5）、PoW、`ret`、基础环境（`auto.webdriver`，`env` 中的 UA 必须是请求 `User-Agent` 的前缀） | 统一失败，附新 C |
+| 9 | Valkey 往返 2：`mg_nonce_issue`（消费 nonce 与计签发配额在同一个 Lua 脚本中） | `ic.nonce_reused`；重放存储不可用见下 |
+| 10 | 签发凭证 | — |
+
+从第 4 步起，时间判断用正文读完时的时钟（正文最多读 5 s），C 在正文到达期间过期即按过期处理。
+
 - nonce 消费后 Provider 校验失败或超时：换新 C 重来，不重试同一 C。
-- nonce 集合：只有一个 Edge 进程时可用进程内 LRU，多台 Edge 必须用 Valkey。Valkey 不可用时 `critical` 路由 fail-closed（不签发凭证，返回"稍后再试"），其他路由放行并标记、不发交互式 Challenge（[01 §8](01-architecture.md#8-部署与高可用)）。
-- 失败计数按会话与 IP 前缀累计，指数退避；无感 / PoW 失败升级为交互式。
-- 失败响应统一，不返回原因，避免成为调试"预言机"；原因只进内部 reason code 与日志（[09](09-interactive-challenge.md) §12.4）。
+- nonce 集合：多台 Edge 必须用 Valkey（`mg:n:{site}:{nonce_hex}`）。Phase 1 的进程内重放集合是固定容量的 TTL 集合，从不逐出未过期的 nonce，满时按"重放存储不可用"处理；Valkey 模式下也同时写入；只有单台 Edge 时才可设 `local_replay_authoritative = true`，且早于本进程启动时间签发的 C 仍按不可用处理（覆盖平滑升级窗口，D-35）。
+- 重放存储不可用：C 所属路由（C 内 `route_class` 对应的路由，或按 `ret` 匹配的路由）`fail_closed` → `429`（`ic.replay_unavailable`，"稍后再试"）；其余照常签发并记 `ic.replay_unchecked`，这样签发的凭证带 `ruc = true`，`fail_closed` 路由不接受（视为级别不足，重新挑战；`ctx.identity.token.status` 记为 `expired`，决定事件另有顶层字段 `token.replay_unchecked`，I-30）。降级总表见 [01 §8](01-architecture.md#8-部署与高可用)。
+- 失败计数：Phase 1 挑战前没有会话，按两级配额计：`mg.c.fail`（`ip` 实体，缺省 5 次 / 600 s）与 `mg.c.fail.prefix`（`ipp`，4 倍），超出 → `429`；`ic.c_expired`（标签页休眠）、`ic.replay_unavailable`、`ic.no_client_ip`、`ic.issue_quota`、`ic.rate_limited`、`ic.too_early` 不计失败（D-28）。失败后附的新 C 为 `pow`、风险段 `max(rb, min(rb + 1, high))`（D-27、I-10）；无感 / PoW 失败升级为交互式在 Phase 2。
+- 失败响应统一，不返回原因，避免成为调试"预言机"；原因只进内部 reason code 与日志（[09](09-interactive-challenge.md) §12.4）。Phase 1 的 reason code（`ic.*`）只写入 `kind=feedback` 事件（[规格 §13.3](impl/phase1-spec.md#133-kindfeedbackvl-main)）。
 
 ### 4.2 PoW
 
-- SHA-256 hashcash（WebCrypto，附纯 JS 回退；Rust 侧校验开销可忽略）。
-- 难度由风险分段与设备类别决定，中位设备耗时：低风险 0，中风险 ≤ 0.3 s，高风险 ≤ 1.5 s；`pow_a11y` 中位 3–8 s。交互式把 PoW 放在按住期间的 Web Worker 中（[09](09-interactive-challenge.md) §2.1）。
-- 受攻击模式下整体提高难度。内存困难 / 抗 GPU PoW 放到 Phase 5（[09](09-interactive-challenge.md) §14）。
+- SHA-256 hashcash `sha256-hashcash-v1`：`digest = SHA-256("mg-pow-v1" ‖ 0x00 ‖ SHA-256(C) ‖ u64be(counter))`，前导零位数 ≥ 难度即通过；Rust 侧校验开销可忽略。浏览器端用纯 JS SHA-256 在 Web Worker 中同步搜索（前缀预先填好，每次尝试只做一次压缩），WebCrypto 只做启动自检：`crypto.subtle.digest` 逐次异步调用，慢一个数量级以上（D-12）；Worker 不可用时在主线程分片计算（[规格 §11.3–§11.4](impl/phase1-spec.md#113-挑战客户端流程)）。
+- 难度由风险分段与设备类别决定，中位设备耗时：低风险 0，中风险 ≤ 0.3 s，高风险 ≤ 1.5 s；`pow_a11y` 中位 3–8 s。交互式把 PoW 放在按住期间的 Web Worker 中（[09](09-interactive-challenge.md) §2.1）。Phase 1 不按设备类别区分：配置包 `challenge.pow_bits` 缺省 low 14、medium 16、high 18、very_high 20 位（每项 8–24）；`invisible` 固定取 low，`pow` 取风险段难度（D-27）；实际耗时在 monitor 周用自有流量校准。
+- 受攻击模式下整体提高难度（Phase 1 由所有者改站点 YAML 的 `pow_bits` 实现）。内存困难 / 抗 GPU PoW 放到 Phase 5（[09](09-interactive-challenge.md) §14）。
 - 定位是成本杠杆，不是识别手段。
 
 ### 4.3 Early-Data（0-RTT）
@@ -171,7 +205,9 @@ sequenceDiagram
 | `/__mg/*` 状态变更端点：`/__mg/c`、`/__mg/c/renew`、`/__mg/r`、`/__mg/m/*` | 带 `Early-Data: 1` 一律返回 `425` |
 | 其他请求 | 视为可重放：不签发 / 刷新凭证，不消费 nonce，不写一次性状态；`critical` 路由返回 `425` |
 
-Cloudflare 是否把源站的 `425` 回传浏览器、浏览器是否自动重试，需实测；在此之前以"保持关闭"为主。
+Cloudflare 是否把源站的 `425` 回传浏览器、浏览器是否自动重试，需实测（规格 [§19](impl/phase1-spec.md#19-待实测与未决)）；在此之前以"保持关闭"为主。
+
+**Phase 1 实现**：请求中出现任何 `Early-Data` 头都视为早期数据，不论取值、个数，也不论是否被 `Connection` 列出（RFC 8470 §5.1；`Connection` 只决定转发前删除哪些头，从不对 Edge 自己的检查隐藏字段）。`POST /__mg/c` → `425 {"error":"mg_too_early"}`（`ic.too_early`，不计失败）。`critical` 路由上本应转发的决定（ALLOW / TAG / LOG）→ `425`；BLOCK 仍为 403，CHALLENGE 照常下发（签发 C 不写状态）；凭证只在 `/__mg/c` 签发，所以早期数据永远拿不到凭证。monitor 下只记录（`http.early_data`）。
 
 ### 4.4 缓存
 
@@ -183,6 +219,8 @@ Free / Pro / Business 下 Cloudflare 的 Origin Cache Control 始终开启，`no
 | 其他所有 `/__mg/*` | `Cache-Control: no-store, private` |
 | Challenge 页面与 JSON Challenge | `403`（限速 / 超限为 `429`），不用 200；`no-store, private`；HTML 另加 `X-Robots-Tag: noindex` |
 
+Phase 1：Edge 生成的所有响应都带 `no-store, private` 与 `X-Content-Type-Options: nosniff`（`/__mg/s/*` 除外；Pingora 解析器自己生成的 400 不带 `nosniff`，见 [Phase 1 进度记录](impl/phase1-status.md#4-已知的低优先级遗留)）；HTML 另加 `X-Robots-Tag: noindex`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY` 与 CSP（挑战页为带 nonce 的 CSP，其余为 `default-src 'none'`，规格 [§9.9](impl/phase1-spec.md#99-动作执行wp-e1a-转发与源站头e1b-阻断与限速e1c-挑战)、[§10.2](impl/phase1-spec.md#102-挑战页与-json-challenge)）。挑战页经 Cloudflare 后是否仍为 `cf-cache-status: DYNAMIC` / `BYPASS` 在 monitor 周抽查。
+
 Cloudflare 侧另需一条放在**最后**的 `/__mg/` Bypass Cache Rule（`/__mg/s/` 除外），并禁止"Eligible for cache + 覆盖 Edge TTL"的规则覆盖可能返回 Challenge 的路径；表达式与 `mgctl cf audit` 检查项见 [08 §2.6](08-upstream-and-cloudflare.md#26-缓存)。
 
 ## 5. 短期访问凭证
@@ -191,46 +229,52 @@ Cloudflare 侧另需一条放在**最后**的 `/__mg/` Bypass Cache Rule（`/__m
 
 ```json
 {
-  "v": 1, "kid": "s1-2026-09",
+  "v": 1, "kid": "blog-t-20260927",
   "sid": "site", "env": "production",
-  "sub": "pseudonymous session id",
+  "sub": "pseudonymous session id (base64url of 16 random bytes)",
+  "sst": 1790000000,
   "lvl": "invisible | pow | interactive | interactive_a11y | interactive_ext:{provider}",
   "iat": 1790000000, "exp": 1790001800,
   "cnf": { "jkt": "JWK thumbprint of the SDK session key (Phase 2+)" },
   "bind": {
     "uah": "hash(ua family + major)",
     "ipp": "hash(ip /24 | /48)",
+    "ipa": "hash(ASN); only when the ASN is known and not 0",
     "ctp": "hash(tls_version, cipher, ciphers_sha1, hello_len bucket); cloudflare only, shadow",
-    "tfp": "hash(ja4); direct_tls only, after the JA4 spike"
+    "tfp": "JA4-derived hash; direct_tls only, not before Phase 2 (ADR-0002 erratum)"
   },
   "rb": "risk band at issuance",
-  "jti": "unique id"
+  "jti": "unique id (base64url of 16 random bytes)",
+  "ruc": "true only when issued without a replay check (omitted otherwise)"
 }
 ```
 
 | 项目 | 设计 |
 |---|---|
-| `lvl` | `invisible`、`pow`、`interactive`（`self_hold`）、`interactive_a11y`（`pow_a11y`）、`interactive_ext:{provider}`（`turnstile` / `tencent` / `aliyun_v2`）；`attested` 保留给后期移动端。三种交互级的人类证据封顶相同（[03](03-risk-scoring.md) §4.1 的 −0.8） |
-| 有效期 | `invisible` / `pow` 15–30 分钟；`interactive`、`interactive_ext:*` 30 分钟；`interactive_a11y` 15 分钟且配额更严；`attested`（后期）1–24 小时，配合每请求签名；静默刷新可延续到站点配置的会话上限；`critical` 路由可要求最低级别与最大凭证年龄 |
-| 级别要求 | "交互级"同时包含 `interactive`、`interactive_a11y`、`interactive_ext:*`，不得把无障碍路径排除在外 |
-| 存储 | Web：`__Host-mg_clr`，`HttpOnly; Secure; SameSite=Lax; Path=/`；移动端（后期）：`MG-Clearance` 请求头 |
-| 刷新 | SDK 在寿命 80% 时调用 `POST /__mg/r`，附持有证明与最新遥测；服务端重新评分，风险升高则拒绝刷新并要求 Challenge |
-| 签发配额 | 按 ipp / ASN 限制凭证签发数，监控解题时间分布，对抗人工代解中继的批量收割（[09](09-interactive-challenge.md) §13） |
-| 吊销 | 以短寿命为主；紧急吊销按 `sub` / `jti` 写入吊销集 `mg:rev:{site}`（成员随凭证寿命过期），Edge 本地用布隆过滤器加速（[02](02-data-flow.md)） |
+| `lvl` | `invisible`、`pow`、`interactive`（`self_hold`）、`interactive_a11y`（`pow_a11y`）、`interactive_ext:{provider}`（`turnstile` / `tencent` / `aliyun_v2`）；`attested` 保留给后期移动端。三种交互级的人类证据封顶相同（[03](03-risk-scoring.md) §4.1 的 −0.8）。Phase 1 只签发 `invisible` 与 `pow`，两者的人类证据相同（−0.4），级别只决定能满足哪种挑战要求 |
+| 有效期 | Phase 1：`invisible` / `pow` 缺省 1800 s（每项 60–86400 s），`exp − iat ≤ 86400`。设计：`invisible` / `pow` 15–30 分钟；`interactive`、`interactive_ext:*` 30 分钟；`interactive_a11y` 15 分钟且配额更严；`attested`（后期）1–24 小时，配合每请求签名；静默刷新可延续到站点配置的会话上限；`critical` 路由可要求最低级别与最大凭证年龄 |
+| 级别要求 | "交互级"同时包含 `interactive`、`interactive_a11y`、`interactive_ext:*`，不得把无障碍路径排除在外。凭证在站点的整个环境内有效（`sid` + `env`），不区分路由：路由只按级别与 `ruc`（§4.1）判断是否满足 |
+| 会话 | `sub` 与 `sst`（会话开始，Unix 秒）只从通过站点 / 环境校验、没有硬绑定失败且 `now − sst ≤ session_max_s`（缺省 86400）的凭证沿用（可以已过期），否则开始新会话；重签不延长会话上限（D-29） |
+| 校验 | footer `{"kid"}` 选密钥，implicit assertion 绑定站点；`kid` 形如 `<site>-t-<YYYYMMDD>`（I-14）；状态 `none`、`valid`、`expired`（含未知或已退役的 kid，按 ABSENT 处理）、`invalid`、`binding_mismatch`（[规格 §6.5](impl/phase1-spec.md#65-清关凭证paseto-v4local)） |
+| 存储 | Web：`__Host-mg_clr`，`HttpOnly; Secure; SameSite=Lax; Path=/`，`Max-Age = exp − now`，只出现在 `/__mg/c` 的成功响应上，从不附加到源站响应；移动端（后期）：`MG-Clearance` 请求头 |
+| 刷新 | SDK 在寿命 80% 时调用 `POST /__mg/r`，附持有证明与最新遥测；服务端重新评分，风险升高则拒绝刷新并要求 Challenge（Phase 2；Phase 1 凭证到期后重新挑战） |
+| 签发配额 | 按 ipp / ASN 限制凭证签发数，监控解题时间分布，对抗人工代解中继的批量收割（[09](09-interactive-challenge.md) §13）。Phase 1 强制执行：`mg.clr.issue.ipp` 缺省 60 / 小时、`mg.clr.issue.asn` 600 / 小时，超额 `429`（`ic.issue_quota`）；与 nonce 消费在同一个 Lua 脚本中完成，nonce 已用过时不计配额（D-37） |
+| 吊销 | （Phase 3）以短寿命为主；紧急吊销按 `sub` / `jti` 写入吊销集 `mg:rev:{site}`（成员随凭证寿命过期），Edge 本地用布隆过滤器加速（[02](02-data-flow.md)） |
 
 **绑定策略**（C 的 `bind` 与凭证同口径）
 
 | 绑定项 | 适用 profile | 阶段 | 强度 | 不一致时 |
 |---|---|---|---|---|
 | `uah`（UA 家族 + 主版本） | 全部 | Phase 1 | 硬 | 重新 Challenge |
-| `ipp`（IP 前缀，v4 /24、v6 /48） | 全部 | Phase 1 | 软 | 同 ASN 内变化 → 风险信号；跨 ASN / 国家 → 重新 Challenge |
+| `ipp`（IP 前缀，v4 /24、v6 /48） | 全部 | Phase 1 | 软 | 前缀变化时：签发时绑定了 `ipa`（ASN）且当前 ASN 已知、相同 → 软结果（风险信号 `identity.bind_ipp_soft`）；其余（含当前 IP 未知）→ 硬失败，重新 Challenge（D-05；不按国家判断） |
 | `cnf.jkt`（SDK 会话密钥） | 全部 | Phase 2 起 | 硬 | 持有证明失败即拒绝并重新 Challenge |
 | `ctp`（`x-mg-cf-tls-*` 的 TLS 版本、cipher、套件哈希、ClientHello 长度分桶） | 仅 `cloudflare` | Phase 1 起，仅 shadow | 只记录；稳定性 ≥ 99% 后才可转为软绑定（[03](03-risk-scoring.md) §3.4） | shadow 期只记录 |
-| `tfp`（JA4 哈希） | 仅 `direct_tls` | JA4 预研成功后 | 硬 | 重新无感 Challenge |
+| `tfp`（JA4 派生哈希） | 仅 `direct_tls` | 待定（Phase 2 前不启用） | 预研结论：原始 JA4 随 TLS 1.3 会话恢复与 ClientHello 长度变化，不做硬绑定；候选取恢复时不变的部分，与 `ctp` 同样先 shadow，稳定性 ≥ 99% 后才考虑软绑定（[ADR-0002 勘误](adr/0002-edge-pingora-boringssl.md#bindtfp-的建议)） | shadow 期只记录 |
 
 - `cloudflare` profile 下 Edge 看到的是 Cloudflare 自己的回源 TLS，访客 JA4 只有 Enterprise Bot Management 提供（超出预算），因此不启用 `tfp`。
 - `ctp` 不含扩展哈希：其排序与 GREASE 处理未文档化，未经实测不得用于绑定或高权重。
-- `ipp` 依赖可信客户端 IP：只取认证上游的 `CF-Connecting-IP`，从不用 `X-Forwarded-For[0]`（[08](08-upstream-and-cloudflare.md) §2.2）。
+- `ipp` 依赖可信客户端 IP：只取认证上游的 `CF-Connecting-IP`，从不用 `X-Forwarded-For[0]`（[08](08-upstream-and-cloudflare.md) §2.2）。客户端 IP 未知时不签发 C 与凭证（`429` + `Retry-After: 5`），C 与凭证恒带 `ipp`（D-23）。
+- `cloudflare` 下访客用 http 时 `__Host-` Cookie 无法保存：Edge 对 GET / HEAD 的挑战改为 308 到 https（`mg_https_redirect_total`），`mgctl cf audit` 第 21 项要求开启 Always Use HTTPS（D-32）。
 
 **可选：Cloudflare 放行 Cookie**（Pro 及以上）：另签 `__Host-mg_cfp`（MessageMAC 格式、独立密钥），供 Cloudflare 规则校验后跳过其通用 Bot 功能、避免双重挑战。它不是 MorphGate 凭证，也不是人类证据；规则写法及限速是否可跳过见 [08](08-upstream-and-cloudflare.md) §2.7、§2.9。
 
@@ -286,6 +330,16 @@ rate_limits:
 ```
 
 - 指纹簇在 `cloudflare` profile 下没有 JA4，以 UA 家族为主，`ctp` 只在 shadow 中参与。
+- **Phase 1 实现**（[规格 §9.7–§9.8](impl/phase1-spec.md#97-状态层valkeywp-c3-实现wp-e1b--e1c-接线)；站点 YAML 语法见 [§8.2](impl/phase1-spec.md#82-站点-yaml-v1wp-g2)，上面的 YAML 是设计示意）：
+
+| 项 | Phase 1 |
+|---|---|
+| 算法 | 只有 GCRA。`scope: global` 经 Valkey Lua `mg_gcra`（失败时回退进程内同一数学的表），`local` 只用进程内表；没有滑动窗口、并发上限、Count-Min Sketch 与自适应基线 |
+| 维度 | `ip`（IPv4 为地址，IPv6 为所在 /64，D-24）、`ip_prefix`（/24、/48）、`asn`、`session`、`route`；账号、设备、指纹簇未实现。IP 或 ASN 未知时用共享兜底值 `?`，从不跳过；`session` 在没有有效凭证时跳过该限速器 |
+| 键 | `mg:rl:{site}:{limiter}:{kh}`，`kh` 是所有者假名化密钥 `K_pseudo` 的 HMAC（D-06）；限速器 id 在整个站点内唯一（I-23） |
+| 超限 | `signal{weight}`、`challenge{invisible\|pow}`、`rate_limit{retry_after_s}`、`block`；`mode: dry_run` 只记录；计 `mg_ratelimit_exceeded_total{limiter}` |
+| Challenge 端点 | 内置 `mg.c.submit`（按 `ipp`）、`mg.c.fail`、`mg.c.fail.prefix`、`mg.clr.issue.ipp`、`mg.clr.issue.asn`，参数来自配置包 `challenge` |
+| 往返 | 普通请求一次（verdict `MGET` + 全部 global 限速器）；`/__mg/c` 两次 |
 - Challenge 端点自身受限：按 ipp / 会话限制 Challenge 签发与 `/__mg/c`、`/__mg/c/renew` 提交；按 ipp / ASN 限制凭证签发（§5）。交互式的具体限速器见 [09](09-interactive-challenge.md) §12.3。
 - **Cloudflare 边缘泄压**：Free 区唯一一条限速规则可用于在边缘挡 `POST /__mg/` 洪泛，阈值远高于 Edge 限额，精确限额仍由 Edge 负责。使用这条规则的 zone，`/__mg/` 的 Skip 规则**不得**跳过 `http_ratelimit`；规则约束见 [08 §2.7](08-upstream-and-cloudflare.md#27-与-cloudflare-自带功能共存)。
 
@@ -299,6 +353,8 @@ rate_limits:
 - 性能：核心包 gzip 后 ≤ 30 KB，行为模块懒加载，空闲时采集，不阻塞首屏。
 - 第一方：SDK、按住组件与 PoW Worker 都从本站 `/__mg/` 下发，不依赖第三方域名、字体或统计脚本，保证大陆访客可用。
 - 稳健：SDK 异常不影响页面功能；SDK 失败时相关 CLIENT 信号记为 `ABSENT`（[03](03-risk-scoring.md) §3.1）。
+
+**Phase 1 实现**：SDK 只在挑战页运行（[规格 §11](impl/phase1-spec.md#11-web-sdk-phase-1wp-w1)）。在 Web Worker 中求解 PoW（Worker 收到有效请求立即回 `mg-pow-ack`；创建失败或 2 s 内无任何回复时改为主线程分片计算，60 s 未完成显示重试链接）；采集 `env`（EnvSummary `v = 1`，探测无结果为 `null`）与 `auto.webdriver`；以只含字段 `mg` 的隐藏表单提交并跟随 303。页面注入、behavior、crypto、transport 与 `/__mg/t` 在 Phase 2。挑战页模板的占位符只允许出现在带引号的属性值或普通文本中，Edge 加载 SDK 目录时按与 `validateTemplate` 相同的规则校验（I-28）。`kind=telemetry` 只在提交携带 `env` 时写出，按已知字段、带长度上限重新序列化，不含 `userAgent`（I-32）。
 
 **Web SDK 模块**
 
@@ -374,6 +430,22 @@ rate_limits:
 | 上游 Cloudflare 挑战（非 MorphGate 响应） | Cloudflare 挑战页，带 `cf-mitigated: challenge`；SDK 按 §7 处理 |
 
 所有 `/__mg/*` 响应（内容哈希的 SDK 构建除外）与所有 Challenge 响应都带 `Cache-Control: no-store, private`（§4.4）。
+
+**Phase 1 实际响应**（[规格 §9.9](impl/phase1-spec.md#99-动作执行wp-e1a-转发与源站头e1b-阻断与限速e1c-挑战)、[§10](impl/phase1-spec.md#10-http-接口wp-e1c)；上表中持有证明、`renew`、`/__mg/r`、Agent 各行在 Phase 2–3）：
+
+| 场景 | Phase 1 响应 |
+|---|---|
+| 导航请求需要 Challenge（`Sec-Fetch-Mode: navigate`，或没有该头且 `Accept` 含 `text/html`） | `403` 挑战页（模板渲染，带 nonce 的 CSP，C 在 `data-mg-c`）；HEAD 只返回头 |
+| 其他请求需要 Challenge | `403` + `MG-Challenge: <type>` + `{"error":"mg_challenge","type","challenge","pow":{"alg","bits"},"ret","retry":true,"request_id"}` |
+| 客户端 IP 未知时需要 Challenge | `429` + `Retry-After: 5`，不签发 C；事件照录引擎的决定 |
+| http 访客的 GET / HEAD 需要 Challenge | `308` 到 https |
+| `POST /__mg/c` 请求 | 表单导航（`application/x-www-form-urlencoded`，恰好一个字段 `mg`，`+` 解码为空格）或 fetch（`application/json`）；`charset` 若有只能是 `utf-8` |
+| 提交成功 | 表单：`303` → `ret`；fetch：`200 {"ok":true,"ret":"…"}`；均带 `Set-Cookie: __Host-mg_clr` |
+| 提交失败 | `403` 挑战页（`state = failed`，附新 C 时每个 `ret` 自动重试一次）或 `{"error":"mg_challenge_failed","retry":true,"request_id","challenge","type","pow"}`；请求体或 C 本身无效时不附新 C |
+| 提交限速、失败配额、签发配额 | `429` + `Retry-After`；JSON 为 `{"error":"mg_rate_limited","retry_after":N,"request_id"}` |
+| 早期数据 | `425`（§4.3） |
+| 阻断 | `403` 通用页或 `{"error":"mg_blocked","request_id"}` |
+| `/__mg/c/renew`、`/__mg/r`、`/__mg/t` 与其他保留路径 | `404`；已有端点的其他方法 `405` + `Allow` |
 
 ## 10. 参考
 

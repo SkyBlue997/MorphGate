@@ -21,20 +21,21 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `edge-core/` | `mg-edge-core` (Phase 1): Edge components without Pingora (upstream trust and request limits, signed bundle client, Valkey state with local fallback, event sinks); `testkit` feature for shared test helpers. Async code runs only inside Pingora background services |
 | `proto/morphgate/v1/` | Shared protobuf contract. Rust: `proto/rust` (`mg-proto`, protox in build.rs). Go: generated into `control-plane/gen` and committed |
 | `control-plane/` | Go module: `cmd/mgctl`, `cmd/mg-control`, `internal/...` |
-| `lab/` | Go module: Validation Lab (`internal/guard` allowlist, `cmd/mglab`; `Dockerfile` for the isolated compose network) |
+| `lab/` | Go module: Validation Lab (`internal/guard` allowlist, `internal/replay`, `internal/events` for the acceptance checks, `cmd/mglab`; `testdata/scenarios` and `testdata/e2e` for `make lab-e2e`; `Dockerfile` for the isolated compose network) |
 | `sdk/web/` | TypeScript Web SDK (`@morphgate/web-sdk`, pnpm, esbuild, vitest) |
-| `adapters/cloudflare/` | Transform Rule, Cache Rule, WAF Skip, Snippet and Worker templates for the owner's zone |
+| `adapters/cloudflare/` | Transform Rule, Cache Rule, WAF Skip, Snippet and Worker templates for the owner's zone; its README is the owner's setup checklist |
+| `deploy/intel/` | Owner-maintained crawler registry source (`crawler-registry.yaml`), input to `mgctl crawler sync` |
 | `deploy/compose/` | Dev environment: Valkey, PostgreSQL, VictoriaMetrics, VictoriaLogs (`vl-main` 30d, `vl-short` 7d), mock origin; optional profiles `grafana`, `tunnel` (cloudflared) and `lab` (Validation Lab on an internal network) |
 | `deploy/systemd/` | `mg-edge.service` (Pingora graceful upgrade via `systemctl reload`) and `edge.toml.example`, kept in sync by `edge/tests/shipped_configs.rs` |
-| `scripts/` | `gen-proto.sh`, `check_doc_links.py`, `edge-smoke.sh`, `lab-egress-check.sh` |
+| `scripts/` | `gen-proto.sh`, `check_doc_links.py`, `edge-smoke.sh`, `lab-e2e.sh`, `lab-egress-check.sh` |
 | `testdata/` | Cross-component fixtures: `phase1/kat.json` (crypto / PoW / key known-answer vectors), `phase1/keys/` and `phase1/artifacts/` (canonical valid and invalid key-file and artifact samples), `policy-ir/` (Go ↔ Rust policy IR conformance); `core/testdata/gcra-cases.json` is shared by Rust and the Valkey Lua script |
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `make check` | All lint/test gates: `rust-check wasm-check go-check web-check adapters-check compose-check docs-check`. CI additionally runs `edge-smoke`, `lab-egress-check`, the Pingora pin check and the `make proto` drift check |
-| `make rust-check` | `cargo fmt --check`, `clippy -D warnings`, `cargo test` for the workspace |
+| `make check` | All lint/test gates: `rust-check wasm-check go-check web-check adapters-check compose-check docs-check`. CI additionally runs `edge-smoke`, `lab-e2e`, `lab-egress-check`, an MSRV 1.88 `cargo check`, the Pingora pin check and the `make proto` drift check |
+| `make rust-check` | `cargo fmt --check`, `clippy -D warnings`, `cargo test` for the workspace. Valkey-backed tests use `MG_TEST_VALKEY_URL`, else start a throwaway `valkey-server` from `PATH`, else skip; `MG_REQUIRE_VALKEY=1` (set in CI) turns a skip into a failure. Use the shared `target/` only |
 | `make wasm-check` | `cargo check -p mg-core --target wasm32-unknown-unknown`; skipped locally when the target is not installed (Homebrew rustc), always run in CI |
 | `make go-check` / `make web-check` | `go vet` + `go test` in `control-plane` and `lab`; Web SDK install + `check` script |
 | `make adapters-check` | Cloudflare adapter templates: `node --test` suite + Worker typecheck |
@@ -42,12 +43,14 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `make compose-check` / `make docs-check` | Validate the compose file; check relative links and anchors in README, CLAUDE.md, docs/ |
 | `make dev-up` / `make dev-down` | Start / stop the dev environment (`COMPOSE_PROFILES=grafana,tunnel,lab` for the optional services) |
 | `make edge-run` / `make edge-smoke` | Run mg-edge with the dev config; loopback end-to-end smoke test |
+| `make lab-e2e` | Validation Lab end-to-end on loopback: test keys, a signed enforce bundle, Valkey, mg-edge and the Phase 1 scenarios (impersonating crawlers, no clearance without JavaScript); not part of `check`, CI runs it |
 | `make lab-egress-check` | Needs a Docker daemon (CI runs it): the Lab allowlist holds at the tool and network-egress layers |
 
 ## Design docs
 
 - [README.md](README.md) indexes the design docs `docs/01`–`docs/10` and the ADRs in [docs/adr/](docs/adr/README.md). The threat model is [docs/10](docs/10-threat-model.md); the phase plan is [docs/07](docs/07-roadmap.md). Phase 0 is the skeleton; features start in Phase 1.
-- The Phase 1 implementation spec is [docs/impl/phase1-spec.md](docs/impl/phase1-spec.md): work packages, file ownership and every cross-component contract. Change a contract there first, then in code.
+- The Phase 1 implementation spec is [docs/impl/phase1-spec.md](docs/impl/phase1-spec.md): work packages, file ownership and every cross-component contract; its rulings table (I-1 onwards) overrides its body. Change a contract there first, then in code. Progress is in [docs/impl/phase1-status.md](docs/impl/phase1-status.md).
+- The design docs carry dated Phase 1 errata ("Phase 1" paragraphs and status tables in docs/01–10, "勘误" sections in the ADRs) that summarize what was built and link to the spec; where a design doc and the spec disagree about Phase 1, the spec wins.
 - Other docs link to heading anchors, so keep heading text stable or fix every link (`make docs-check` catches breakage).
 
 ## Conventions

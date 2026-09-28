@@ -1,0 +1,153 @@
+# Phase 1 acceptance (docs/impl/phase1-spec.md §15 WP-L1, §18): a scripted
+# client that does not execute JavaScript never obtains a clearance
+# (__Host-mg_clr) from an Edge in enforce mode.
+#
+# The scenario replays fixed requests only. It contains no solving logic:
+# the challenge submissions carry a C recorded from an earlier Edge
+# (2026-09-28, sealed under a throwaway seal root that no Edge holds, and
+# long expired), a forged C (random bytes in the C envelope) and a
+# malformed one, each with the counter 0 as recorded. A foreign-zone
+# CF-Worker is refused outright (D-23).
+#
+# Run by scripts/lab-e2e.sh against lab/testdata/e2e/site.yaml (route
+# "members" = /lab/members/**, sensitivity critical: require_clearance):
+#
+#   mglab replay -map-host site.lab.test=127.0.0.1 -base http://site.lab.test:<edge port> \
+#     -var run=<id> lab/testdata/scenarios/phase1-nonjs-clearance.yaml
+#   mglab events clearance -site lab -protected /lab/members/<id>/ -want-feedback 3 <events.jsonl>
+#
+# expect_header_absent [Location] holds for every response of a request's
+# redirect chain (mglab follows redirects), so it asserts that no submission
+# was answered with a 303, even one leading back to a 403 page.
+#
+# CF-Connecting-IP stands in for cloudflared on the Edge's loopback listener;
+# every address is from a documentation range.
+name: phase1-nonjs-clearance
+description: A client without JavaScript requests a require_clearance route, submits a recorded and a forged challenge, and never gets a clearance cookie.
+vars:
+  run: manual   # path segment that ties the events to one run
+
+requests:
+  # 1. The protected page: a challenge page, no cookie, no redirect.
+  - name: protected page (navigation)
+    method: GET
+    path: /lab/members/${run}/home
+    headers: &browser
+      CF-Connecting-IP: 203.0.113.60
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36
+      Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+      Accept-Language: en-US,en;q=0.9
+      Sec-Fetch-Mode: navigate
+      Sec-Fetch-Site: none
+      Sec-Fetch-Dest: document
+    expect_status: 403
+    expect_header: {Content-Type: text/html, Cache-Control: no-store}
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: data-mg-state="challenge"
+
+  # 2. The same route as an API call: the JSON challenge (spec §10.2).
+  - name: protected API (JSON challenge)
+    method: GET
+    path: /lab/members/${run}/data.json
+    headers:
+      <<: *browser
+      Accept: application/json
+      Sec-Fetch-Mode: cors
+      Sec-Fetch-Dest: empty
+    expect_status: 403
+    expect_header: {MG-Challenge: "", Content-Type: application/json}
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: '"error":"mg_challenge"'
+
+  # 3. Form submission of the recorded, expired C (navigation, spec §10.3):
+  #    unified failure, the challenge page in state "failed", no 303.
+  - name: submit recorded expired C (form)
+    method: POST
+    path: /__mg/c
+    headers: &submit-form
+      <<: *browser
+      Content-Type: application/x-www-form-urlencoded
+      Origin: https://site.lab.test
+      Sec-Fetch-Site: same-origin
+    body: mg=%7B%22v%22%3A1%2C%22type%22%3A%22invisible%22%2C%22c%22%3A%22CAESBmUyMDcyNBoYQ9yKUBCaM8OVKtsXhFKGQcRRnuLnZhh2IqIBKfKeirp-9myRmGQd_HAgC2U9Vcs-_90eN5YdQoFjZ-GiJIp1UwviQ0enozbVxiLzK4gV2Pwd6ZyPyGjoexzfCN-pc9B6tyXQF8bqi6gCM8ywE5Z7SB4Ix4U_tBYu7V_Cju1YRF8ncIN_D9M3Y93T-c0SYzuGpIsgO0czotyUo7TOkIKAXKnYsygudRMl_fqk7I2wkmrTNf2VVwvYF8P1G7KN%22%2C%22pow%22%3A%7B%22counters%22%3A%5B0%5D%7D%2C%22ret%22%3A%22%2Flab%2Fmembers%2F%22%2C%22ts%22%3A1790576860000%2C%22build%22%3A%220000000000000000%22%7D
+    expect_status: 403
+    expect_header: {Content-Type: text/html}
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: data-mg-state="failed"
+
+  # 4. fetch-style submission of a forged C.
+  - name: submit forged C (JSON)
+    method: POST
+    path: /__mg/c
+    headers:
+      <<: *browser
+      Content-Type: application/json
+      Accept: application/json
+      Origin: https://site.lab.test
+      Sec-Fetch-Mode: cors
+      Sec-Fetch-Site: same-origin
+      Sec-Fetch-Dest: empty
+    body: '{"v":1,"type":"pow","c":"CAESBmUyMDcyNBoYr4zmR7DJwdUINvIYyXH2WuqfMvy1VYLRIqIBCHYHQquwZqaTrc2H0-PsGQ7qMOxFjQY8e6GW8En2VSyfNdv07i04-dAZPSrIultAbADG0QLhye3Sqar3WfGBl6zOxww7kMjCPuIAmnrnurS5kWxtBNW5oxdcUiufIBfQ3BCn6oPSj1terfWrG_cXgeqINdDG7cCJBEfLIqcZlPjPiOh08wvcj8LiKMj0V5frGSiNkNwYKJNVF7AvX1mjQ0HM","pow":{"counters":[0]},"ret":"/lab/members/","ts":1790576860000,"build":"0000000000000000"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: '"error":"mg_challenge_failed"'
+
+  # 5. A malformed C.
+  - name: submit malformed C (form)
+    method: POST
+    path: /__mg/c
+    headers: *submit-form
+    body: mg=%7B%22v%22%3A1%2C%22type%22%3A%22pow%22%2C%22c%22%3A%22AAAA%22%2C%22pow%22%3A%7B%22counters%22%3A%5B0%5D%7D%2C%22ret%22%3A%22%2Flab%2Fmembers%2F%22%2C%22ts%22%3A1790576860000%2C%22build%22%3A%220000000000000000%22%7D
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+
+  # 6. Back to the protected page: still challenged.
+  - name: protected page again
+    method: GET
+    path: /lab/members/${run}/home
+    headers: *browser
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: data-mg-state="challenge"
+
+  # 7. A plain HTTP library, as a scraper would send it.
+  - name: protected page (HTTP library)
+    method: GET
+    path: /lab/members/${run}/home
+    headers:
+      CF-Connecting-IP: 203.0.113.61
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: python-requests/2.32.3
+      Accept: '*/*'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+
+  # 8-9. A Worker of a zone the owner does not control (D-23): refused
+  # before anything else, page or submission.
+  - name: foreign CF-Worker, protected page
+    method: GET
+    path: /lab/members/${run}/home
+    headers:
+      <<: *browser
+      CF-Worker: attacker.example
+    expect_status: 403
+    expect_header_absent: [MG-Challenge, Location]
+    expect_cookie_absent: [__Host-mg_clr]
+  - name: foreign CF-Worker, submission
+    method: POST
+    path: /__mg/c
+    headers:
+      <<: *submit-form
+      CF-Worker: attacker.example
+    body: mg=%7B%22v%22%3A1%2C%22type%22%3A%22pow%22%2C%22c%22%3A%22AAAA%22%2C%22pow%22%3A%7B%22counters%22%3A%5B0%5D%7D%2C%22ret%22%3A%22%2Flab%2Fmembers%2F%22%2C%22ts%22%3A1790576860000%2C%22build%22%3A%220000000000000000%22%7D
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]

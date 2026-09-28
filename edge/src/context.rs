@@ -87,6 +87,10 @@ pub struct TlsInfo<'a> {
     pub version: Option<&'a str>,
     pub sni: Option<&'a str>,
     pub alpn: Option<&'a str>,
+    /// The JA4 of a `ja4_spike` listener (WP-J1): recorded in `ctx.tls.ja4`
+    /// for the decision event, never evaluated (`tls.ja4` stays MISSING,
+    /// D-07).
+    pub ja4: Option<&'a str>,
 }
 
 /// What the proxy knows about a request when the Decision Core is about to
@@ -464,6 +468,8 @@ pub fn build(f: &Facts<'_>, intel: &Intel) -> Built {
     if cloudflare {
         missing.push("tls");
     } else {
+        // D-07: MISSING for the policy even when the JA4 spike computed a
+        // value; that value only reaches the decision event.
         missing.push("tls.ja4");
         let t = f.tls.unwrap_or_default();
         tls = Tls {
@@ -471,7 +477,11 @@ pub fn build(f: &Facts<'_>, intel: &Intel) -> Built {
             version: t.version.map(|v| truncate_utf8(v, MAX_STRING).to_owned()),
             sni: t.sni.map(|v| truncate_utf8(v, MAX_STRING).to_owned()),
             alpn: t.alpn.map(|v| truncate_utf8(v, MAX_STRING).to_owned()),
-            ja4: None,
+            ja4: t.ja4.map(|v| mg_core::Ja4 {
+                value: truncate_utf8(v, MAX_STRING).to_owned(),
+                source: SignalSource::SelfComputed,
+                authenticated: true,
+            }),
         };
         if tls.version.is_none() {
             missing.push("tls.version");
@@ -692,6 +702,7 @@ mod tests {
                     version: Some("TLSv1.3"),
                     sni: Some("example.com"),
                     alpn: Some("h2"),
+                    ja4: None,
                 }),
                 http_version: "HTTP/1.1",
                 method: "post",

@@ -215,6 +215,10 @@ pub struct ListenerConfig {
     /// artifacts before the TLS handshake.
     #[serde(default)]
     pub cloudflare_ip_filter: bool,
+    /// `direct_tls` only (WP-J1 spike, default off): compute the JA4 of every
+    /// ClientHello; it reaches the decision event only (`crate::tls`, D-07).
+    #[serde(default)]
+    pub ja4_spike: bool,
 }
 
 impl ListenerConfig {
@@ -677,6 +681,11 @@ impl EdgeConfig {
                     ));
                 }
             }
+            if l.ja4_spike && l.profile != ListenerProfile::DirectTls {
+                return invalid(format!(
+                    "{at}: ja4_spike is only used by direct_tls listeners"
+                ));
+            }
             if l.upstream_keys.is_some() && l.profile != ListenerProfile::Cloudflare {
                 return invalid(format!(
                     "{at}: upstream_keys is only used by cloudflare listeners"
@@ -1003,7 +1012,7 @@ dir = "/opt/morphgate/sdk"
     fn unknown_keys_are_rejected_everywhere() {
         for (anchor, extra) in [
             ("edge_id = \"edge-1\"", "\nedge_idd = 1"),
-            ("profile = \"cloudflare\"", "\nja4_spike = true"),
+            ("profile = \"cloudflare\"", "\nja4 = true"),
             (
                 "seal_root = \"cred://mg-blog-seal-root\"",
                 "\norigin_tls = true",
@@ -1074,6 +1083,16 @@ dir = "/opt/morphgate/sdk"
             ),
             (
                 "profile = \"cloudflare\"",
+                "profile = \"cloudflare\"\nja4_spike = true",
+                "ja4_spike is only used by direct_tls",
+            ),
+            (
+                "profile = \"cloudflare\"",
+                "profile = \"cloudflare\"\nauth = \"origin_mtls\"\ntls_cert = \"/x.pem\"\ntls_key = \"/x.key\"\nclient_ca = \"/ca.pem\"\nja4_spike = true",
+                "ja4_spike is only used by direct_tls",
+            ),
+            (
+                "profile = \"cloudflare\"",
                 "profile = \"cloudflare\"\nupstream_keys = \"keys.json\"",
                 "absolute path",
             ),
@@ -1091,6 +1110,16 @@ dir = "/opt/morphgate/sdk"
         let cfg = EdgeConfig::from_toml_str(&text).unwrap();
         assert_eq!(cfg.listeners[0].auth(), ListenerAuth::None);
         assert!(cfg.listeners[0].is_tls());
+        assert!(
+            !cfg.listeners[0].ja4_spike,
+            "the JA4 spike is off by default"
+        );
+        // WP-J1: the JA4 spike is a direct_tls listener key.
+        let spike = text.replace(
+            "tls_key = \"/x.key\"",
+            "tls_key = \"/x.key\"\nja4_spike = true",
+        );
+        assert!(EdgeConfig::from_toml_str(&spike).unwrap().listeners[0].ja4_spike);
     }
 
     #[test]
