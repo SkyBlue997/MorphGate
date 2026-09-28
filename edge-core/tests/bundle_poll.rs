@@ -588,8 +588,14 @@ async fn file_root() {
     let root = Source::parse(&format!("file://{}/", publish.path().display())).unwrap();
     let h = start(site, root, Arc::clone(&dir), None);
     wait_for("v1", || h.rec.versions() == [1]).await;
-    settle().await;
-    assert!(h.reloads("unchanged") >= 2);
+    // Polled, not slept: a loaded machine may need more than a few
+    // intervals for two unchanged polls.
+    wait_for("unchanged polls", || h.reloads("unchanged") >= 2).await;
+    assert_eq!(
+        h.rec.versions(),
+        [1],
+        "an unchanged file is never re-applied"
+    );
     write(&sign(&site_bundle(site, 2, &[("datacenter-asns", art)])));
     wait_for("v2", || h.rec.versions() == [1, 2]).await;
     h.stop().await;

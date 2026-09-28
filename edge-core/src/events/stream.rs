@@ -1,5 +1,6 @@
 //! `mg:ev` stream entries (spec §13.6) and the writer the flusher hands them to.
 
+use crate::state::StateHandle;
 use mg_core::{Action, BotClass, BoxFuture, ChallengeType, VerdictOutcome};
 
 /// Stream key.
@@ -10,11 +11,12 @@ pub const STREAM_ENTRY_VERSION: &str = "1";
 
 /// Writes a batch of `mg:ev` entries (§9.11, §13.6).
 ///
-/// mg-edge implements it with `StateHandle::xadd_batch` (WP-C3), so the
-/// Valkey I/O happens on the `mg-state` runtime: one pipeline of
-/// `XADD mg:ev MAXLEN ~ <maxlen> * <field> <value> …`, one command per entry,
-/// fields in [`StreamEntry::fields`] order. The flusher never retries a failed
-/// batch; it counts `mg_event_dropped_total{sink="stream"}`.
+/// [`StateHandle`] implements it (ruling I-25) with
+/// `StateHandle::xadd_batch`, so the Valkey I/O happens on the `mg-state`
+/// runtime: one pipeline of `XADD mg:ev MAXLEN ~ <maxlen> * <field> <value>
+/// …`, one command per entry, fields in [`StreamEntry::fields`] order. The
+/// flusher never retries a failed batch; it counts
+/// `mg_event_dropped_total{sink="stream"}`.
 ///
 /// This is the object-safe form of `async fn xadd_batch` (the flusher holds
 /// an `Arc<dyn StreamWriter>`).
@@ -24,6 +26,25 @@ pub trait StreamWriter: Send + Sync {
         maxlen: u64,
         entries: Vec<StreamEntry>,
     ) -> BoxFuture<'_, Result<(), String>>;
+}
+
+/// The production writer (ruling I-25): the entries go to `mg-state` as one
+/// `XADD` pipeline. In local mode, while Valkey is down or the breaker is
+/// open, the batch fails with the state layer's error text (no key or entry
+/// content is ever part of it), and the flusher counts the drop.
+impl StreamWriter for StateHandle {
+    fn xadd_batch(
+        &self,
+        maxlen: u64,
+        entries: Vec<StreamEntry>,
+    ) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            let entries = entries.into_iter().map(StreamEntry::into_fields).collect();
+            StateHandle::xadd_batch(self, maxlen, entries)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
 }
 
 /// One `mg:ev` entry: an ordered list of field / value pairs (§13.6).

@@ -55,7 +55,7 @@ func TestMaxStepsByHand(t *testing.T) {
 		{`glob(req.host, "*.example.test")`, 223, "glob 1 + floor(253 * 14 / 16) = 222, + field 1"},
 		{`net.tor ? req.path == "" : true`, 133, "cond 1 + condition 1 + max(131, 1)"},
 		{`(net.tor ? req.path : req.method) == ""`, 133, "compare 1 + ceil(max(8192, 32) / 64) = 129; cond 1 + 1 + max(1, 1) = 3; literal 1"},
-		{`(net.tor ? req.headers : req.headers)["a"] == ""`, 136, "compare 129; index_map 2 + cond 3 + literal 1 = 6; literal 1"},
+		{`(net.tor ? req.headers["a"] : req.method) == ""`, 136, "compare 1 + ceil(max(8192, 32) / 64) = 129; cond 1 + 1 + max(index_map 2 + 1 + 1, 1) = 6; literal 1"},
 		{`req.method in (net.tor ? ["a"] : ["b", "c", "d"])`, 11, "in_list 1 + max(1, 3) = 4; field 1; cond 1 + 1 + max(2, 4) = 6"},
 	}
 	for _, tc := range cases {

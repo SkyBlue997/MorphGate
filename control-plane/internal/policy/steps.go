@@ -17,7 +17,8 @@ import (
 //   - field: the §4.1 size cap of the path (strings in bytes, lists and maps
 //     in entries; 0 for bool and numeric fields);
 //   - index_map: the cap of one value of the map (8192 for req.headers, 0 for
-//     rate);
+//     rate); its map is always a field, since the lowerer rejects an index on
+//     a computed map (ruling I-20);
 //   - named_list: 10,000 (MaxNamedListEntries);
 //   - list literal: its element count;
 //   - cond: the larger of its branches;

@@ -28,6 +28,10 @@ pub const MAX_LIST_LITERAL: usize = 1000;
 pub const NAMED_LIST_CAP: u64 = 10_000;
 /// `S(req.headers[k])`: largest header value (§4.1).
 const HEADER_VALUE_CAP: u64 = 8192;
+/// The [`ProgramError::Malformed`] reason for `index_map` on anything but a
+/// map field (ruling I-20: an index or select on a map computed by `?:` is
+/// rejected; `c ? m[k] : m[k]` expresses the same).
+pub const COMPUTED_MAP_INDEX: &str = "index on a computed map (only a map field can be indexed)";
 
 /// A scalar literal.
 #[derive(Debug, Clone, PartialEq)]
@@ -362,6 +366,12 @@ fn check(e: &Expr, depth: usize, nodes: &mut usize) -> Result<Ty, ProgramError> 
             _ => return Err(Malformed("`in` on a map needs a string key and a map")),
         },
         Expr::IndexMap(m, k) => {
+            // Ruling I-20: only a map field is indexed. A computed map (a
+            // `?:` whose branches are maps) is rejected like the Go compiler
+            // does; it has no single §5.3 size bound `S(m[k])`.
+            if !matches!(**m, Expr::Field(_)) {
+                return Err(Malformed(COMPUTED_MAP_INDEX));
+            }
             let (Ty::Map(v), Ty::Scalar(Scalar::Str)) = (sub(m)?, sub(k)?) else {
                 return Err(Malformed("map index needs a map and a string key"));
             };
@@ -791,6 +801,15 @@ mod tests {
             glob(f("risk.score"), "*"),
             Expr::Cond(b(i(1)), b(t()), b(t())),
             Expr::Cond(b(t()), b(t()), b(i(1))),
+            // Ruling I-20: no index on a computed map, whatever its branches.
+            Expr::Compare(
+                CompareOp::Eq,
+                b(Expr::IndexMap(
+                    b(Expr::Cond(b(t()), b(f("req.headers")), b(f("req.headers")))),
+                    b(s("accept")),
+                )),
+                b(s("x")),
+            ),
         ];
         for e in bad {
             assert!(

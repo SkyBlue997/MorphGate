@@ -207,14 +207,16 @@ async fn line_threshold_flushes_full_batches_only() {
         2,
         "partial batch sent before the interval"
     );
-    assert_eq!(
-        run.queues.pending(),
-        (1, record(EventClass::Access, 6).wire_len())
-    );
-    // Shutdown only flushes P0; the queued P1 record is counted as lost.
+    // It left the request queue at once; VictoriaLogs holds it.
+    assert_eq!(run.queues.pending(), (0, 0));
+    // Shutdown only flushes P0; the held P1 record is counted as lost there.
     let (metrics, _) = run.shutdown().await;
     assert_eq!(vl.requests().len(), 2);
-    assert_eq!(metrics.dropped(DropSink::Buffer, EventClass::Access), 1);
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Access),
+        1
+    );
+    assert_eq!(metrics.dropped(DropSink::Buffer, EventClass::Access), 0);
 }
 
 /// §9.11: `max_batch_bytes` bounds every body; a single larger line travels alone.
@@ -905,7 +907,8 @@ async fn hung_stream_write_is_abandoned_and_counted() {
 }
 
 /// §9.1.1 item 4: on shutdown the queued P0 records are delivered; P1 / P2
-/// records still queued are counted as `buffer` drops; the queues close.
+/// records VictoriaLogs still holds are counted as lost there (I-25: per
+/// output); the queues close.
 #[tokio::test]
 async fn shutdown_sends_remaining_p0_only() {
     let vl = FakeVl::start().unwrap();
@@ -923,9 +926,23 @@ async fn shutdown_sends_remaining_p0_only() {
     let (metrics, _) = run.shutdown().await;
     let lines = vl.accepted_lines();
     assert_eq!(lines, vec![line("decision", 0), line("decision", 1)]);
-    assert_eq!(metrics.dropped(DropSink::Buffer, EventClass::Priority), 0);
-    assert_eq!(metrics.dropped(DropSink::Buffer, EventClass::Access), 3);
-    assert_eq!(metrics.dropped(DropSink::Buffer, EventClass::Sampled), 4);
+    for class in EventClass::ALL {
+        assert_eq!(metrics.dropped(DropSink::Buffer, class), 0);
+    }
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Priority),
+        0
+    );
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Access),
+        3
+    );
+    // The P2 records target vl_short, which is not configured: never
+    // written there, so never lost there.
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Sampled),
+        0
+    );
     // The flusher is gone: offering more fails fast and is counted.
     assert!(!queues.try_send(record(EventClass::Priority, 99)));
     assert_eq!(metrics.dropped(DropSink::Buffer, EventClass::Priority), 1);
@@ -1146,4 +1163,282 @@ fn fake_vl_parses_chunked_bodies() {
     assert!(!requests[0].accepted());
     assert_eq!(requests[1].lines(), vec![r#"{"c":3}"#]);
     assert_eq!(vl.accepted_lines(), vec![r#"{"c":3}"#]);
+}
+
+// ---------------------------------------------------------------------------
+// Ruling I-25: VictoriaLogs, the file and mg:ev are independent outputs.
+
+/// Waits until `path` holds at least `n` lines; returns them.
+async fn wait_file_lines(path: &std::path::Path, n: usize) -> Vec<String> {
+    let deadline = Instant::now() + PROMPT;
+    loop {
+        let lines: Vec<String> = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        if lines.len() >= n || Instant::now() >= deadline {
+            return lines;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// I-25: while VictoriaLogs hangs on a batch, later records still reach the
+/// file and `mg:ev` at their own pace (with one shared flusher they waited
+/// for VictoriaLogs' retries, about 26 s per batch).
+#[tokio::test]
+async fn hanging_victorialogs_does_not_hold_back_file_or_stream() {
+    let vl = FakeVl::start().unwrap();
+    vl.set_default_reply(VlReply::Hang);
+    let client = VlClient::with_options(
+        Some(&vl.url()),
+        None,
+        VlOptions {
+            timeout: Duration::from_secs(60),
+            backoff: vec![],
+        },
+    )
+    .unwrap();
+    let dir = temp_dir("decoupled");
+    let path = dir.join("events.jsonl");
+    let writer = RecordingStreamWriter::new();
+    let cfg = EventsConfig {
+        flush_interval_ms: 20,
+        ..base_cfg()
+    };
+    let run = Running::start(
+        &cfg,
+        Some(client),
+        Some(path.clone()),
+        Some(writer.clone() as Arc<dyn StreamWriter>),
+    );
+    run.send(record(EventClass::Priority, 0).with_stream(decision_entry("r0")));
+    // VictoriaLogs now holds the first batch and never answers.
+    assert_eq!(vl.wait_for_requests(1, PROMPT).await.len(), 1);
+    assert_eq!(wait_file_lines(&path, 1).await.len(), 1);
+    for seq in 1..=3 {
+        run.send(record(EventClass::Priority, seq).with_stream(decision_entry(&format!("r{seq}"))));
+        let lines = wait_file_lines(&path, seq + 1).await;
+        assert_eq!(lines.len(), seq + 1, "file stalled behind VictoriaLogs");
+    }
+    let deadline = Instant::now() + PROMPT;
+    while writer.entries().len() < 4 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        writer.entries().len(),
+        4,
+        "stream stalled behind VictoriaLogs"
+    );
+    // VictoriaLogs is still on its first request.
+    assert_eq!(vl.requests().len(), 1);
+    let metrics = run.queues.metrics().clone();
+    assert_eq!(metrics.dropped(DropSink::File, EventClass::Priority), 0);
+    assert_eq!(metrics.dropped(DropSink::Stream, EventClass::Priority), 0);
+
+    // Shutdown: VictoriaLogs gets its final attempt (it hangs again) and
+    // what it still holds is counted there only.
+    let (metrics, took) = run.shutdown().await;
+    assert!(took < Duration::from_millis(3500), "shutdown took {took:?}");
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Priority),
+        4
+    );
+    assert_eq!(metrics.dropped(DropSink::File, EventClass::Priority), 0);
+    assert_eq!(metrics.dropped(DropSink::Stream, EventClass::Priority), 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// I-25: a failing `XADD` and a failing file only count their own drops;
+/// VictoriaLogs receives every line.
+#[tokio::test]
+async fn failing_stream_and_file_do_not_affect_victorialogs() {
+    let vl = FakeVl::start().unwrap();
+    let writer = RecordingStreamWriter::new();
+    writer.set_fail(true);
+    let dir = temp_dir("failing-outputs");
+    let cfg = EventsConfig {
+        flush_interval_ms: 20,
+        ..base_cfg()
+    };
+    // A directory cannot be appended to.
+    let run = Running::start(
+        &cfg,
+        Some(main_client(&vl)),
+        Some(dir.clone()),
+        Some(writer.clone() as Arc<dyn StreamWriter>),
+    );
+    for seq in 0..5 {
+        run.send(record(EventClass::Priority, seq).with_stream(decision_entry(&format!("r{seq}"))));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert_eq!(vl.wait_for_accepted_lines(5, PROMPT).await.len(), 5);
+    let (metrics, _) = run.shutdown().await;
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Priority),
+        0
+    );
+    assert_eq!(metrics.dropped(DropSink::File, EventClass::Priority), 5);
+    assert_eq!(metrics.dropped(DropSink::Stream, EventClass::Priority), 5);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// I-25: each output's backlog is bounded per class. While VictoriaLogs
+/// hangs, its backlog fills and further records are dropped for
+/// VictoriaLogs only (counted `victorialogs`); the file keeps every line.
+#[tokio::test]
+async fn full_output_backlog_drops_for_that_output_only() {
+    let vl = FakeVl::start().unwrap();
+    vl.set_default_reply(VlReply::Hang);
+    let client = VlClient::with_options(
+        Some(&vl.url()),
+        None,
+        VlOptions {
+            timeout: Duration::from_secs(60),
+            backoff: vec![],
+        },
+    )
+    .unwrap();
+    let dir = temp_dir("backlog");
+    let path = dir.join("events.jsonl");
+    let cfg = EventsConfig {
+        flush_interval_ms: 20,
+        queue_priority: 2,
+        queue_access: 2,
+        queue_sampled: 2,
+        ..base_cfg()
+    };
+    let run = Running::start(&cfg, Some(client), Some(path.clone()), None);
+    for seq in 0..10 {
+        run.send(EventRecord::new(
+            EventClass::Sampled,
+            Sink::Main,
+            line("decision", seq),
+        ));
+        assert_eq!(wait_file_lines(&path, seq + 1).await.len(), seq + 1);
+        if seq == 0 {
+            // The first record is VictoriaLogs' batch in flight.
+            assert_eq!(vl.wait_for_requests(1, PROMPT).await.len(), 1);
+        }
+    }
+    let metrics = run.queues.metrics().clone();
+    // One in flight, two held, seven dropped at the full backlog.
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Sampled),
+        7
+    );
+    for class in EventClass::ALL {
+        assert_eq!(metrics.dropped(DropSink::File, class), 0);
+        assert_eq!(metrics.dropped(DropSink::Buffer, class), 0);
+    }
+    // Shutdown flushes P0 only: the held and the in-flight record are lost too.
+    let (metrics, took) = run.shutdown().await;
+    assert!(took < Duration::from_secs(1), "no P0 to deliver: {took:?}");
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Sampled),
+        10
+    );
+    assert_eq!(wait_file_lines(&path, 10).await.len(), 10);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// §9.1.1 item 4 with I-25: the local file writes everything it still holds
+/// at shutdown, every class, while VictoriaLogs only gets its P0 records.
+#[tokio::test]
+async fn shutdown_writes_every_class_to_the_file() {
+    let vl = FakeVl::start().unwrap();
+    let dir = temp_dir("file-shutdown");
+    let path = dir.join("events.jsonl");
+    let run = Running::start(
+        &base_cfg(),
+        Some(main_client(&vl)),
+        Some(path.clone()),
+        None,
+    );
+    run.send(record(EventClass::Sampled, 2));
+    run.send(record(EventClass::Access, 1));
+    run.send(record(EventClass::Priority, 0));
+    let (metrics, _) = run.shutdown().await;
+    let text = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines,
+        vec![line("decision", 0), line("access", 1), line("telemetry", 2)]
+    );
+    assert_eq!(vl.accepted_lines(), vec![line("decision", 0)]);
+    for class in EventClass::ALL {
+        assert_eq!(metrics.dropped(DropSink::File, class), 0);
+    }
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Access),
+        1
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// I-25: `vl_main` and `vl_short` are separate VictoriaLogs instances (30 d
+/// and 7 d retention). A hung `vl_short` (telemetry) must not hold back
+/// `vl_main` (decisions, access records, feedback): with one delivery loop
+/// for both, every `vl_main` batch waited for the `vl_short` retries.
+#[tokio::test]
+async fn hanging_vl_short_does_not_hold_back_vl_main() {
+    let main = FakeVl::start().unwrap();
+    let short = FakeVl::start().unwrap();
+    short.set_default_reply(VlReply::Hang);
+    let client = VlClient::with_options(
+        Some(&main.url()),
+        Some(&short.url()),
+        VlOptions {
+            timeout: Duration::from_secs(60),
+            backoff: vec![],
+        },
+    )
+    .unwrap();
+    let cfg = EventsConfig {
+        flush_interval_ms: 20,
+        ..base_cfg()
+    };
+    let run = Running::start(&cfg, Some(client), None, None);
+    // A telemetry line: vl_short now holds it and never answers.
+    run.send(record(EventClass::Sampled, 0));
+    assert_eq!(short.wait_for_requests(1, PROMPT).await.len(), 1);
+    for seq in 1..=3 {
+        run.send(record(EventClass::Priority, seq));
+        let lines = main
+            .wait_for_accepted_lines(seq, Duration::from_secs(3))
+            .await;
+        assert_eq!(lines.len(), seq, "vl_main stalled behind vl_short");
+    }
+    // An access record (P1) goes the same way.
+    run.send(record(EventClass::Access, 4));
+    assert_eq!(
+        main.wait_for_accepted_lines(4, Duration::from_secs(3))
+            .await
+            .len(),
+        4
+    );
+    assert_eq!(
+        short.requests().len(),
+        1,
+        "vl_short is still on its first batch"
+    );
+    let (metrics, took) = run.shutdown().await;
+    assert!(took < Duration::from_millis(3500), "shutdown took {took:?}");
+    for class in EventClass::ALL {
+        assert_eq!(metrics.dropped(DropSink::Buffer, class), 0);
+    }
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Priority),
+        0
+    );
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Access),
+        0
+    );
+    // The hung telemetry line is the only loss, counted at VictoriaLogs.
+    assert_eq!(
+        metrics.dropped(DropSink::VictoriaLogs, EventClass::Sampled),
+        1
+    );
 }

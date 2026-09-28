@@ -78,8 +78,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 // RunEnv executes mgctl in env. When env.Audit is nil it is wired to the
-// local audit log (--audit-log, else MGCTL_AUDIT_LOG, XDG_STATE_HOME, HOME);
-// write commands open that log before they change anything.
+// local audit log (--audit-log, else MGCTL_AUDIT_LOG, XDG_STATE_HOME, HOME)
+// and env.AuditReady to opening it: every write command, including the
+// intelligence syncs of internal/intelsync, opens the log before it writes
+// anything, so an unusable log fails the command with exit code 3 and no
+// file changed (ruling I-27).
 func RunEnv(args []string, env cli.Env) int {
 	args, auditPath, err := extractAuditLog(args)
 	if err != nil {
@@ -94,8 +97,8 @@ func RunEnv(args []string, env cli.Env) int {
 		r.env.Getenv = func(string) string { return "" }
 	}
 	if r.env.Audit == nil {
-		r.audit = &auditor{override: auditPath, getenv: r.env.Getenv, now: r.env.Now}
-		r.env.Audit = r.audit.append
+		a := &auditor{override: auditPath, getenv: r.env.Getenv, now: r.env.Now}
+		r.env.Audit, r.env.AuditReady = a.append, a.open
 	}
 	stdout, stderr := r.env.Stdout, r.env.Stderr
 	if len(args) == 0 {

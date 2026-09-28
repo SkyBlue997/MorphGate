@@ -177,6 +177,8 @@ func TestValidationRules(t *testing.T) {
 		{"bad limiter id", fullYAML, "id: api-per-prefix", "id: Api", `"Api" does not match`},
 		{"reserved limiter id", fullYAML, "id: api-per-prefix", "id: mg.c.submit", `"mg." prefix is reserved`},
 		{"duplicate limiter", fullYAML, "id: api-per-prefix", "id: login-per-ip", `duplicate limiter id "login-per-ip"`},
+		// Ruling I-23: limiter ids are unique across environments too.
+		{"limiter id in two envs", fullYAML, "    automation_allowlist_only: true", "    automation_allowlist_only: true\n    rate_limits:\n      - {id: login-per-ip, key: [ip], rate: 5/1m, on_exceed: {action: block}}", `limiter id "login-per-ip" is already used by environments[production]; limiter ids are unique across the site`},
 		{"rate zero", fullYAML, "rate: 20/1m", "rate: 0/1m", "request count must be between 1"},
 		{"period zero", fullYAML, "rate: 20/1m", "rate: 20/0m", "duration must be at least 1"},
 		{"period too long", fullYAML, "rate: 20/1m", "rate: 20/25h", "at most 86400 s"},
@@ -301,9 +303,25 @@ func TestRouteAndLimiterCountLimits(t *testing.T) {
 		fmt.Fprintf(&limiters, "      - {id: l%d, key: [ip], rate: 10/s, on_exceed: {action: block}}\n", i)
 	}
 	base := read(t, minimalYAML)
+	// Ruling I-24: 64 declared routes plus the implicit default (65 in the
+	// bundle, what the Edge accepts); a 65th declared route is an error.
 	y := base + "    routes:\n" + routes.String()
-	if _, diags := Parse("x.yaml", []byte(y)); !strings.Contains(strings.Join(errorsOf(diags), "\n"), "65 routes (including default), at most 64") {
-		t.Errorf("64 routes + default: %v", errorsOf(diags))
+	s, diags := Parse("x.yaml", []byte(y))
+	if HasErrors(diags) {
+		t.Fatalf("64 routes + default: %v", errorsOf(diags))
+	}
+	if r := s.Environments[0].Routes; len(r) != 65 || !r[64].Implicit || r[64].Name != "default" {
+		t.Errorf("64 declared routes: %d routes, last %+v", len(r), r[len(r)-1])
+	}
+	y = base + "    routes:\n" + routes.String() + "      - {name: r64, paths: [\"/r64\"], sensitivity: low}\n"
+	if _, diags := Parse("x.yaml", []byte(y)); !strings.Contains(strings.Join(errorsOf(diags), "\n"), "65 declared routes, at most 64 (plus the implicit default)") {
+		t.Errorf("65 declared routes: %v", errorsOf(diags))
+	}
+	// 64 declared routes of which one is the catch-all: no default appended.
+	catchAll := strings.Replace(routes.String(), `{name: r0, paths: ["/r0"]`, `{name: r0, paths: ["/**"]`, 1)
+	s, diags = Parse("x.yaml", []byte(base+"    routes:\n"+catchAll))
+	if HasErrors(diags) || len(s.Environments[0].Routes) != 64 {
+		t.Errorf("64 routes with a catch-all: %v", errorsOf(diags))
 	}
 	y = base + "    rate_limits:\n" + limiters.String() + "      - {id: l64, key: [ip], rate: 10/s, on_exceed: {action: block}}\n"
 	if _, diags := Parse("x.yaml", []byte(y)); !strings.Contains(strings.Join(errorsOf(diags), "\n"), "65 limiters, at most 64") {
@@ -317,6 +335,42 @@ func TestRouteAndLimiterCountLimits(t *testing.T) {
 	y = strings.Replace(base, "token:", "lists: {big: ["+entries+"]}\ntoken:", 1)
 	if _, diags := Parse("x.yaml", []byte(y)); !strings.Contains(strings.Join(errorsOf(diags), "\n"), "10001 entries, at most 10000") {
 		t.Errorf("10001 list entries: %v", errorsOf(diags))
+	}
+}
+
+// TestLimiterIDsUniqueSiteWide: ruling I-23. The Valkey key of a limiter,
+// mg:rl:{site}:{limiter}:{kh}, has no environment part, so an id may appear
+// in one environment only; distinct ids across environments are fine.
+func TestLimiterIDsUniqueSiteWide(t *testing.T) {
+	two := func(prodID, stagingID string) string {
+		return fmt.Sprintf(`version: 1
+site: shop
+profile: direct_tls
+hosts: [shop.example.test, staging.example.test]
+allowed_listeners: [public-tls]
+token:
+  active_kid: shop-t-20260927
+environments:
+  - name: production
+    hosts: [shop.example.test]
+    rate_limits:
+      - {id: %s, key: [ip], rate: 20/1m, on_exceed: {action: block}}
+  - name: staging
+    hosts: [staging.example.test]
+    rate_limits:
+      - {id: other, key: [ip], rate: 20/1m, on_exceed: {action: block}}
+      - {id: %s, key: [ip], rate: 200/1m, on_exceed: {action: block}}
+`, prodID, stagingID)
+	}
+	s, diags := Parse("x.yaml", []byte(two("login-per-ip", "staging-login-per-ip")))
+	if HasErrors(diags) || len(s.Environments[1].RateLimits) != 2 {
+		t.Fatalf("distinct ids: %v", errorsOf(diags))
+	}
+	_, diags = Parse("x.yaml", []byte(two("login-per-ip", "login-per-ip")))
+	errs := errorsOf(diags)
+	want := `x.yaml:17:14: error: environments[staging].rate_limits[1].id: limiter id "login-per-ip" is already used by environments[production]`
+	if len(errs) != 1 || !strings.HasPrefix(errs[0], want) {
+		t.Errorf("same id in two environments: %v, want one error starting %q", errs, want)
 	}
 }
 

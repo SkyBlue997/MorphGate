@@ -34,9 +34,10 @@ type auditor struct {
 	log      *audit.Log
 }
 
-// open resolves the path and opens the log (idempotent). Write commands call
-// it before they change anything, so an unusable log fails the command with
-// exit code 3 before any key or bundle is written.
+// open resolves the path and opens the log (idempotent). It is
+// cli.Env.AuditReady: write commands call it before they change anything, so
+// an unusable log fails the command with exit code 3 before any key, bundle
+// or artifact is written.
 func (a *auditor) open() error {
 	if a.log != nil {
 		return nil
@@ -67,18 +68,18 @@ func (a *auditor) append(ev cli.AuditEvent) error {
 
 // runner carries one mgctl invocation.
 type runner struct {
-	env   cli.Env
-	audit *auditor // nil when the caller supplied env.Audit (tests)
+	env cli.Env
 	// auditPath is --audit-log, for `mgctl audit verify`.
 	auditPath string
 }
 
-// preflightAudit opens the audit log before a write command changes anything.
+// preflightAudit confirms the audit log is usable (env.AuditReady) before a
+// write command changes anything (ruling I-27).
 func (r *runner) preflightAudit(cmd string) bool {
-	if r.audit == nil {
+	if r.env.AuditReady == nil {
 		return true
 	}
-	if err := r.audit.open(); err != nil {
+	if err := r.env.AuditReady(); err != nil {
 		r.errf(cmd, "audit log: %v", err)
 		return false
 	}

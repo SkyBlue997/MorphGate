@@ -161,6 +161,10 @@ fn check_environments(b: &SiteBundle) -> Result {
     let site_hosts: BTreeSet<&str> = b.hosts.iter().map(String::as_str).collect();
     let mut env_names = BTreeSet::new();
     let mut covered: BTreeSet<&str> = BTreeSet::new();
+    // I-23: limiter ids are unique site-wide; the Valkey key
+    // mg:rl:{site}:{limiter}:{kh} has no environment part, so two
+    // environments reusing an id would share GCRA buckets.
+    let mut limiter_ids: BTreeSet<&str> = BTreeSet::new();
     for (i, env) in b.environments.iter().enumerate() {
         let at = |f: &str| format!("environments[{i}].{f}");
         ensure(
@@ -188,6 +192,13 @@ fn check_environments(b: &SiteBundle) -> Result {
             )?;
         }
         check_env(env, b.case_insensitive_paths, &at)?;
+        for (j, rl) in env.rate_limits.iter().enumerate() {
+            ensure(
+                limiter_ids.insert(rl.id.as_str()),
+                || at(&format!("rate_limits[{j}].id")),
+                "duplicate: limiter ids are unique across the site's environments",
+            )?;
+        }
     }
     ensure(
         covered.len() == site_hosts.len(),

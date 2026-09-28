@@ -1,173 +1,26 @@
-//! End-to-end: run the real `mg-edge` binary against an in-process origin on
-//! loopback and talk HTTP/1.1 to it. Only loopback addresses are used.
+//! End-to-end smoke test: the real `mg-edge` binary with an `edge.toml` v1
+//! (one `cloudflare` loopback listener, local state mode, a `file://` bundle
+//! root) in front of an in-process origin. Loopback only.
 
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+mod common;
 
-const EDGE_BIN: &str = env!("CARGO_BIN_EXE_mg-edge");
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-/// Origin that answers every request with 200 and reports which request line
-/// and `mg-*` headers it received.
-fn spawn_origin() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            std::thread::spawn(move || serve_one(stream));
-        }
-    });
-    addr
-}
-
-fn serve_one(mut s: TcpStream) {
-    let mut head = Vec::new();
-    let mut chunk = [0u8; 1024];
-    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
-        match s.read(&mut chunk) {
-            Ok(0) | Err(_) => return,
-            Ok(n) => head.extend_from_slice(&chunk[..n]),
-        }
-    }
-    let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
-    let seen: Vec<&str> = head
-        .lines()
-        .filter(|l| l.starts_with("get ") || l.starts_with("mg-") || l.starts_with("mg_"))
-        .collect();
-    let body = format!("origin saw: {}", seen.join(" | "));
-    let _ = write!(
-        s,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-}
-
-struct Response {
-    status: u16,
-    head: String,
-    body: String,
-}
-
-impl Response {
-    fn header(&self, name: &str) -> Option<&str> {
-        self.head.lines().find_map(|l| {
-            let (k, v) = l.split_once(':')?;
-            k.eq_ignore_ascii_case(name).then(|| v.trim())
-        })
-    }
-}
-
-fn get(addr: SocketAddr, path: &str, extra_headers: &str) -> std::io::Result<Response> {
-    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
-    s.set_read_timeout(Some(Duration::from_secs(5)))?;
-    write!(
-        s,
-        "GET {path} HTTP/1.1\r\nHost: smoke.test\r\nConnection: close\r\n{extra_headers}\r\n"
-    )?;
-    let mut raw = String::new();
-    s.read_to_string(&mut raw)?;
-    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((&raw, ""));
-    let status = head
-        .split_whitespace()
-        .nth(1)
-        .and_then(|c| c.parse().ok())
-        .unwrap_or(0);
-    Ok(Response {
-        status,
-        head: head.to_string(),
-        body: body.to_string(),
-    })
-}
-
-/// A running `mg-edge`; killed and cleaned up on drop.
-struct Edge {
-    child: Child,
-    config: PathBuf,
-    log: PathBuf,
-    listen: SocketAddr,
-    metrics: SocketAddr,
-}
-
-impl Edge {
-    fn start(origin: SocketAddr) -> Self {
-        let listen: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
-        let metrics: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
-        let tag = format!("mg-edge-smoke-{}-{}", std::process::id(), listen.port());
-        let config = std::env::temp_dir().join(format!("{tag}.toml"));
-        let log = std::env::temp_dir().join(format!("{tag}.log"));
-        std::fs::write(
-            &config,
-            format!(
-                "site_id = \"smoke\"\nlisten = \"{listen}\"\norigin = \"{origin}\"\n\
-                 upstream_profile = \"cloudflare\"\nmetrics_listen = \"{metrics}\"\n\
-                 [server]\nthreads = 1\n"
-            ),
-        )
-        .unwrap();
-        let child = Command::new(EDGE_BIN)
-            .arg("--config")
-            .arg(&config)
-            .stdout(Stdio::null())
-            .stderr(std::fs::File::create(&log).unwrap())
-            .spawn()
-            .expect("spawn mg-edge");
-        let edge = Self {
-            child,
-            config,
-            log,
-            listen,
-            metrics,
-        };
-        edge.wait_ready();
-        edge
-    }
-
-    fn wait_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            if get(self.listen, "/__mg/healthz", "").is_ok_and(|r| r.status == 200) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let log = std::fs::read_to_string(&self.log).unwrap_or_default();
-        panic!("mg-edge did not become ready; log:\n{log}");
-    }
-}
-
-impl Drop for Edge {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.config);
-        let _ = std::fs::remove_file(&self.log);
-    }
-}
+use common::{TestEnv, cf, get};
+use std::process::Command;
 
 #[test]
 fn edge_serves_healthz_proxies_origin_and_exposes_metrics() {
-    let origin = spawn_origin();
-    let edge = Edge::start(origin);
+    let env = TestEnv::new("smoke");
+    let edge = env.spawn(&env.write_config(&env.default_config("")));
 
-    let health = get(edge.listen, "/__mg/healthz", "").unwrap();
+    let health = get(env.listen, "example.com", "/__mg/healthz", "");
     assert_eq!(health.status, 200);
     assert_eq!(health.body, "ok");
     assert_eq!(health.header("cache-control"), Some("no-store, private"));
+    assert_eq!(health.header("x-content-type-options"), Some("nosniff"));
 
-    let reserved = get(edge.listen, "/__mg/does-not-exist", "").unwrap();
+    let reserved = get(env.listen, "example.com", "/__mg/does-not-exist", "");
     assert_eq!(reserved.status, 404);
     assert_eq!(reserved.header("cache-control"), Some("no-store, private"));
-    assert!(!reserved.body.contains("origin saw"));
 
     // Spellings that Cloudflare's rules normalize to /__mg/... (and exempt
     // from bot checks and caching) must not reach the origin either.
@@ -177,85 +30,157 @@ fn edge_serves_healthz_proxies_origin_and_exposes_metrics() {
         "/x/../__mg/c",
         "/%5F%5Fmg/..%2F..%2Fsecret.txt",
     ] {
-        let r = get(edge.listen, path, "").unwrap();
+        let r = get(env.listen, "example.com", path, "");
         assert_eq!(r.status, 404, "{path}: {}", r.head);
         assert_eq!(
             r.header("cache-control"),
             Some("no-store, private"),
             "{path}"
         );
-        assert!(!r.body.contains("origin saw"), "{path} reached the origin");
     }
-
-    let proxied = get(
-        edge.listen,
-        "/hello?x=1",
-        "MG-Bot-Score: 0\r\nmg-verified: googlebot\r\nMG_Bot_Class: human\r\nX-Other: kept\r\n",
-    )
-    .unwrap();
-    assert_eq!(proxied.status, 200, "{}", proxied.head);
     assert!(
-        proxied
-            .body
-            .starts_with("origin saw: get /hello?x=1 http/1.1"),
-        "{}",
-        proxied.body
-    );
-    assert!(
-        !proxied.body.contains("mg-") && !proxied.body.contains("mg_"),
-        "client MG-* headers must not reach the origin: {}",
-        proxied.body
+        env.origin.seen().iter().all(|s| !s.line.contains("mg")),
+        "a /__mg request reached the origin: {:?}",
+        env.origin.seen()
     );
 
-    let metrics = get(edge.metrics, "/metrics", "").unwrap();
-    assert_eq!(metrics.status, 200);
-    assert!(
-        metrics
-            .body
-            .contains("mg_edge_requests_total{route=\"healthz\",status=\"2xx\"}"),
-        "{}",
-        metrics.body
-    );
-    assert!(metrics.body.contains("route=\"origin\",status=\"2xx\""));
-    assert!(metrics.body.contains("mg_edge_info{"));
+    // A bootstrap-open site forwards (no bundle yet), with the Edge's headers.
+    let r = get(env.listen, "example.com", "/hello?x=1", &cf("198.51.100.7"));
+    assert_eq!(r.status, 200, "{}", r.head);
+    assert_eq!(r.body, "origin ok");
+    let seen = env.origin.last("/hello").unwrap();
+    assert_eq!(seen.line, "GET /hello?x=1 HTTP/1.1");
+    assert_eq!(seen.header("mg-client-ip"), Some("198.51.100.7"));
+    assert_eq!(seen.header("mg-request-id").map(str::len), Some(32));
+
+    // An unknown host is never forwarded.
+    let r = get(env.listen, "other.example", "/", "");
+    assert_eq!(r.status, 404);
+    assert_eq!(r.body, "unknown site");
+
+    let metrics = edge.metrics_text();
+    assert!(metrics.contains("mg_edge_requests_total{route=\"healthz\",status=\"2xx\"}"));
+    assert!(metrics.contains("route=\"origin\",status=\"2xx\""));
+    assert!(metrics.contains("mg_edge_info{"));
+    assert!(metrics.contains("mg_site_state{site=\"blog\",state=\"bootstrap_open\"} 1"));
+    assert!(metrics.contains("mg_unknown_host_total{listener=\"cf-tunnel\"} 1"));
+    assert!(env.origin.last("other.example").is_none());
 }
 
 #[test]
 fn check_config_flag_validates_and_exits() {
-    let dir = std::env::temp_dir();
-    let good = dir.join(format!("mg-edge-check-ok-{}.toml", std::process::id()));
-    let bad = dir.join(format!("mg-edge-check-bad-{}.toml", std::process::id()));
-    std::fs::write(
-        &good,
-        "site_id = \"s\"\nlisten = \"127.0.0.1:18080\"\norigin = \"127.0.0.1:18081\"\n\
-         upstream_profile = \"direct_tls\"\nmetrics_listen = \"127.0.0.1:19901\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        &bad,
-        "site_id = \"s\"\nlisten = \"127.0.0.1:18080\"\norigin = \"127.0.0.1:18081\"\n\
-         upstream_profile = \"cloudfront\"\nmetrics_listen = \"127.0.0.1:19901\"\n",
-    )
-    .unwrap();
-
-    let run = |path: &PathBuf| {
-        Command::new(EDGE_BIN)
-            .arg("--config")
-            .arg(path)
-            .arg("--check-config")
-            .output()
-            .unwrap()
-    };
-    let ok = run(&good);
-    let err = run(&bad);
-    let _ = std::fs::remove_file(&good);
-    let _ = std::fs::remove_file(&bad);
-
+    let env = TestEnv::new("check");
+    let good = env.write_config(&env.default_config(""));
+    let ok = env.check(&good);
     assert!(
         ok.status.success(),
         "{}",
         String::from_utf8_lossy(&ok.stderr)
     );
+    assert!(String::from_utf8_lossy(&ok.stdout).contains("OK"));
+    // §8.1: a loopback listener without upstream_keys in front of an origin
+    // on this host is a warning, not an error.
+    let stderr = String::from_utf8_lossy(&ok.stderr);
+    assert!(
+        stderr.contains("warning") && stderr.contains("has no upstream_keys"),
+        "{stderr}"
+    );
+    let with_keys = env.write_config(&env.default_config("").replace(
+        "profile = \"cloudflare\"\n",
+        "profile = \"cloudflare\"\nupstream_keys = \"cred://mg-upstream-keys\"\n",
+    ));
+    let out = env.check(&with_keys);
+    assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("upstream_keys"));
+
+    // A syntax / semantic error exits 2.
+    let bad = env.dir.join("bad.toml");
+    std::fs::write(
+        &bad,
+        env.default_config("")
+            .replace("profile = \"cloudflare\"", "profile = \"cloudfront\""),
+    )
+    .unwrap();
+    let err = env.check(&bad);
     assert_eq!(err.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&err.stderr).contains("unknown variant `cloudfront`"));
+
+    // The Phase 0 format is refused with a migration hint.
+    let phase0 = env.dir.join("phase0.toml");
+    std::fs::write(
+        &phase0,
+        "site_id = \"s\"\nlisten = \"127.0.0.1:18080\"\norigin = \"127.0.0.1:18081\"\n\
+         upstream_profile = \"cloudflare\"\nmetrics_listen = \"127.0.0.1:19901\"\n",
+    )
+    .unwrap();
+    let err = env.check(&phase0);
+    assert_eq!(err.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&err.stderr).contains("config_version is missing"));
+
+    // cred:// without CREDENTIALS_DIRECTORY is an error.
+    let out = Command::new(common::EDGE_BIN)
+        .args(["--check-config", "--config"])
+        .arg(&good)
+        .env_remove("CREDENTIALS_DIRECTORY")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("CREDENTIALS_DIRECTORY"));
+
+    // A key file for another site is an error.
+    std::fs::copy(
+        common::repo("testdata/phase1/keys/invalid/token.keys.site-shop.json"),
+        env.creds.join("mg-blog-token-keys"),
+    )
+    .unwrap();
+    let out = env.check(&good);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("token_keys"));
+}
+
+/// §8.1 "bundle_root: file:// 目录可读": `--check-config` fails on a
+/// `file://` bundle root that is not a readable directory (a typo would
+/// otherwise leave a bootstrap-open site forwarding unevaluated traffic
+/// forever). A running Edge still starts (the site stays in bootstrap and
+/// keeps polling), so a publish directory that is only briefly missing never
+/// takes every site down.
+#[test]
+fn check_config_requires_a_readable_file_bundle_root() {
+    let env = TestEnv::new("root");
+    let missing = env.dir.join("no-such-publish-dir");
+    let config = env.default_config("").replace(
+        &env.bundle_root(),
+        &format!("file://{}/", missing.display()),
+    );
+    let path = env.write_config(&config);
+    let out = env.check(&path);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("bundle_root") && stderr.contains("no-such-publish-dir"),
+        "{stderr}"
+    );
+
+    // A file is not a directory either.
+    let file = env.dir.join("a-file");
+    std::fs::write(&file, b"x").unwrap();
+    let path = env.write_config(
+        &env.default_config("")
+            .replace(&env.bundle_root(), &format!("file://{}/", file.display())),
+    );
+    assert_eq!(env.check(&path).status.code(), Some(2));
+
+    // The Edge itself starts and serves the site in bootstrap mode.
+    let path = env.write_config(&config);
+    let edge = env.spawn(&path);
+    assert_eq!(
+        get(env.listen, "example.com", "/root", &cf("198.51.100.7")).status,
+        200
+    );
+    assert!(edge.log_text().contains("no-such-publish-dir"));
 }

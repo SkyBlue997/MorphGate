@@ -38,7 +38,7 @@ fn registry() -> Arc<CrawlerRegistry> {
              "verify": {"mode": "ip_ranges_or_rdns", "rdns_suffixes": [".hybrid.example.test"]},
              "cidrs": ["198.51.100.0/25", "2001:db8:1::/48"], "sources": source},
             {"id": "dnsonly", "name": "DnsOnlyBot", "purpose": "archive", "ua_tokens": ["DnsOnlyBot"],
-             "verify": {"mode": "rdns", "rdns_suffixes": [".dnsonly.example.test", "exact.example.test"]},
+             "verify": {"mode": "rdns", "rdns_suffixes": [".dnsonly.example.test", ".crawl.example.test"]},
              "cidrs": [], "sources": []}
         ]
     });
@@ -294,10 +294,8 @@ fn complete_clears_inflight_and_ignores_unknown_operator() {
     let v = verifier();
     let (_, job) = v.check(DNSONLY_UA, some_ip("203.0.113.74"), NOW);
     let job = job.unwrap();
-    let stranger = RdnsJob {
-        operator_id: "not-in-registry".into(),
-        ..job.clone()
-    };
+    let mut stranger = job.clone();
+    stranger.operator_id = "not-in-registry".into();
     v.complete(&stranger, RdnsOutcome::Pass, NOW);
     v.abandon(&stranger);
     // Still in flight: the unknown operator touched nothing.
@@ -468,6 +466,129 @@ fn late_dns_error_does_not_replace_a_live_verdict() {
     );
 }
 
+/// A verifier that caches no result, so every `check` reaches the in-flight
+/// set.
+fn uncached_verifier() -> CrawlerVerifier {
+    CrawlerVerifier::new(
+        registry(),
+        CacheConfig {
+            pass_ttl_ms: 0,
+            fail_ttl_ms: 0,
+            error_ttl_ms: 0,
+            ..CacheConfig::default()
+        },
+    )
+}
+
+/// Ruling I-26: job A outlives its in-flight mark and job B takes the key
+/// over. Whatever A does afterwards (abandon, or complete with any outcome),
+/// B's mark stays, so no third job runs while B is in flight (§7.3: one job
+/// per `(ip, operator)`). Before I-26 a late `abandon` / `complete` removed
+/// the key's mark whoever owned it.
+#[test]
+fn stale_job_never_releases_a_newer_mark() {
+    type Finish = fn(&CrawlerVerifier, &RdnsJob, i64);
+    let finishes: [(&str, Finish); 4] = [
+        ("abandon", |v, j, _| v.abandon(j)),
+        ("pass", |v, j, t| v.complete(j, RdnsOutcome::Pass, t)),
+        ("fail", |v, j, t| v.complete(j, RdnsOutcome::Fail, t)),
+        ("dns_error", |v, j, t| {
+            v.complete(j, RdnsOutcome::DnsError, t)
+        }),
+    ];
+    let addr = some_ip("203.0.113.110");
+    for (how, finish) in finishes {
+        let v = uncached_verifier();
+        let a = v.check(DNSONLY_UA, addr, NOW).1.expect("job A");
+        assert!(v.check(DNSONLY_UA, addr, NOW + 4_999).1.is_none());
+        let b = v
+            .check(DNSONLY_UA, addr, NOW + 5_000)
+            .1
+            .expect("A's mark expired: job B");
+        assert_ne!(a, b, "a new job has a new identity");
+        finish(&v, &a, NOW + 6_000);
+        for dt in [6_001, 9_999] {
+            assert_eq!(
+                v.check(DNSONLY_UA, addr, NOW + dt),
+                (pending("dnsonly", "archive", false), None),
+                "late {how} of A released B's mark (+{dt} ms)"
+            );
+        }
+        // B's own report releases it (a clone is the same job).
+        finish(&v, &b.clone(), NOW + 7_000);
+        assert!(
+            v.check(DNSONLY_UA, addr, NOW + 7_001).1.is_some(),
+            "{how} of B kept its mark"
+        );
+    }
+}
+
+/// A stale job's outcome is still evidence about the address and is cached
+/// (a late `DnsError` never replaces a live verdict, see above); only the
+/// newer job's in-flight mark is out of its reach.
+#[test]
+fn stale_job_outcome_is_cached_but_mark_kept() {
+    let v = verifier();
+    let addr = some_ip("203.0.113.111");
+    let a = v.check(DNSONLY_UA, addr, NOW).1.expect("job A");
+    let b = v.check(DNSONLY_UA, addr, NOW + 5_000).1.expect("job B");
+    v.complete(&a, RdnsOutcome::Pass, NOW + 6_000);
+    assert_eq!(
+        v.check(DNSONLY_UA, addr, NOW + 6_001),
+        (verified("dnsonly", "archive", VerifyMethod::Rdns), None)
+    );
+    assert!(format!("{v:?}").contains("inflight: 1"), "{v:?}");
+    v.complete(&b, RdnsOutcome::Fail, NOW + 6_002);
+    assert!(format!("{v:?}").contains("inflight: 0"), "{v:?}");
+    assert_eq!(
+        v.check(DNSONLY_UA, addr, NOW + 6_003),
+        (failed("dnsonly", "archive", VerifyMethod::Rdns), None)
+    );
+}
+
+/// Only the verifier that issued a job acts on it: a job of another verifier
+/// (for example one replaced on a bundle reload, whose suffixes may be stale)
+/// and a detached `RdnsJob::new` job neither release a mark nor seed the
+/// cache, even when they name the same `(ip, operator)`.
+#[test]
+fn foreign_and_detached_jobs_are_ignored() {
+    let (v1, v2) = (uncached_verifier(), verifier());
+    let addr = some_ip("203.0.113.112");
+    let j1 = v1.check(DNSONLY_UA, addr, NOW).1.expect("v1 job");
+    let j2 = v2.check(DNSONLY_UA, addr, NOW).1.expect("v2 job");
+    assert!(j1.issued_by(&v1) && !j1.issued_by(&v2));
+    assert!(j2.issued_by(&v2) && !j2.issued_by(&v1));
+    assert_eq!((j1.ip, &j1.operator_id), (j2.ip, &j2.operator_id));
+    let detached = RdnsJob::new(
+        ip("203.0.113.112"),
+        "dnsonly",
+        vec![".dnsonly.example.test".into()],
+    );
+    assert!(!detached.issued_by(&v1) && !detached.issued_by(&v2));
+
+    for other in [&j1, &detached] {
+        v2.abandon(other);
+        v2.complete(other, RdnsOutcome::Pass, NOW + 1);
+    }
+    assert_eq!(
+        v2.check(DNSONLY_UA, addr, NOW + 2),
+        (pending("dnsonly", "archive", false), None),
+        "a job v2 did not issue touched v2"
+    );
+    v1.abandon(&j2);
+    v1.abandon(&detached);
+    assert!(v1.check(DNSONLY_UA, addr, NOW + 2).1.is_none());
+
+    // Each verifier's own job still works.
+    v2.complete(&j2, RdnsOutcome::Fail, NOW + 3);
+    assert_eq!(
+        v2.check(DNSONLY_UA, addr, NOW + 4),
+        (failed("dnsonly", "archive", VerifyMethod::Rdns), None)
+    );
+    v1.abandon(&j1);
+    assert!(v1.check(DNSONLY_UA, addr, NOW + 4).1.is_some());
+}
+
 #[test]
 fn zero_ttl_caches_nothing_and_config_is_clamped() {
     let v = CrawlerVerifier::new(
@@ -540,11 +661,11 @@ fn verifier_is_send_and_sync() {
 // ---------------------------------------------------------------------------
 
 fn job(addr: &str, suffixes: &[&str]) -> RdnsJob {
-    RdnsJob {
-        ip: ip(addr),
-        operator_id: "x".into(),
-        suffixes: suffixes.iter().map(|s| (*s).to_owned()).collect(),
-    }
+    RdnsJob::new(
+        ip(addr),
+        "x",
+        suffixes.iter().map(|s| (*s).to_owned()).collect(),
+    )
 }
 
 const G: &[&str] = &[".googlebot.com", ".google.com"];
@@ -575,11 +696,14 @@ fn rdns_case_and_trailing_dot_insensitive() {
     );
 }
 
-/// Suffixes match on label boundaries only; a non-dot suffix is a full name.
+/// Suffixes match on label boundaries only (ruling I-22): `.googlebot.com`
+/// never matches `evilgooglebot.com`, and a suffix without the leading dot or
+/// with a single label matches nothing, not even the name it spells.
 #[test]
 fn rdns_suffix_label_boundary() {
     for name in [
         "evilgooglebot.com.",
+        "crawl.evilgooglebot.com.",
         "googlebot.com.",
         "crawl.googlebot.com.evil.test.",
     ] {
@@ -594,21 +718,34 @@ fn rdns_suffix_label_boundary() {
         // A non-matching name is never looked up forward.
         assert_eq!(r.calls().len(), 1, "{name}");
     }
-    let exact = &["crawler.example.test"];
+    // The same hosts pass once they sit below the suffix's label boundary.
     let r = Scripted::default()
-        .ptr("203.0.113.9", Ok(&["crawler.example.test."]))
-        .fwd("crawler.example.test.", Ok(&["203.0.113.9"]));
+        .ptr("203.0.113.9", Ok(&["evil.googlebot.com."]))
+        .fwd("evil.googlebot.com.", Ok(&["203.0.113.9"]));
     assert_eq!(
-        block_on(resolve_rdns(&job("203.0.113.9", exact), &r)),
+        block_on(resolve_rdns(&job("203.0.113.9", G), &r)),
         RdnsOutcome::Pass
     );
-    let r = Scripted::default()
-        .ptr("203.0.113.9", Ok(&["a.crawler.example.test."]))
-        .fwd("a.crawler.example.test.", Ok(&["203.0.113.9"]));
-    assert_eq!(
-        block_on(resolve_rdns(&job("203.0.113.9", exact), &r)),
-        RdnsOutcome::Fail
-    );
+    // Suffixes of any other shape (a job built by hand; the registry rejects
+    // them) match nothing and are never looked up forward: fail closed.
+    for (suffix, name) in [
+        ("googlebot.com", "googlebot.com."),
+        ("googlebot.com", "evilgooglebot.com."),
+        ("googlebot.com", "crawl.googlebot.com."),
+        (".com", "crawl.googlebot.com."),
+        ("com", "crawl.googlebot.com."),
+        (".googlebot.com.", "crawl.googlebot.com."),
+    ] {
+        let r = Scripted::default()
+            .ptr("203.0.113.9", Ok(&[name]))
+            .fwd(name, Ok(&["203.0.113.9"]));
+        assert_eq!(
+            block_on(resolve_rdns(&job("203.0.113.9", &[suffix]), &r)),
+            RdnsOutcome::Fail,
+            "{suffix} vs {name}"
+        );
+        assert_eq!(r.calls().len(), 1, "{suffix} vs {name}");
+    }
 }
 
 /// An impersonator controls its own PTR record but not the operator's zone:

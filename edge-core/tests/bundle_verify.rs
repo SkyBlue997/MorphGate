@@ -552,6 +552,19 @@ fn bounds_are_enforced() {
             env(b).rate_limits.insert(0, limiter("a"));
             env(b).rate_limits.insert(0, limiter("a"));
         }),
+        // I-23: limiter ids are unique across the whole site, because the
+        // Valkey key mg:rl:{site}:{limiter}:{kh} has no environment part.
+        ("environments[1].rate_limits[0].id", |b| {
+            let mut e = b.environments[0].clone();
+            e.name = "staging".into();
+            e.hosts = vec!["www.example.com".into()];
+            // A limiter of production ("login-per-ip") reused in staging.
+            let mut reused = limiter("login-per-ip");
+            reused.route_ids = vec!["login".into()];
+            e.rate_limits = vec![reused];
+            b.environments[0].hosts = vec!["example.com".into()];
+            b.environments.push(e);
+        }),
         ("environments[0].rate_limits[0].algorithm", |b| {
             let mut l = limiter("a");
             l.algorithm = "token_bucket".into();
@@ -1008,6 +1021,10 @@ fn bound_edges_are_accepted() {
             let mut e = b.environments[0].clone();
             e.name = "staging".into();
             e.hosts = vec!["www.example.com".into()];
+            // I-23: the copied limiters need ids of their own.
+            for l in &mut e.rate_limits {
+                l.id = format!("stg-{}", l.id);
+            }
             b.environments[0].hosts = vec!["example.com".into()];
             b.environments.push(e);
         }),

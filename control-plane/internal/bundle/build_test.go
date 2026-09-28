@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -215,6 +216,36 @@ func TestBuildLowerCasesPatternsForCaseInsensitivePaths(t *testing.T) {
 	}
 	if got := res.Bundle.Environments[0].Routes[0].Paths; !slices.Equal(got, []string{"/account/login", "/api/**"}) || !res.Bundle.CaseInsensitivePaths {
 		t.Errorf("paths %v", got)
+	}
+}
+
+// Ruling I-24: 64 declared routes build, and the 65th route in the bundle is
+// exactly the builder default {id: "default", paths: ["/**"]} with no host or
+// method restriction, the only 65th route the Edge's verify_bundle accepts.
+func TestBuildSixtyFourDeclaredRoutesPlusDefault(t *testing.T) {
+	var routes strings.Builder
+	routes.WriteString("    routes:\n")
+	for i := range sitecfg.MaxRoutesPerEnv {
+		fmt.Fprintf(&routes, "      - {name: r%d, paths: [\"/R%d/**\"], methods: [GET], sensitivity: low}\n", i, i)
+	}
+	base := mustRead(t, minimalYAML)
+	for _, ci := range []bool{false, true} {
+		y := strings.Replace(base, "    hosts: [shop.example.test]\n", "    hosts: [shop.example.test]\n"+routes.String(), 1)
+		if ci {
+			y += "case_insensitive_paths: true\n"
+		}
+		res, err := Build(loadSite(t, writeSite(t, y, nil)), BuildOptions{Version: 1, Now: buildTime})
+		if err != nil {
+			t.Fatalf("case_insensitive_paths %v: %v", ci, err)
+		}
+		got := res.Bundle.Environments[0].Routes
+		if len(got) != sitecfg.MaxRoutesPerEnv+1 {
+			t.Fatalf("case_insensitive_paths %v: %d routes, want %d", ci, len(got), sitecfg.MaxRoutesPerEnv+1)
+		}
+		last := got[len(got)-1]
+		if last.Id != "default" || last.Name != "default" || !slices.Equal(last.Paths, []string{"/**"}) || len(last.Hosts) != 0 || len(last.Methods) != 0 {
+			t.Errorf("case_insensitive_paths %v: last route %v, want the builder default", ci, last)
+		}
 	}
 }
 

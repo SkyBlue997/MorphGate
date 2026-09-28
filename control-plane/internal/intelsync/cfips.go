@@ -215,6 +215,9 @@ func SyncCloudflareIPs(ctx context.Context, env cli.Env, fc fetchConfig, opts CF
 	if _, err := checkHTTPSURL(src); err != nil {
 		return nil, usageErr(fmt.Errorf("--url: %w", err))
 	}
+	if err := auditPreflight(env); err != nil {
+		return nil, err
+	}
 	now := envNow(env)
 
 	prevPath, explicitPrev := opts.Previous, opts.Previous != ""

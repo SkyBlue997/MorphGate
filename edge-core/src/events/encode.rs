@@ -81,22 +81,28 @@ pub struct SampleInputs {
     pub monitor: bool,
 }
 
-/// Sampling rate of one decision event (§9.11): 1 when the action is not
-/// ALLOW / TAG / LOG, the route is high / critical, `force_log` is set, a hit
-/// is `missing_input` / `eval_error` / `dry_run`, or the site is in monitor
-/// mode and the recorded action is not ALLOW; otherwise
-/// `events.allow_sample_rate`, clamped to 0..=1 (NaN keeps everything).
-/// The returned value is what the event records as `sample_rate`.
-pub fn decision_sample_rate(inputs: &SampleInputs, allow_sample_rate: f32) -> f32 {
-    let always = !inputs.action.reaches_origin()
+/// Whether a decision event is exempt from sampling (§9.11): the action is
+/// not ALLOW / TAG / LOG, the route is high / critical, `force_log` is set,
+/// a hit is `missing_input` / `eval_error` / `dry_run`, or the site is in
+/// monitor mode and the recorded action is not ALLOW. Exempt events are the
+/// ones that must survive (queue class P0); the others are sampled (P2).
+pub fn sampling_exempt(inputs: &SampleInputs) -> bool {
+    !inputs.action.reaches_origin()
         || matches!(
             inputs.sensitivity,
             RouteSensitivity::High | RouteSensitivity::Critical
         )
         || inputs.force_log
         || inputs.flagged_hit
-        || (inputs.monitor && inputs.action != Action::Allow);
-    if always || allow_sample_rate.is_nan() {
+        || (inputs.monitor && inputs.action != Action::Allow)
+}
+
+/// Sampling rate of one decision event (§9.11): 1 when
+/// [`sampling_exempt`], otherwise `events.allow_sample_rate`, clamped to
+/// 0..=1 (NaN keeps everything). The returned value is what the event
+/// records as `sample_rate`.
+pub fn decision_sample_rate(inputs: &SampleInputs, allow_sample_rate: f32) -> f32 {
+    if sampling_exempt(inputs) || allow_sample_rate.is_nan() {
         1.0
     } else {
         allow_sample_rate.clamp(0.0, 1.0)

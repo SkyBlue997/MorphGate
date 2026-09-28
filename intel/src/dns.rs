@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use mg_core::BoxFuture;
 use serde::Deserialize;
 
-use crate::crawler::{RdnsJob, RdnsOutcome};
+use crate::crawler::{RdnsJob, RdnsOutcome, is_rdns_suffix};
 use crate::error::{IntelError, quote};
 
 /// A failed DNS query.
@@ -50,9 +50,11 @@ const MAX_NAME_LEN: usize = 253;
 
 /// Runs the rDNS verification for a job: one PTR query, then a forward query
 /// for each of at most [`MAX_PTR_NAMES`] names that ends with one of the
-/// job's suffixes (case-insensitive, trailing dot ignored; a suffix starting
-/// with `.` matches on a label boundary, any other suffix must equal the
-/// whole name).
+/// job's suffixes on a label boundary (case-insensitive, the name's trailing
+/// dot ignored). A suffix is a leading `.` and at least two labels (ruling
+/// I-22): `.googlebot.com` matches `crawl-1.googlebot.com` but neither
+/// `googlebot.com` nor `evilgooglebot.com`; a suffix of any other shape
+/// matches nothing.
 ///
 /// * a forward answer contains the job's address → `Pass`;
 /// * otherwise, any `Timeout` / `Server` error → `DnsError`;
@@ -104,20 +106,16 @@ fn normalize_name(raw: &str) -> Option<String> {
     Some(name.to_ascii_lowercase())
 }
 
-/// `name` is normalised (lower-case, no trailing dot, no empty labels).
+/// Label-boundary suffix match (ruling I-22). `name` is normalised
+/// (lower-case, no trailing dot, no empty labels); `suffix` must have the
+/// registry shape ([`is_rdns_suffix`]: leading `.`, at least two labels), or
+/// nothing matches, so a job built by hand with a bare `googlebot.com` or a
+/// one-label `.com` fails closed. The suffix's leading dot is the label
+/// separator, and at least one label of `name` must precede it.
 pub(crate) fn suffix_matches(name: &str, suffix: &str) -> bool {
-    let suffix = suffix.strip_suffix('.').unwrap_or(suffix);
-    if suffix.is_empty() || suffix == "." {
-        return false;
-    }
-    if suffix.starts_with('.') {
-        // Label boundary: the suffix's leading dot is the separator, and at
-        // least one label must precede it.
-        name.len() > suffix.len()
-            && name.as_bytes()[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
-    } else {
-        name.eq_ignore_ascii_case(suffix)
-    }
+    is_rdns_suffix(suffix)
+        && name.len() > suffix.len()
+        && name.as_bytes()[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
 }
 
 /// A resolver that answers from a fixed JSON table (tests and the Validation
@@ -223,20 +221,30 @@ impl DnsResolver for StaticResolver {
 mod tests {
     use super::*;
 
-    /// §7.3: label-boundary and exact-name suffix matching.
+    /// §7.3 / I-22: suffixes match only on a label boundary, and only
+    /// suffixes of the registry shape (leading `.`, at least two labels)
+    /// match at all.
     #[test]
     fn suffix_matching() {
         let cases = [
             ("crawl-1.googlebot.com", ".googlebot.com", true),
             ("a.b.googlebot.com", ".googlebot.com", true),
             ("crawl-1.googlebot.com", ".GoogleBot.com", true),
-            ("crawl-1.googlebot.com", ".googlebot.com.", true),
+            ("x.search.msn.com", ".search.msn.com", true),
             ("googlebot.com", ".googlebot.com", false),
             ("evilgooglebot.com", ".googlebot.com", false),
+            ("crawl.evilgooglebot.com", ".googlebot.com", false),
             ("crawl.googlebot.com.evil.test", ".googlebot.com", false),
-            ("googlebot.com", "googlebot.com", true),
-            ("googlebot.com", "googlebot.com.", true),
+            ("msn.com", ".search.msn.com", false),
+            ("xsearch.msn.com", ".search.msn.com", false),
+            // Not the registry shape: never matches, fails closed.
+            ("googlebot.com", "googlebot.com", false),
+            ("evilgooglebot.com", "googlebot.com", false),
             ("crawl.googlebot.com", "googlebot.com", false),
+            ("crawl-1.googlebot.com", ".googlebot.com.", false),
+            ("crawl-1.googlebot.com", ".com", false),
+            ("crawl-1.googlebot.com", "com", false),
+            ("a..googlebot.com", "..googlebot.com", false),
             ("x.com", ".", false),
             ("x.com", "", false),
         ];

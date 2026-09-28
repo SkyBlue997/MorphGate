@@ -2,7 +2,8 @@
 //! steps 3 and 5; WP-C1).
 
 use mg_edge_core::upstream::{
-    FAMILY_NAMES, FAMILY_PREFIXES, HOP_BY_HOP, connection_listed, hop_by_hop, is_upstream_family,
+    FAMILY_NAMES, FAMILY_PREFIXES, FRAMING, HOP_BY_HOP, connection_listed, hop_by_hop,
+    is_upstream_family,
 };
 
 fn headers<'a>(pairs: &'a [(&'a str, &'a str)]) -> Vec<(&'a str, &'a [u8])> {
@@ -263,6 +264,29 @@ fn hop_by_hop_leaves_family_names_to_step_5() {
     for name in &listed {
         assert!(hop.contains(name) || is_upstream_family(name), "{name}");
     }
+}
+
+/// §9.3 step 3 never removes the message framing: a `Connection` listing of
+/// `Content-Length` or `Transfer-Encoding` would otherwise make the proxy
+/// read the body as empty and parse it as a second (smuggled) request.
+#[test]
+fn hop_by_hop_never_removes_the_message_framing() {
+    let h = headers(&[
+        (
+            "Connection",
+            "keep-alive, Content-Length, transfer-encoding, TRANSFER-ENCODING, X-Custom",
+        ),
+        ("Content-Length", "10"),
+    ]);
+    let listed = connection_listed(&h);
+    assert!(listed.contains(&"content-length".to_owned()));
+    assert!(listed.contains(&"transfer-encoding".to_owned()));
+    let hop = hop_by_hop(&h);
+    for name in FRAMING {
+        assert!(!hop.contains(&name.to_owned()), "{name}: {hop:?}");
+    }
+    assert!(hop.contains(&"x-custom".to_owned()), "{hop:?}");
+    assert_eq!(FRAMING, ["content-length", "transfer-encoding"]);
 }
 
 /// §9.3 step 3: `Upgrade` is kept only for a WebSocket upgrade.

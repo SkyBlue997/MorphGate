@@ -235,7 +235,7 @@ func (l *lowerer) selection(e celast.Expr) *morphgatev1.Expr {
 		if n := len(sel.FieldName()); n > MaxIRStringBytes {
 			return l.unsupported(e, "map key of %d bytes (limit %d)", n, MaxIRStringBytes)
 		}
-		return &morphgatev1.Expr{Kind: &morphgatev1.Expr_IndexMap{IndexMap: &morphgatev1.Binary{Lhs: m, Rhs: irString(sel.FieldName())}}}
+		return l.indexMap(e, m, irString(sel.FieldName()))
 	}
 	p := selectPath(e)
 	if p == "" || !isSchemaPath(p) {
@@ -370,7 +370,7 @@ func (l *lowerer) call(e celast.Expr) *morphgatev1.Expr {
 		case !ok:
 			return nil
 		case l.overloadIs(e, overloads.IndexMap):
-			return &morphgatev1.Expr{Kind: &morphgatev1.Expr_IndexMap{IndexMap: &morphgatev1.Binary{Lhs: out[0], Rhs: out[1]}}}
+			return l.indexMap(e, out[0], out[1])
 		case l.overloadIs(e, overloads.IndexList):
 			return l.unsupported(e, "list index l[i]")
 		}
@@ -430,6 +430,20 @@ func (l *lowerer) call(e celast.Expr) *morphgatev1.Expr {
 		return l.unsupported(e, "arithmetic (%s)", op)
 	}
 	return l.unsupported(e, "function %s()", fn)
+}
+
+// indexMap builds index_map(m, k) for m[k] and the select form m.k. Only a
+// map field can be indexed (ruling I-20): an index or select on a computed
+// map, the result of a ?: whose branches are maps, is rejected. Such an
+// operand has no single §5.3 size bound S(m[k]) (the branches may be maps of
+// different value types), and cel-go evaluates an index on a computed operand
+// lazily rather than strictly, so the reference semantics would diverge from
+// the Edge's. Indexing inside each branch, c ? m[k] : m[k], says the same.
+func (l *lowerer) indexMap(e celast.Expr, m, k *morphgatev1.Expr) *morphgatev1.Expr {
+	if _, isField := m.GetKind().(*morphgatev1.Expr_Field); !isField {
+		return l.unsupported(e, "computed map; index or select a map field directly (c ? m[k] : m[k] instead of (c ? m : m)[k])")
+	}
+	return &morphgatev1.Expr{Kind: &morphgatev1.Expr_IndexMap{IndexMap: &morphgatev1.Binary{Lhs: m, Rhs: k}}}
 }
 
 func flattenLogical(e celast.Expr, fn string, out *[]celast.Expr) {

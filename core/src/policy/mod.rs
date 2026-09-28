@@ -27,8 +27,8 @@ pub use fields::{
 pub use glob::{Glob, GlobError, MAX_GLOB_LEN};
 pub use ip::{NamedList, NamedLists};
 pub use ir::{
-    CompareOp, Expr, ListId, Literal, MAX_DEPTH, MAX_LIST_LITERAL, MAX_NODES, MAX_STEPS,
-    MAX_STRING_LITERAL, NAMED_LIST_CAP, Program, ProgramError, StringFn, max_steps,
+    COMPUTED_MAP_INDEX, CompareOp, Expr, ListId, Literal, MAX_DEPTH, MAX_LIST_LITERAL, MAX_NODES,
+    MAX_STEPS, MAX_STRING_LITERAL, NAMED_LIST_CAP, Program, ProgramError, StringFn, max_steps,
 };
 
 #[cfg(test)]

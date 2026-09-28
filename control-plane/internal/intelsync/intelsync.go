@@ -64,6 +64,22 @@ func audit(env cli.Env, ev cli.AuditEvent) error {
 	return env.Audit(ev)
 }
 
+// auditPreflight confirms that the audit log is usable before a sync fetches
+// or writes anything (ruling I-27): the artifact, <out>.state.json and the
+// metrics textfile are only written when the change can also be recorded.
+// The error maps to exit code 3.
+func auditPreflight(env cli.Env) error {
+	if env.Audit == nil {
+		return internalErr(errors.New("audit log: no audit log configured"))
+	}
+	if env.AuditReady != nil {
+		if err := env.AuditReady(); err != nil {
+			return internalErr(fmt.Errorf("audit log: %w", err))
+		}
+	}
+	return nil
+}
+
 func stderr(env cli.Env) io.Writer {
 	if env.Stderr != nil {
 		return env.Stderr
@@ -85,8 +101,8 @@ func newFlagSet(name string, env cli.Env) *flag.FlagSet {
 }
 
 // auditLogFlag accepts --audit-log on write commands (§14.1). The mgctl
-// dispatcher (internal/mgctl) resolves the audit log and binds env.Audit to
-// it; this package only has to accept the flag.
+// dispatcher (internal/mgctl) resolves the audit log and binds env.Audit and
+// env.AuditReady to it; this package only has to accept the flag.
 func auditLogFlag(fs *flag.FlagSet) {
 	fs.String("audit-log", "", "audit log path (handled by mgctl; default $MGCTL_AUDIT_LOG or the XDG state dir)")
 }

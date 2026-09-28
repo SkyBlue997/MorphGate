@@ -42,12 +42,33 @@ func TestSharedArtifactSamples(t *testing.T) {
 	if err != nil || len(invalid) == 0 {
 		t.Fatalf("no invalid samples: %v", err)
 	}
+	// Ruling I-22 samples: rejected for the suffix shape, like the Edge does.
+	reasons := map[string]string{
+		"crawler-registry.suffix-without-dot.json":  "must start with '.' followed by at least two labels",
+		"crawler-registry.single-label-suffix.json": "must start with '.' followed by at least two labels",
+	}
 	for _, e := range invalid {
 		data, _ := os.ReadFile(filepath.Join(artifactsDir, "invalid", e.Name()))
-		if _, err := ValidateArtifact(artifactKind(e.Name()), data); err == nil {
+		_, err := ValidateArtifact(artifactKind(e.Name()), data)
+		switch {
+		case err == nil:
 			t.Errorf("invalid/%s was accepted", e.Name())
-		} else {
+		case reasons[e.Name()] != "" && !strings.Contains(err.Error(), reasons[e.Name()]):
+			t.Errorf("invalid/%s: %v, want an error containing %q", e.Name(), err, reasons[e.Name()])
+		default:
 			t.Logf("invalid/%s: %v", e.Name(), err)
+		}
+	}
+}
+
+func TestRDNSSuffixShape(t *testing.T) {
+	for s, want := range map[string]bool{
+		".googlebot.com": true, ".a.b": true, ".search.msn.com": true,
+		"googlebot.com": false, ".com": false, ".": false, "": false,
+		"..googlebot.com": false, ".googlebot..com": false, ".googlebot.com.": false,
+	} {
+		if got := rdnsSuffixShape(s); got != want {
+			t.Errorf("rdnsSuffixShape(%q) = %v, want %v", s, got, want)
 		}
 	}
 }
@@ -122,6 +143,12 @@ func TestArtifactRules(t *testing.T) {
 		{"bad source sha", "crawler-registry", bytes.Replace(reg, []byte(`"sha256": "3b5d`), []byte(`"sha256": "3B5D`), 1), false},
 		{"short ua token", "crawler-registry", bytes.Replace(reg, []byte("[\n        \"GPTBot\"\n      ]"), []byte(`["GP"]`), 1), false},
 		{"unknown purpose", "crawler-registry", bytes.Replace(reg, []byte(`"purpose": "search"`), []byte(`"purpose": "seo"`), 1), false},
+		// mg-intel rejects any suffix with a char::is_uppercase character
+		// (Unicode Uppercase: Lu plus Other_Uppercase), also those that
+		// strings.ToLower leaves unchanged (U+210B, U+1F130).
+		{"suffix upper without lower-case form", "crawler-registry", bytes.Replace(reg, []byte(`".googlebot.com"`), []byte(`".ℋx.googlebot.com"`), 1), false},
+		{"suffix other-uppercase", "crawler-registry", bytes.Replace(reg, []byte(`".googlebot.com"`), []byte(`".\ud83c\udd30x.googlebot.com"`), 1), false},
+		{"suffix non-ASCII lower-case", "crawler-registry", bytes.Replace(reg, []byte(`".googlebot.com"`), []byte(`".éx.googlebot.com"`), 1), true},
 		{"asn with prefix", "datacenter-asns", []byte("AS13335\nas15169 # x\n"), true},
 		{"asn zero", "datacenter-asns", []byte("0\n"), false},
 		{"asn too large", "datacenter-asns", []byte("4294967296\n"), false},

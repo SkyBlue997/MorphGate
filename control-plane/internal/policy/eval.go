@@ -8,11 +8,9 @@ import (
 
 	"github.com/google/cel-go/cel"
 	celast "github.com/google/cel-go/common/ast"
-	"github.com/google/cel-go/common/operators"
 	"github.com/google/cel-go/common/overloads"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
-	"github.com/google/cel-go/common/types/traits"
 	"github.com/google/cel-go/interpreter"
 )
 
@@ -63,23 +61,6 @@ func NewEvaluator(lists map[string][]string) (*Evaluator, error) {
 		l, ok := lists[name]
 		return l, ok
 	})
-	if err != nil {
-		return nil, err
-	}
-	// The strict map index that strictIndex rewrites computed-map indexes
-	// to. Its name starts with '@', so policy source can never call it; it
-	// exists only in the evaluator's environment, not in the compiler's.
-	v := cel.TypeParamType("V")
-	env, err = env.Extend(cel.Function(strictIndexFunction,
-		cel.Overload("mg_strict_index_map_string",
-			[]*cel.Type{cel.MapType(cel.StringType, v), cel.StringType}, v,
-			cel.BinaryBinding(func(m, k ref.Val) ref.Val {
-				idx, ok := m.(traits.Indexer)
-				if !ok {
-					return types.MaybeNoSuchOverloadErr(m)
-				}
-				return idx.Get(k)
-			}))))
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +132,7 @@ func (e *Evaluator) evaluate(cr *CheckedRule, in *Input, missing []string, costL
 		patterns = append(patterns, pat)
 	}
 
-	opt, err := cel.NewStaticOptimizer(hasSubstitution{missing: missing}, strictIndex{})
+	opt, err := cel.NewStaticOptimizer(hasSubstitution{missing: missing})
 	if err != nil {
 		return ResultError, nil, err
 	}
@@ -239,39 +220,6 @@ func (h hasSubstitution) Optimize(ctx *cel.OptimizerContext, a *celast.AST) *cel
 			continue
 		}
 		e.SetKindCase(ctx.NewLiteral(types.Bool(!isMissing(p, h.missing))))
-	}
-	return a
-}
-
-// strictIndexFunction is the evaluator-only strict map index (see strictIndex).
-const strictIndexFunction = "@mg_strict_index"
-
-// strictIndex is a cel-go AST optimizer that rewrites m[k] into the strict
-// function @mg_strict_index(m, k) when m is computed (a conditional) rather
-// than a field. cel-go resolves an index on a computed operand as a relative
-// attribute: it evaluates the operand and returns it when it is unknown,
-// without evaluating the key, so `(c ? m1 : m2)[k]` with an UNKNOWN c and an
-// ERROR k would be unknown. index_map is a strict node in spec §5.3 (the
-// first ERROR of its children wins over UNKNOWN), and a strict cel-go
-// function has exactly those semantics. Indexes on fields (req.headers[k],
-// rate[k]) are absolute attributes, which cel-go already evaluates strictly;
-// they are left alone.
-type strictIndex struct{}
-
-// Optimize implements cel.ASTOptimizer.
-func (strictIndex) Optimize(ctx *cel.OptimizerContext, a *celast.AST) *celast.AST {
-	var indexes []celast.Expr
-	celast.PostOrderVisit(a.Expr(), celast.NewExprVisitor(func(e celast.Expr) {
-		if e.Kind() != celast.CallKind || e.AsCall().FunctionName() != operators.Index {
-			return
-		}
-		if args := e.AsCall().Args(); len(args) == 2 && selectPath(args[0]) == "" {
-			indexes = append(indexes, e)
-		}
-	}))
-	for _, e := range indexes {
-		args := e.AsCall().Args()
-		e.SetKindCase(ctx.NewCall(strictIndexFunction, args[0], args[1]))
 	}
 	return a
 }

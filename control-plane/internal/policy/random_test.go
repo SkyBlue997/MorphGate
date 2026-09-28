@@ -202,9 +202,10 @@ func (g *exprGen) doubleExpr(depth int) string {
 	return fmt.Sprintf("rate[%q]", pick(g.rng, []string{"a", "b", "nope"}))
 }
 
-// indexExpr indexes the map field m with a computed key, or indexes a
-// computed map (a conditional of m) with a literal or computed key: the
-// strictness of index_map (an ERROR key beats an UNKNOWN map, spec §5.3).
+// indexExpr indexes the map field m with a literal or computed key, either
+// directly or inside both branches of a conditional (the form ruling I-20
+// requires instead of indexing a computed map): the strictness of index_map
+// (the first ERROR of map and key beats an UNKNOWN, spec §5.3).
 func (g *exprGen) indexExpr(m string, depth int) string {
 	key := fmt.Sprintf("%q", pick(g.rng, genHeaderKeys))
 	if g.rng.intn(2) == 0 {
@@ -213,7 +214,7 @@ func (g *exprGen) indexExpr(m string, depth int) string {
 	if g.rng.intn(2) == 0 {
 		return m + "[" + key + "]"
 	}
-	return "(" + g.boolExpr(depth) + " ? " + m + " : " + m + ")[" + key + "]"
+	return "(" + g.boolExpr(depth) + " ? " + m + "[" + key + "] : " + m + "[" + key + "])"
 }
 
 func (g *exprGen) stringExpr(depth int) string {

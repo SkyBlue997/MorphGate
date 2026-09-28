@@ -6,7 +6,7 @@ use mg_core::{Action, RouteSensitivity};
 use mg_edge_core::events::{
     ACCESS_PATH_MAX_BYTES, SampleInputs, TELEMETRY_MAX_ARRAY_ITEMS, TELEMETRY_MAX_INPUT_BYTES,
     TELEMETRY_MAX_STRING_BYTES, TelemetryAuto, TelemetryEnv, access_path, decision_sample_rate,
-    envelope, redacted_path, sample_keep,
+    envelope, redacted_path, sample_keep, sampling_exempt,
 };
 use serde_json::{Value, json};
 
@@ -603,6 +603,38 @@ fn decision_sampling_rule() {
     assert_eq!(decision_sample_rate(&base, f32::NAN), 1.0);
     assert!(sample_keep(1.0, u32::MAX));
     assert!(!sample_keep(0.0, 0));
+}
+
+/// §9.11: the exemption predicate behind the rate (and the P0 / P2 class
+/// mg-edge files a decision event under) does not depend on the configured
+/// rate: an ALLOW on a low route is sampled even at rate 1.
+#[test]
+fn sampling_exemption_is_independent_of_the_rate() {
+    let base = inputs(Action::Allow);
+    assert!(!sampling_exempt(&base));
+    assert_eq!(decision_sample_rate(&base, 1.0), 1.0);
+    for exempt in [
+        inputs(Action::Block),
+        SampleInputs {
+            sensitivity: RouteSensitivity::Critical,
+            ..base
+        },
+        SampleInputs {
+            force_log: true,
+            ..base
+        },
+        SampleInputs {
+            flagged_hit: true,
+            ..base
+        },
+        SampleInputs {
+            monitor: true,
+            ..inputs(Action::Log)
+        },
+    ] {
+        assert!(sampling_exempt(&exempt), "{exempt:?}");
+        assert_eq!(decision_sample_rate(&exempt, 0.0), 1.0);
+    }
 }
 
 /// §9.11 / D-31 redaction and the §13.4 access-record path.

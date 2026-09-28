@@ -1,27 +1,22 @@
-//! The three bounded event queues and the flusher that drains them into the
-//! sinks (spec §9.11).
+//! The request-path event queues, the drop counters and the flusher that
+//! dispatches records to the outputs (spec §9.11, ruling I-25).
 
+use super::output::{Item, Lane, Limits, Output};
 use super::stream::StreamWriter;
-use super::vl::{PostOutcome, VlClient};
-use super::{EventClass, EventRecord, EventSink, EventsConfig, Sink, StreamEntry};
+use super::vl::VlClient;
+use super::{EventClass, EventRecord, EventSink, EventsConfig, Sink};
 use prometheus::{IntCounter, IntCounterVec, Opts, Registry};
 use std::fmt;
-use std::fs::OpenOptions;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{Notify, mpsc, watch};
-use tokio::time::MissedTickBehavior;
+use tokio::sync::{mpsc, watch};
 
-/// How long the flusher keeps trying to deliver the remaining P0 records
-/// after the shutdown signal (§9.1.1 item 4).
+/// How long the outputs keep trying to deliver the remaining P0 records
+/// after the shutdown signal (§9.1.1 item 4). The outputs finish
+/// concurrently, so this bounds the whole shutdown flush.
 pub const FINAL_FLUSH_BUDGET: Duration = Duration::from_secs(2);
-
-/// Upper bound on one `mg:ev` batch; the writer normally answers within the
-/// state layer's own timeout.
-const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Hard cap on a queue's capacity (tokio rejects absurd capacities by
 /// panicking; `EventsConfig::validate` reports the same bound as an error).
@@ -30,14 +25,17 @@ const MAX_QUEUE_CAPACITY: usize = 1 << 20;
 /// Where a record was lost: the `sink` label of `mg_event_dropped_total`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DropSink {
-    /// The class queue was full (or closed) when the record was offered, or
-    /// the record was still queued when the flusher stopped.
+    /// The request-path class queue was full (or closed: the flusher is not
+    /// running yet, or has stopped) when the record was offered.
     Buffer,
-    /// VictoriaLogs refused the batch (non-retryable status) or every attempt failed.
+    /// VictoriaLogs lost the line: a non-retryable status or every attempt
+    /// failed, its backlog was full, or it still held the line at shutdown.
     VictoriaLogs,
-    /// The `mg:ev` `XADD` batch failed (never retried).
+    /// `mg:ev` lost the entry: the `XADD` batch failed (never retried), its
+    /// backlog was full, or it still held the entry at shutdown.
     Stream,
-    /// Appending to the JSONL file failed.
+    /// The JSONL file lost the line: the append failed, its backlog was
+    /// full, or it still held the line when the shutdown budget ran out.
     File,
 }
 
@@ -87,7 +85,8 @@ impl EventMetrics {
         let vec = IntCounterVec::new(
             Opts::new(
                 Self::DROPPED_TOTAL,
-                "Event records lost, by where they were lost (buffer = queue full) and queue class.",
+                "Event records lost, by where they were lost (buffer = request queue full, \
+                 otherwise the output) and queue class.",
             ),
             &["sink", "class"],
         )
@@ -114,13 +113,13 @@ impl EventMetrics {
         self.counters[sink.index()][class.index()].get()
     }
 
-    fn add(&self, sink: DropSink, class: EventClass, n: u64) {
+    pub(super) fn add(&self, sink: DropSink, class: EventClass, n: u64) {
         if n > 0 {
             self.counters[sink.index()][class.index()].inc_by(n);
         }
     }
 
-    fn add_counts(&self, sink: DropSink, counts: &Counts) {
+    pub(super) fn add_counts(&self, sink: DropSink, counts: &Counts) {
         for class in EventClass::ALL {
             self.add(sink, class, counts[class.index()]);
         }
@@ -140,40 +139,29 @@ impl fmt::Debug for EventMetrics {
 }
 
 /// Records per class.
-type Counts = [u64; 3];
+pub(super) type Counts = [u64; 3];
 
 /// State shared by the request-path handles and the flusher.
 struct Shared {
-    /// Records offered and not yet taken into a batch (held-over included).
+    /// Records offered and not yet dispatched to the outputs.
     pending_items: AtomicUsize,
     /// Their `wire_len` bytes.
     pending_bytes: AtomicUsize,
-    /// Woken when a threshold is reached.
-    notify: Notify,
-    max_items: usize,
-    max_bytes: usize,
     metrics: EventMetrics,
 }
 
 impl Shared {
-    /// Accounts for one offered record; true when a flush threshold is reached.
-    fn reserve(&self, size: usize) -> bool {
-        let items = self.pending_items.fetch_add(1, Ordering::Relaxed) + 1;
-        let bytes = self.pending_bytes.fetch_add(size, Ordering::Relaxed) + size;
-        items >= self.max_items || bytes >= self.max_bytes
+    fn reserve(&self, size: usize) {
+        self.pending_items.fetch_add(1, Ordering::Relaxed);
+        self.pending_bytes.fetch_add(size, Ordering::Relaxed);
     }
 
-    /// Undoes [`Shared::reserve`] (record taken into a batch, or not queued).
-    /// Every release follows its reserve (channel send -> receive), so the
+    /// Undoes [`Shared::reserve`] (record dispatched, or not queued). Every
+    /// release follows its reserve (channel send -> receive), so the
     /// counters never underflow.
     fn release(&self, size: usize) {
         self.pending_items.fetch_sub(1, Ordering::Relaxed);
         self.pending_bytes.fetch_sub(size, Ordering::Relaxed);
-    }
-
-    fn is_full(&self) -> bool {
-        self.pending_items.load(Ordering::Relaxed) >= self.max_items
-            || self.pending_bytes.load(Ordering::Relaxed) >= self.max_bytes
     }
 }
 
@@ -208,22 +196,28 @@ impl EventQueues {
     /// Like [`EventQueues::new`], counting drops in `metrics`.
     pub fn with_metrics(cfg: &EventsConfig, metrics: EventMetrics) -> (Self, Flusher) {
         let capacity = |n: usize| n.clamp(1, MAX_QUEUE_CAPACITY);
-        let (tx0, rx0) = mpsc::channel(capacity(cfg.queue_priority));
-        let (tx1, rx1) = mpsc::channel(capacity(cfg.queue_access));
-        let (tx2, rx2) = mpsc::channel(capacity(cfg.queue_sampled));
+        let capacities = [
+            capacity(cfg.queue_priority),
+            capacity(cfg.queue_access),
+            capacity(cfg.queue_sampled),
+        ];
+        let (tx0, rx0) = mpsc::channel(capacities[0]);
+        let (tx1, rx1) = mpsc::channel(capacities[1]);
+        let (tx2, rx2) = mpsc::channel(capacities[2]);
         let shared = Arc::new(Shared {
             pending_items: AtomicUsize::new(0),
             pending_bytes: AtomicUsize::new(0),
-            notify: Notify::new(),
-            max_items: cfg.max_batch_lines.max(1),
-            max_bytes: cfg.max_batch_bytes.max(1),
             metrics,
         });
         let flusher = Flusher {
             rx: [rx0, rx1, rx2],
-            held: [None, None, None],
             shared: Arc::clone(&shared),
-            flush_interval: Duration::from_millis(cfg.flush_interval_ms.max(1)),
+            limits: Limits {
+                max_items: cfg.max_batch_lines.max(1),
+                max_bytes: cfg.max_batch_bytes.max(1),
+                capacity: capacities,
+                interval: Duration::from_millis(cfg.flush_interval_ms.max(1)),
+            },
             stream_maxlen: cfg.stream_maxlen,
         };
         (
@@ -240,7 +234,8 @@ impl EventQueues {
         &self.shared.metrics
     }
 
-    /// Records (and their line bytes) offered but not yet taken into a batch.
+    /// Records (and their line bytes) offered but not yet handed to the
+    /// outputs.
     pub fn pending(&self) -> (usize, usize) {
         (
             self.shared.pending_items.load(Ordering::Relaxed),
@@ -262,14 +257,9 @@ impl EventSink for EventQueues {
             return false;
         }
         let size = record.wire_len();
-        let flush_now = self.shared.reserve(size);
+        self.shared.reserve(size);
         match self.tx[class.index()].try_send(record) {
-            Ok(()) => {
-                if flush_now {
-                    self.shared.notify.notify_one();
-                }
-                true
-            }
+            Ok(()) => true,
             Err(_) => {
                 // Full (or the flusher is gone): drop the new record, never wait.
                 self.shared.release(size);
@@ -280,167 +270,104 @@ impl EventSink for EventQueues {
     }
 }
 
-/// Drains the queues into the sinks; see [`Flusher::run`].
+/// Drains the queues into the outputs; see [`Flusher::run`].
 pub struct Flusher {
     rx: [mpsc::Receiver<EventRecord>; 3],
-    /// A record taken from a queue that did not fit into the previous batch's
-    /// byte budget; it opens the next batch of its class.
-    held: [Option<EventRecord>; 3],
     shared: Arc<Shared>,
-    flush_interval: Duration,
+    limits: Limits,
     stream_maxlen: u64,
 }
 
 impl fmt::Debug for Flusher {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Flusher")
-            .field("flush_interval", &self.flush_interval)
+            .field("flush_interval", &self.limits.interval)
             .field("stream_maxlen", &self.stream_maxlen)
             .finish_non_exhaustive()
     }
 }
 
-/// The configured outputs of one flusher.
-struct Sinks {
-    vl: Option<VlClient>,
-    file: Option<PathBuf>,
-    stream: Option<Arc<dyn StreamWriter>>,
+/// The configured outputs of one flusher run.
+struct Lanes {
+    /// `vl_main`, if configured.
+    vl_main: Option<Lane>,
+    /// `vl_short`, if configured.
+    vl_short: Option<Lane>,
+    file: Option<Lane>,
+    stream: Option<Lane>,
 }
 
-/// One line bound for VictoriaLogs.
-struct Line {
-    class: EventClass,
-    text: String,
-}
-
-#[derive(Default)]
-struct FilePart {
-    body: Vec<u8>,
-    counts: Counts,
-}
-
-#[derive(Default)]
-struct StreamPart {
-    entries: Vec<StreamEntry>,
-    counts: Counts,
-}
-
-/// Records taken from the queues together, split per output. A part is
-/// `None` once delivered (or when there is nothing for that output).
-#[derive(Default)]
-struct Batch {
-    records: usize,
-    main: Option<Vec<Line>>,
-    short: Option<Vec<Line>>,
-    file: Option<FilePart>,
-    stream: Option<StreamPart>,
-}
-
-impl Batch {
-    fn push(&mut self, record: EventRecord, sinks: &Sinks) {
-        self.records += 1;
+impl Lanes {
+    /// Hands one record's shares to the outputs that take them: its line to
+    /// the file and to the VictoriaLogs instance of its target; its `mg:ev`
+    /// entry to the stream. A record for an output that is not configured
+    /// is simply not written there (nothing is lost).
+    fn dispatch(&self, record: EventRecord) {
         let EventRecord {
             class,
             target,
             line,
             stream,
         } = record;
-        let c = class.index();
-        if let (Some(entry), Some(_)) = (stream, &sinks.stream) {
-            let part = self.stream.get_or_insert_with(StreamPart::default);
-            part.entries.push(entry);
-            part.counts[c] += 1;
+        if let (Some(entry), Some(lane)) = (stream, &self.stream) {
+            lane.push(Item::entry(class, entry));
         }
         if line.is_empty() {
             return;
         }
-        if sinks.file.is_some() {
-            let part = self.file.get_or_insert_with(FilePart::default);
-            part.body.extend_from_slice(line.as_bytes());
-            part.body.push(b'\n');
-            part.counts[c] += 1;
+        let text: Arc<str> = line.into();
+        if let Some(lane) = &self.file {
+            lane.push(Item::line(class, target, Arc::clone(&text)));
         }
-        if sinks
-            .vl
-            .as_ref()
-            .is_some_and(|vl| vl.endpoint(target).is_some())
-        {
-            let slot = match target {
-                Sink::Main => &mut self.main,
-                Sink::Short => &mut self.short,
-            };
-            slot.get_or_insert_with(Vec::new)
-                .push(Line { class, text: line });
+        let vl = match target {
+            Sink::Main => &self.vl_main,
+            Sink::Short => &self.vl_short,
+        };
+        if let Some(lane) = vl {
+            debug_assert!(lane.accepts(target));
+            lane.push(Item::line(class, target, text));
         }
     }
-
-    /// At shutdown only P0 lines are still worth a VictoriaLogs attempt; the
-    /// others are counted as lost there.
-    fn keep_priority_vl_lines(&mut self, metrics: &EventMetrics) {
-        for slot in [&mut self.main, &mut self.short] {
-            if let Some(lines) = slot {
-                lines.retain(|line| {
-                    let keep = line.class == EventClass::Priority;
-                    if !keep {
-                        metrics.add(DropSink::VictoriaLogs, line.class, 1);
-                    }
-                    keep
-                });
-                if lines.is_empty() {
-                    *slot = None;
-                }
-            }
-        }
-    }
-
-    /// Counts every part that was never delivered.
-    fn count_undelivered(self, metrics: &EventMetrics) {
-        for lines in [self.main, self.short].into_iter().flatten() {
-            metrics.add_counts(DropSink::VictoriaLogs, &line_counts(&lines));
-        }
-        if let Some(part) = self.file {
-            metrics.add_counts(DropSink::File, &part.counts);
-        }
-        if let Some(part) = self.stream {
-            metrics.add_counts(DropSink::Stream, &part.counts);
-        }
-    }
-}
-
-fn line_counts(lines: &[Line]) -> Counts {
-    let mut counts = Counts::default();
-    for line in lines {
-        counts[line.class.index()] += 1;
-    }
-    counts
 }
 
 impl Flusher {
     /// Runs until `shutdown` becomes true (or its sender is dropped).
     ///
-    /// * Every `flush_interval_ms`, everything pending is sent; as soon as
-    ///   `max_batch_lines` records or `max_batch_bytes` line bytes are pending,
-    ///   full batches are sent without waiting for the interval (§9.11).
-    /// * A batch takes records in P0, P1, P2 order, never more than
+    /// Ruling I-25: each configured VictoriaLogs instance (`vl`'s `vl_main`
+    /// and `vl_short`, separate servers), the JSONL file (`file`) and the
+    /// `mg:ev` stream (`stream`) are independent outputs. A dispatcher moves
+    /// every record from the three request queues (P0 first) into a backlog
+    /// per output, and each output has its own flush loop over its own
+    /// backlog, so a slow or failing output never delays, blocks or drops
+    /// another output's copy of a record:
+    ///
+    /// * Backlogs are bounded per class by the queue capacities
+    ///   (`queue_priority` / `queue_access` / `queue_sampled`, plus the batch
+    ///   in flight). When an output's class backlog is full, the new record
+    ///   is dropped for that output only and counted under its sink label
+    ///   (`victorialogs`, `file`, `stream`); P0 never competes with P1 / P2.
+    /// * Every `flush_interval_ms` an output sends everything it holds; as
+    ///   soon as it holds `max_batch_lines` records or `max_batch_bytes` line
+    ///   bytes it sends full batches without waiting for the interval
+    ///   (§9.11). A batch takes records in P0, P1, P2 order, never more than
     ///   `max_batch_lines` records or `max_batch_bytes` bytes (a single larger
-    ///   line travels alone). Its lines go to `vl_main` / `vl_short` by
-    ///   [`EventRecord::target`] (one POST each, retried per §9.11), every line
-    ///   to `file` (appended, created `0600`), and its [`StreamEntry`]s to
-    ///   `stream` as one `XADD` batch with `MAXLEN ~ stream_maxlen`. The
-    ///   outputs of a batch are written concurrently; a failed output only
-    ///   counts its own drops.
-    /// * The next batch starts once every output is done with the current
-    ///   one, so a slow VictoriaLogs (at most 4 attempts of 5 s plus 6.2 s of
-    ///   backoff per batch) delays all outputs. Backpressure then lands on the
-    ///   class queues, which drop the newest lowest-class records first; P0
-    ///   keeps its own queue and is always drained first.
-    /// * Records for an output that is not configured are simply not written
-    ///   there (e.g. a `vl_short` line without `vl_short`): nothing is lost.
-    /// * On shutdown an in-flight VictoriaLogs retry is abandoned, then the
-    ///   remaining P0 records (and the P0 lines of the interrupted batch) get
-    ///   up to [`FINAL_FLUSH_BUDGET`]; P1 / P2 records still queued are
-    ///   counted as `buffer` drops and the queues are closed, so later
-    ///   `try_send` calls fail fast.
+    ///   line travels alone); an item that does not fit closes the batch
+    ///   rather than letting a lower class overtake it.
+    /// * VictoriaLogs: each instance gets the lines whose
+    ///   [`EventRecord::target`] it is, one POST per batch, retried per §9.11
+    ///   (at most 4 attempts of 5 s plus 6.2 s of backoff); its next batch
+    ///   starts after the current one. File: one append per batch (created
+    ///   `0600`).
+    ///   Stream: one `XADD` batch with `MAXLEN ~ stream_maxlen`, never
+    ///   retried.
+    /// * On shutdown the dispatcher moves whatever is still queued into the
+    ///   backlogs and closes the queues (later `try_send` calls fail fast and
+    ///   count `buffer`). Each output then abandons its in-flight batch
+    ///   (VictoriaLogs retries are cut short) and, within one shared
+    ///   [`FINAL_FLUSH_BUDGET`], delivers its remaining P0 records (the
+    ///   interrupted batch's P0 part first); the file, being local, writes
+    ///   every class. What an output could not deliver is counted under its
+    ///   sink label.
     ///
     /// `vl` must be built on the runtime that runs this future (§9.1.1).
     pub async fn run(
@@ -448,132 +375,97 @@ impl Flusher {
         vl: Option<VlClient>,
         file: Option<PathBuf>,
         stream: Option<Arc<dyn StreamWriter>>,
-        mut shutdown: watch::Receiver<bool>,
+        shutdown: watch::Receiver<bool>,
     ) {
-        let sinks = Sinks { vl, file, stream };
-        let metrics = self.shared.metrics.clone();
-        let maxlen = self.stream_maxlen;
-        let mut ticker = tokio::time::interval_at(
-            tokio::time::Instant::now() + self.flush_interval,
-            self.flush_interval,
-        );
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        let mut interrupted = None;
-        'run: loop {
-            let tick = tokio::select! {
-                biased;
-                () = shutdown_signal(&mut shutdown) => break 'run,
-                _ = ticker.tick() => true,
-                () = self.shared.notify.notified() => false,
-            };
-            // A tick sends everything pending; a threshold wake-up only full batches.
-            while tick || self.shared.is_full() {
-                let mut batch = self.assemble(&sinks, &EventClass::ALL);
-                if batch.records == 0 {
-                    break;
-                }
-                let delivered = tokio::select! {
-                    biased;
-                    () = shutdown_signal(&mut shutdown) => false,
-                    () = deliver(&sinks, maxlen, &metrics, &mut batch) => true,
-                };
-                if !delivered {
-                    interrupted = Some(batch);
-                    break 'run;
-                }
-            }
-        }
-        self.finish(&sinks, &metrics, interrupted).await;
-    }
-
-    /// Final best-effort P0 flush, then accounting for everything left.
-    async fn finish(mut self, sinks: &Sinks, metrics: &EventMetrics, interrupted: Option<Batch>) {
-        let maxlen = self.stream_maxlen;
-        let mut current = interrupted.map(|mut batch| {
-            batch.keep_priority_vl_lines(metrics);
-            batch
-        });
-        let work = async {
-            loop {
-                if current.is_none() {
-                    let batch = self.assemble(sinks, &[EventClass::Priority]);
-                    if batch.records == 0 {
-                        break;
-                    }
-                    current = Some(batch);
-                }
-                if let Some(batch) = current.as_mut() {
-                    deliver(sinks, maxlen, metrics, batch).await;
-                }
-                current = None;
-            }
+        let metrics = &self.shared.metrics;
+        let lane = |output| Lane::new(output, self.limits, metrics.clone());
+        // One lane per configured VictoriaLogs instance (separate servers).
+        let vl_lane = |sink: Sink| {
+            vl.as_ref()
+                .filter(|client| client.endpoint(sink).is_some())
+                .map(|client| {
+                    lane(Output::Vl {
+                        client: client.clone(),
+                        sink,
+                    })
+                })
         };
-        if tokio::time::timeout(FINAL_FLUSH_BUDGET, work)
-            .await
-            .is_err()
-        {
-            log::warn!(
-                "events: shutdown flush budget ({} ms) exhausted",
-                FINAL_FLUSH_BUDGET.as_millis()
-            );
-        }
-        if let Some(batch) = current {
-            batch.count_undelivered(metrics);
-        }
-        let mut left = Counts::default();
-        for (i, rx) in self.rx.iter_mut().enumerate() {
-            rx.close();
-            left[i] += u64::from(self.held[i].take().is_some());
-            while rx.try_recv().is_ok() {
-                left[i] += 1;
-            }
-        }
-        metrics.add_counts(DropSink::Buffer, &left);
-        if left.iter().any(|&n| n > 0) {
-            log::info!(
-                "events: dropped {} / {} / {} queued P0 / P1 / P2 records at shutdown",
-                left[0],
-                left[1],
-                left[2]
-            );
-        }
-    }
-
-    /// Takes the next batch from `classes`, in order.
-    fn assemble(&mut self, sinks: &Sinks, classes: &[EventClass]) -> Batch {
-        let mut batch = Batch::default();
-        let mut bytes = 0usize;
-        'classes: for &class in classes {
-            let i = class.index();
-            loop {
-                if batch.records >= self.shared.max_items {
-                    break 'classes;
-                }
-                let record = match self.held[i].take() {
-                    Some(record) => record,
-                    None => match self.rx[i].try_recv() {
-                        Ok(record) => record,
-                        Err(_) => break,
-                    },
-                };
-                let size = record.wire_len();
-                if batch.records > 0 && bytes + size > self.shared.max_bytes {
-                    // Keep strict priority order: close the batch rather than
-                    // topping it up with smaller lower-class records.
-                    self.held[i] = Some(record);
-                    break 'classes;
-                }
-                bytes += size;
-                self.shared.release(size);
-                batch.push(record, sinks);
-            }
-        }
-        batch
+        let lanes = Lanes {
+            vl_main: vl_lane(Sink::Main),
+            vl_short: vl_lane(Sink::Short),
+            file: file.map(|path| lane(Output::File(path))),
+            stream: stream.map(|writer| {
+                lane(Output::Stream {
+                    writer,
+                    maxlen: self.stream_maxlen,
+                })
+            }),
+        };
+        // The outputs stop once the dispatcher has moved every queued record
+        // to them, never before.
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let (rx, shared) = (&mut self.rx, &*self.shared);
+        tokio::join!(
+            dispatch(rx, shared, &lanes, shutdown, stop_tx),
+            run_lane(lanes.vl_main.as_ref(), stop_rx.clone()),
+            run_lane(lanes.vl_short.as_ref(), stop_rx.clone()),
+            run_lane(lanes.file.as_ref(), stop_rx.clone()),
+            run_lane(lanes.stream.as_ref(), stop_rx),
+        );
     }
 }
 
+/// Runs one output's flush loop, if that output is configured.
+async fn run_lane(lane: Option<&Lane>, stop: watch::Receiver<bool>) {
+    if let Some(lane) = lane {
+        lane.run(stop).await;
+    }
+}
+
+/// Moves records from the request queues (P0 first when several are ready)
+/// to the outputs until shutdown; then moves what is left, closes the
+/// queues and tells the outputs to finish.
+async fn dispatch(
+    rx: &mut [mpsc::Receiver<EventRecord>; 3],
+    shared: &Shared,
+    lanes: &Lanes,
+    mut shutdown: watch::Receiver<bool>,
+    stop: watch::Sender<bool>,
+) {
+    let [rx0, rx1, rx2] = rx;
+    let mut open = [true; 3];
+    loop {
+        let record = tokio::select! {
+            biased;
+            () = shutdown_signal(&mut shutdown) => break,
+            r = rx0.recv(), if open[0] => r.or_else(|| { open[0] = false; None }),
+            r = rx1.recv(), if open[1] => r.or_else(|| { open[1] = false; None }),
+            r = rx2.recv(), if open[2] => r.or_else(|| { open[2] = false; None }),
+            else => {
+                // Every request-path handle is gone: nothing can arrive.
+                shutdown_signal(&mut shutdown).await;
+                break;
+            }
+        };
+        if let Some(record) = record {
+            shared.release(record.wire_len());
+            lanes.dispatch(record);
+        }
+    }
+    for rx in [rx0, rx1, rx2] {
+        rx.close();
+        while let Ok(record) = rx.try_recv() {
+            shared.release(record.wire_len());
+            lanes.dispatch(record);
+        }
+    }
+    // The receivers of `stop` are the output loops; one that already ended
+    // (none configured) does not matter.
+    let _ = stop.send(true);
+}
+
 /// Resolves once `rx` holds `true` or its sender is gone.
-async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
+pub(super) async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
     loop {
         if *rx.borrow_and_update() {
             return;
@@ -582,111 +474,4 @@ async fn shutdown_signal(rx: &mut watch::Receiver<bool>) {
             return;
         }
     }
-}
-
-/// Writes one batch to every output concurrently. Each part is set to `None`
-/// when its output is done with it (delivered or counted as dropped), so an
-/// interrupted delivery leaves exactly the unfinished parts behind.
-async fn deliver(sinks: &Sinks, maxlen: u64, metrics: &EventMetrics, batch: &mut Batch) {
-    let Batch {
-        main,
-        short,
-        file,
-        stream,
-        ..
-    } = batch;
-    tokio::join!(
-        deliver_vl(sinks.vl.as_ref(), Sink::Main, main, metrics),
-        deliver_vl(sinks.vl.as_ref(), Sink::Short, short, metrics),
-        deliver_file(sinks.file.as_deref(), file, metrics),
-        deliver_stream(sinks.stream.as_deref(), maxlen, stream, metrics),
-    );
-}
-
-async fn deliver_vl(
-    vl: Option<&VlClient>,
-    sink: Sink,
-    slot: &mut Option<Vec<Line>>,
-    metrics: &EventMetrics,
-) {
-    let (Some(vl), Some(lines)) = (vl, slot.as_ref()) else {
-        return;
-    };
-    let mut body = Vec::with_capacity(lines.iter().map(|l| l.text.len() + 1).sum());
-    for line in lines {
-        body.extend_from_slice(line.text.as_bytes());
-        body.push(b'\n');
-    }
-    let counts = line_counts(lines);
-    let n = lines.len();
-    match vl.post_batch(sink, body).await {
-        PostOutcome::Accepted { .. } | PostOutcome::NoEndpoint => {}
-        PostOutcome::Rejected { status } => {
-            log::warn!("events: {sink} rejected a batch of {n} lines with HTTP {status}; dropped");
-            metrics.add_counts(DropSink::VictoriaLogs, &counts);
-        }
-        PostOutcome::Failed { attempts } => {
-            log::warn!("events: {sink} unreachable after {attempts} attempts; dropped {n} lines");
-            metrics.add_counts(DropSink::VictoriaLogs, &counts);
-        }
-    }
-    *slot = None;
-}
-
-async fn deliver_file(path: Option<&Path>, slot: &mut Option<FilePart>, metrics: &EventMetrics) {
-    let Some(path) = path else {
-        return;
-    };
-    // Taken before the blocking write starts: an interrupted delivery must not
-    // write these lines a second time.
-    let Some(FilePart { body, counts }) = slot.take() else {
-        return;
-    };
-    let path = path.to_path_buf();
-    let written = tokio::task::spawn_blocking(move || append(&path, &body)).await;
-    let error = match written {
-        Ok(Ok(())) => return,
-        Ok(Err(e)) => e.to_string(),
-        Err(e) => e.to_string(),
-    };
-    log::warn!("events: file sink write failed: {error}");
-    metrics.add_counts(DropSink::File, &counts);
-}
-
-fn append(path: &Path, body: &[u8]) -> io::Result<()> {
-    let mut options = OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // Events carry request data (D-31): owner-only on creation.
-        options.mode(0o600);
-    }
-    // One O_APPEND write per batch: whole lines, even with a second Edge
-    // process appending during a graceful upgrade.
-    options.open(path)?.write_all(body)
-}
-
-async fn deliver_stream(
-    writer: Option<&dyn StreamWriter>,
-    maxlen: u64,
-    slot: &mut Option<StreamPart>,
-    metrics: &EventMetrics,
-) {
-    let Some(writer) = writer else {
-        return;
-    };
-    // Never retried (§9.11), so it is taken up front.
-    let Some(StreamPart { entries, counts }) = slot.take() else {
-        return;
-    };
-    let n = entries.len();
-    let error = match tokio::time::timeout(STREAM_TIMEOUT, writer.xadd_batch(maxlen, entries)).await
-    {
-        Ok(Ok(())) => return,
-        Ok(Err(e)) => e,
-        Err(_) => format!("timed out after {} ms", STREAM_TIMEOUT.as_millis()),
-    };
-    log::warn!("events: mg:ev XADD of {n} entries failed ({error}); dropped");
-    metrics.add_counts(DropSink::Stream, &counts);
 }
