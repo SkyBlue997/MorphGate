@@ -31,6 +31,12 @@
 //!   submission whose `route_class` route redacts gets `/<route_class>`.
 //! * **Tier 1** (§9.3): the `x-mg-cf-as-org` value, which Phase 1 only
 //!   records, is the decision event's top-level `upstream_as_org`.
+//! * **Replay-unchecked clearance** (I-30): when the request's clearance
+//!   token carries `ruc` (issued while the replay store was unavailable),
+//!   the decision event has the top-level `token: {"replay_unchecked":
+//!   true}` (VictoriaLogs field `token.replay_unchecked`), whether the route
+//!   accepted the token or, being `fail_closed`, did not; otherwise the
+//!   field is absent.
 //! * **Privacy**: lines carry what §13 lists and nothing else: never a
 //!   cookie, `C`, clearance token, `ret`, request body, upstream key or
 //!   `x-mg-cf-tls-random`; `mg:ev` carries IPs only as the keyed hashes
@@ -236,6 +242,7 @@ pub fn evaluated(
         monitor: rec.monitor_only,
     };
     let route = rec.route.name.clone();
+    let replay_unchecked = rec.token_replay_unchecked;
     let mut ctx = rec.ctx;
     if redact {
         ctx.http.path = redacted_path(&route);
@@ -256,6 +263,12 @@ pub fn evaluated(
     let mut extra = Map::new();
     if let Some(org) = upstream_as_org {
         extra.insert("upstream_as_org".into(), Value::from(org));
+    }
+    if replay_unchecked {
+        extra.insert(
+            "token".into(),
+            serde_json::json!({ "replay_unchecked": true }),
+        );
     }
     decision_record(f, event, &inputs, &route, extra)
 }
@@ -419,7 +432,13 @@ pub fn submission(f: &Finished<'_>, sub: &SubmitRecord, asn: Option<u32>) -> Vec
         }));
     }
     let mut out = vec![feedback];
-    if let Some(t) = sub.telemetry.as_ref().filter(|t| t.env.is_some()) {
+    // I-32: a telemetry line exists only with the submission's `env`; one
+    // without it (or whose `env` did not parse) writes none.
+    let telemetry = sub.telemetry.as_ref().and_then(|t| {
+        let env = serde_json::to_value(t.env.as_ref()?).ok()?;
+        Some((t, env))
+    });
+    if let Some((t, env)) = telemetry {
         let mut body = Map::new();
         body.insert("source".into(), "challenge".into());
         body.insert("request_id".into(), f.request_id.into());
@@ -427,9 +446,7 @@ pub fn submission(f: &Finished<'_>, sub: &SubmitRecord, asn: Option<u32>) -> Vec
         if let Some(ms) = t.solve_ms {
             body.insert("solve_ms".into(), ms.into());
         }
-        if let Some(env) = t.env.as_ref().and_then(|e| serde_json::to_value(e).ok()) {
-            body.insert("env".into(), env);
-        }
+        body.insert("env".into(), env);
         if let Some(auto) = t.auto.as_ref().and_then(|a| serde_json::to_value(a).ok()) {
             body.insert("auto".into(), auto);
         }
@@ -533,6 +550,7 @@ mod tests {
                 ipa: None,
                 ctp: None,
             },
+            token_replay_unchecked: false,
         }
     }
 
@@ -614,6 +632,31 @@ mod tests {
             Some(entity_key(&K, "prefix", "203.0.113.0/24").as_str())
         );
         assert!(entry.fields().iter().all(|(_, v)| !v.contains(IP)));
+    }
+
+    /// I-30: a request whose clearance carries `ruc` has the top-level
+    /// `token.replay_unchecked` in its decision event; others do not.
+    #[test]
+    fn replay_unchecked_clearance_is_recorded() {
+        let c = cfg(1.0, true, false);
+        let f = finished(&c, "/account/reset");
+        let plain = evaluated(
+            &f,
+            record(Action::Allow, RouteSensitivity::Critical),
+            false,
+            None,
+        )
+        .unwrap();
+        let v = json(&plain.line);
+        assert!(v.get("token").is_none(), "{v}");
+        assert!(!plain.line.contains("replay_unchecked"));
+
+        let mut rec = record(Action::Challenge, RouteSensitivity::Critical);
+        rec.token_replay_unchecked = true;
+        let r = evaluated(&f, rec, false, None).unwrap();
+        let v = json(&r.line);
+        assert_eq!(v["token"], json!({"replay_unchecked": true}));
+        assert_eq!(keys(&r.line), ["kind", "site", "ts", "msg"]);
     }
 
     fn entry_key(typ: &str, ip: &str) -> String {

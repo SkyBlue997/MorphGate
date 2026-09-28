@@ -3,8 +3,10 @@
 //!
 //! Toward the origin the Edge is the only party that may send `MG-*`
 //! headers, and it forwards no upstream-family header (`cf-*`, `x-mg-*`,
-//! `x-forwarded-*`, `forwarded`, `mg-*`, ..., underscore spellings included)
-//! except the few §9.9 re-writes from values it parsed itself:
+//! `x-forwarded-*`, `forwarded`, `mg-*`, ..., and the I-29 client-IP,
+//! URL-rewrite and method-override names such as `x-client-ip`,
+//! `x-original-url` and `x-http-method-override`; underscore spellings
+//! included) except the few §9.9 re-writes from values it parsed itself:
 //!
 //! 1. [`raw_headers`] takes the client's field lines (original case, arrival
 //!    order within the limits of `http::HeaderMap`: distinct names in first
@@ -340,6 +342,10 @@ mod tests {
             ("MG-Client-IP", "10.0.0.1"),
             ("X-MG-CF-ASN", "1"),
             ("Forwarded", "for=10.0.0.1"),
+            // I-29.
+            ("X-Original-URL", "/admin"),
+            ("x_http_method_override", "DELETE"),
+            ("X-Client-IP", "10.0.0.5"),
             ("Accept", "*/*"),
         ]);
         let cf = CloudflareForward {
@@ -373,6 +379,9 @@ mod tests {
         assert!(h.get("cf_connecting_ip").is_none());
         assert!(h.get("x-mg-cf-asn").is_none());
         assert!(h.get("forwarded").is_none());
+        for name in ["x-original-url", "x_http_method_override", "x-client-ip"] {
+            assert!(h.get(name).is_none(), "{name}");
+        }
         assert_eq!(h["accept"], "*/*");
         assert!(h.get("connection").is_none());
     }

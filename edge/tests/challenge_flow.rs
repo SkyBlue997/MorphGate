@@ -6,7 +6,9 @@
 //! rules, the failure and issuance quotas, unknown client IPs, the replay
 //! store without Valkey (`FaultProxy`), a route removed by a newer bundle, a
 //! full local replay set, escalation after a failure, the https redirect of
-//! http visitors and `/__mg/c` in bootstrap.
+//! http visitors and `/__mg/c` in bootstrap. A clearance issued without a
+//! replay check (`ruc`, I-30) is accepted except on `fail_closed` routes,
+//! which challenge again (429 while the replay store is still unavailable).
 //!
 //! The solver is `mg_challenge::pow_solve` (a test-only reference). Loopback
 //! only. Reason codes are read from the Edge's debug log line
@@ -810,9 +812,170 @@ fn valkey_down_replay_unavailable() {
 
     let r = submit_json(&env, &ip, CHROME, "", &solved(&members, CHROME));
     assert_eq!(r.status, 200, "{}\n{}", r.head, r.body);
-    cookie_of(&r);
+    let unchecked = cookie_of(&r);
     wait_log(&edge, &["submit=solved", "reasons=ic.replay_unchecked"]);
+    assert!(token_claims(&unchecked).ruc, "I-30: issued unchecked");
+
+    // I-30: that clearance is no clearance on the fail_closed login route.
+    // The client is challenged again, and while Valkey is down the
+    // submission of that challenge is 429 without a cookie.
+    let with_unchecked = format!("{}Cookie: {unchecked}\r\n", browser(&ip));
+    let r = get(env.listen, "example.com", "/account/login", &with_unchecked);
+    assert_eq!(r.status, 403, "{}\n{}", r.head, r.body);
+    let again = from_page(&r.body);
+    let r = submit_form(&env, &ip, CHROME, &solved(&again, CHROME));
+    assert_eq!(r.status, 429, "{}\n{}", r.head, r.body);
+    assert!(r.header("set-cookie").is_none());
+    assert!(line_of(&edge, &r).contains("reasons=ic.replay_unavailable"));
+
+    // Valkey is back: a new challenge of the login route is checked, and
+    // its clearance (without `ruc`) passes there.
     vk.set_mode(FaultMode::Pass);
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let checked = loop {
+        let r = get(env.listen, "example.com", "/account/login", &with_unchecked);
+        assert_eq!(r.status, 403, "still no clearance: {}", r.head);
+        let r = submit_form(&env, &ip, CHROME, &solved(&from_page(&r.body), CHROME));
+        if r.status == 303 {
+            break cookie_of(&r);
+        }
+        assert_eq!(r.status, 429, "{}\n{}", r.head, r.body);
+        assert!(Instant::now() < deadline, "Valkey never came back");
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    assert!(!token_claims(&checked).ruc);
+    let r = get(
+        env.listen,
+        "example.com",
+        "/account/login",
+        &format!("{}Cookie: {checked}\r\n", browser(&ip)),
+    );
+    assert_eq!(r.status, 200, "{}\n{}", r.head, r.body);
+}
+
+/// The claims of a clearance cookie (`__Host-mg_clr=<token>`) the test site
+/// issued, verified now.
+fn token_claims(cookie: &str) -> mg_challenge::ClearanceClaims {
+    let json = std::fs::read(common::repo("testdata/phase1/keys/token.keys.json")).unwrap();
+    let keys = mg_challenge::TokenKeySet::from_key_file(&json, "blog", &["blog-t-20260927".into()])
+        .unwrap();
+    let token = cookie
+        .strip_prefix("__Host-mg_clr=")
+        .expect("clearance cookie");
+    mg_challenge::verify(&keys, "blog", "production", token, now_ms() / 1000).unwrap()
+}
+
+/// Waits until the JSONL events file holds a decision event whose
+/// `ctx.http.path` is `path`, and returns it.
+fn decision_event(file: &std::path::Path, path: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        if let Some(v) = text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .find(|v| v["kind"] == "decision" && v["ctx"]["http"]["path"] == path)
+        {
+            return v;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no decision event for {path}:\n{text}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// I-30 without Valkey (local state that may not decide alone, so the
+/// replay store is unavailable for every submission): the members
+/// clearance is issued with `ic.replay_unchecked` and carries `ruc`. The
+/// members route accepts it; the `fail_closed` login route does not: the
+/// client is challenged again (`matrix.clearance.required`, the token
+/// counted as `expired`) and that challenge's submission is 429 without a
+/// cookie. Both decision events record `token.replay_unchecked`.
+#[test]
+fn replay_unchecked_clearance_is_refused_by_fail_closed_routes() {
+    let env = TestEnv::new("chal-ruc");
+    let mut b = bundle();
+    b.events = Some(mg_proto::v1::EventConfig {
+        allow_sample_rate: 1.0,
+        access_log: false,
+        stream: false,
+    });
+    env.write_lkg("blog", &sign(&b));
+    let events = env.dir.join("events.jsonl");
+    let cfg = common::with_events(
+        &config(&env, ""),
+        &format!("file = \"{}\"\nflush_interval_ms = 50\n", events.display()),
+    );
+    let edge = env.spawn(&env.write_config(&cfg));
+    edge.wait_metric("mg_config_version{site=\"blog\"}", 10, |v| v == 1.0);
+    let ip = "198.51.100.32";
+
+    let shown = json_challenge(&env, "/members/a", ip);
+    let r = submit_json(&env, ip, CHROME, "", &solved(&shown, CHROME));
+    assert_eq!(r.status, 200, "{}\n{}", r.head, r.body);
+    let cookie = cookie_of(&r);
+    wait_log(&edge, &["submit=solved", "reasons=ic.replay_unchecked"]);
+    let claims = token_claims(&cookie);
+    assert!(claims.ruc);
+    let with_cookie = format!("{}Cookie: {cookie}\r\n", browser(ip));
+
+    // Accepted where the route is not fail_closed (require_clearance too).
+    let r = get(env.listen, "example.com", "/members/b", &with_cookie);
+    assert_eq!(r.status, 200, "{}\n{}", r.head, r.body);
+    let seen = env.origin.last("/members/b").unwrap();
+    assert_eq!(seen.header("mg-session"), Some(claims.sub.as_str()));
+
+    // Refused by the fail_closed login route: challenged again.
+    let r = get(env.listen, "example.com", "/account/login", &with_cookie);
+    assert_eq!(r.status, 403, "{}\n{}", r.head, r.body);
+    assert!(env.origin.last("/account/login").is_none());
+    let login = from_page(&r.body);
+    assert_eq!(open(&login.c, login.ty).route_class, "login");
+    // The replay store is still unavailable: 429 + Retry-After, no cookie.
+    let r = submit_form(&env, ip, CHROME, &solved(&login, CHROME));
+    assert_eq!(r.status, 429, "{}\n{}", r.head, r.body);
+    assert_eq!(r.header("retry-after"), Some("5"));
+    assert!(r.header("set-cookie").is_none());
+    assert!(line_of(&edge, &r).contains("reasons=ic.replay_unavailable"));
+    // Every other path view and method that selects the login route
+    // (D-25) refuses the token too.
+    for (method, path) in [
+        ("GET", "/account/login/"),
+        ("GET", "/account/login;x"),
+        ("GET", "/account/%6Cogin"),
+        ("HEAD", "/account/login"),
+        ("POST", "/account/login"),
+    ] {
+        let req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\
+             Content-Length: 0\r\n{with_cookie}\r\n"
+        );
+        let r = raw(env.listen, req.as_bytes()).unwrap();
+        assert_eq!(r.status, 403, "{method} {path}: {}", r.head);
+    }
+    assert!(
+        env.origin
+            .seen()
+            .iter()
+            .all(|s| !s.line.contains("/account/")),
+        "a login view reached the origin"
+    );
+
+    let members = decision_event(&events, "/members/b");
+    assert_eq!(members["token"]["replay_unchecked"], true, "{members}");
+    assert_eq!(members["ctx"]["identity"]["token"]["status"], "valid");
+    let refused = decision_event(&events, "/account/login");
+    assert_eq!(refused["token"]["replay_unchecked"], true, "{refused}");
+    assert_eq!(refused["ctx"]["identity"]["token"]["status"], "expired");
+    assert_eq!(refused["decision"]["action"], "challenge");
+    assert_eq!(refused["decision"]["rule_id"], "matrix.clearance.required");
+    // A request without the token records nothing of the kind.
+    let r = get(env.listen, "example.com", "/plain", &browser(ip));
+    assert_eq!(r.status, 200);
+    let plain = decision_event(&events, "/plain");
+    assert!(plain.get("token").is_none(), "{plain}");
 }
 
 /// §9.7 rule 5: the C's route was removed by a newer bundle, so it counts

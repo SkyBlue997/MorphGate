@@ -1031,7 +1031,7 @@ impl EdgeProxy {
         };
         let site_id = site.settings.id.as_str();
         let m = metrics();
-        m.observe_timing(site_id, &ctx.timing);
+        m.observe_timing(site_id, ctx.route_kind, &ctx.timing);
         let bundle = runtime.bundle.as_deref();
         let mut cfg: EventConfig = bundle.map_or(*DEFAULT_EVENTS, |b| b.events);
         // Without Valkey there is no mg:ev output: build no entries.

@@ -23,8 +23,9 @@
 //! failed / expired) and `mg_https_redirect_total{site}`.
 //!
 //! The observability families (WP-E1d): `mg_requests_total{site, env,
-//! route, action, class}`, `mg_edge_added_latency_seconds{site}` and
-//! `mg_origin_connect_seconds{site}` (see [`EdgeMetrics::observe_timing`]).
+//! route, action, class}`, `mg_edge_added_latency_seconds{site, kind}`
+//! (`kind` = `site` / `mg`, I-31) and `mg_origin_connect_seconds{site}` (see
+//! [`EdgeMetrics::observe_timing`]).
 //! [`EdgeMetrics::init_site`], [`EdgeMetrics::init_listener`] and
 //! [`EdgeMetrics::init_static`] create every series with a small, fixed
 //! label set at 0 when the server is built, so `/metrics` shows the full
@@ -50,6 +51,22 @@ const DURATION_BUCKETS: &[f64] = &[
 pub const LATENCY_BUCKETS: &[f64] = &[
     0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 1.0,
 ];
+
+/// Values of the `kind` label of `mg_edge_added_latency_seconds` (I-31).
+pub const LATENCY_KINDS: [&str; 2] = ["site", "mg"];
+
+/// The `kind` of a request's added latency (I-31): `mg` for the Edge's own
+/// `/__mg/*` endpoints (health check, SDK files, `POST /__mg/c` with its
+/// body read, the reserved 404), `site` for every request of the site's own
+/// paths, the ones the Phase 1 p99 < 5 ms target is about.
+pub fn latency_kind(route: RouteKind) -> &'static str {
+    match route {
+        RouteKind::Origin => LATENCY_KINDS[0],
+        RouteKind::Healthz | RouteKind::SdkFile | RouteKind::Submit | RouteKind::EdgeReserved => {
+            LATENCY_KINDS[1]
+        }
+    }
+}
 
 /// Values of the `state` label of `mg_site_state` (§9.10).
 pub const SITE_STATES: [&str; 4] = [
@@ -122,7 +139,8 @@ pub struct EdgeMetrics {
     /// request that reached the decision step, with the decision before
     /// execution (under monitor the action that would have been taken).
     pub requests_total: IntCounterVec,
-    /// `mg_edge_added_latency_seconds{site}` (§13.7): the Edge's own time.
+    /// `mg_edge_added_latency_seconds{site, kind}` (§13.7, I-31): the
+    /// Edge's own time; `kind` is [`latency_kind`] of the request.
     pub edge_added_latency: HistogramVec,
     /// `mg_origin_connect_seconds{site}` (§13.7): new origin connections.
     pub origin_connect: HistogramVec,
@@ -287,8 +305,8 @@ impl EdgeMetrics {
             ),
             edge_added_latency: register_histogram_vec!(
                 "mg_edge_added_latency_seconds",
-                "Time the Edge itself adds to a request: request_filter (Valkey round trip, Decision Core, /__mg bodies included), upstream_peer, upstream_request_filter and the response filters; never the origin connection or response.",
-                &["site"],
+                "Time the Edge itself adds to a request: request_filter (Valkey round trip, Decision Core, /__mg bodies included), upstream_peer, upstream_request_filter and the response filters; never the origin connection or response. kind=\"mg\" for /__mg/* requests, kind=\"site\" for the site's own (the Phase 1 p99 target).",
+                &["site", "kind"],
                 LATENCY_BUCKETS.to_vec()
             )
             .expect("register mg_edge_added_latency_seconds"),
@@ -314,12 +332,11 @@ impl EdgeMetrics {
         ] {
             c.with_label_values(&[site]);
         }
-        for h in [
-            &self.decision_latency,
-            &self.edge_added_latency,
-            &self.origin_connect,
-        ] {
+        for h in [&self.decision_latency, &self.origin_connect] {
             h.with_label_values(&[site]);
+        }
+        for kind in LATENCY_KINDS {
+            self.edge_added_latency.with_label_values(&[site, kind]);
         }
     }
 
@@ -404,10 +421,11 @@ impl EdgeMetrics {
     }
 
     /// Records the Edge's own time and, for a new origin connection, the
-    /// connect time of one request of `site` (§13.7).
-    pub fn observe_timing(&self, site: &str, t: &Timing) {
+    /// connect time of one request of `site` (§13.7). `route` decides the
+    /// `kind` of the added latency ([`latency_kind`], I-31).
+    pub fn observe_timing(&self, site: &str, route: RouteKind, t: &Timing) {
         self.edge_added_latency
-            .with_label_values(&[site])
+            .with_label_values(&[site, latency_kind(route)])
             .observe(t.edge.as_secs_f64());
         if let Some(connect) = t.origin_connect {
             self.origin_connect
@@ -522,6 +540,49 @@ mod tests {
         assert_eq!(status_class(Some(502)), "5xx");
         assert_eq!(status_class(Some(99)), "none");
         assert_eq!(status_class(None), "none");
+    }
+
+    /// I-31: `/__mg/*` requests are `kind="mg"`, everything else
+    /// `kind="site"`, each in its own series.
+    #[test]
+    fn added_latency_is_split_by_kind() {
+        assert_eq!(latency_kind(RouteKind::Origin), "site");
+        for route in [
+            RouteKind::Healthz,
+            RouteKind::SdkFile,
+            RouteKind::Submit,
+            RouteKind::EdgeReserved,
+        ] {
+            assert_eq!(latency_kind(route), "mg", "{route:?}");
+        }
+        let m = metrics();
+        let count = |kind: &str| {
+            m.edge_added_latency
+                .with_label_values(&["kind-test", kind])
+                .get_sample_count()
+        };
+        let t = Timing {
+            edge: Duration::from_micros(250),
+            ..Timing::default()
+        };
+        m.observe_timing("kind-test", RouteKind::Submit, &t);
+        m.observe_timing("kind-test", RouteKind::Healthz, &t);
+        m.observe_timing("kind-test", RouteKind::Origin, &t);
+        assert_eq!((count("site"), count("mg")), (1, 2));
+        m.init_site("kind-init");
+        let mut out = Vec::new();
+        TextEncoder::new()
+            .encode(&prometheus::gather(), &mut out)
+            .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        for kind in LATENCY_KINDS {
+            assert!(
+                text.contains(&format!(
+                    "mg_edge_added_latency_seconds_count{{kind=\"{kind}\",site=\"kind-init\"}} 0"
+                )),
+                "{kind}"
+            );
+        }
     }
 
     #[test]

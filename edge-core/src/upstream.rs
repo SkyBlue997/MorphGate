@@ -2,7 +2,8 @@
 //! package WP-C1).
 //!
 //! * [`is_upstream_family`]: the known upstream header families that the
-//!   Edge strips from every request before forwarding (§9.3 step 5), matched
+//!   Edge strips from every request before forwarding (§9.3 step 5, with
+//!   the I-29 client-IP, URL-rewrite and method-override names), matched
 //!   after lower-casing and mapping `_` to `-`, because CGI-style origins
 //!   treat `CF_Connecting_IP` and `CF-Connecting-IP` as the same variable.
 //! * [`connection_listed`] / [`hop_by_hop`]: hop-by-hop headers (§9.3
@@ -46,7 +47,15 @@ pub const FAMILY_PREFIXES: [&str; 8] = [
 ];
 
 /// Full names of the known upstream header families (§9.3), normalized.
-pub const FAMILY_NAMES: [&str; 7] = [
+///
+/// The last twelve are the I-29 additions, stripped and counted exactly
+/// like the rest: client-IP headers other proxies and CDNs write, and the
+/// URL-rewrite and method-override headers. An origin that trusted them
+/// could be handed a forged client address, or a path or method other than
+/// the one the Edge matched its route on. (A `_method` body parameter
+/// cannot be removed here: the owner's runbook forbids method overrides on
+/// protected routes.)
+pub const FAMILY_NAMES: [&str; 19] = [
     "tls-ja3",
     "tls-ja4",
     "tls-hash",
@@ -54,6 +63,21 @@ pub const FAMILY_NAMES: [&str; 7] = [
     "forwarded",
     "true-client-ip",
     "x-real-ip",
+    // I-29: client IP.
+    "client-ip",
+    "x-client-ip",
+    "x-cluster-client-ip",
+    "fastly-client-ip",
+    "x-originating-ip",
+    "x-remote-ip",
+    "x-remote-addr",
+    // I-29: URL rewrite.
+    "x-original-url",
+    "x-rewrite-url",
+    // I-29: method override.
+    "x-http-method-override",
+    "x-http-method",
+    "x-method-override",
 ];
 
 /// Hop-by-hop headers removed besides `Connection` and the names it lists

@@ -101,6 +101,34 @@ fn direct_tls_hands_sni_and_alpn_to_the_request() {
         1.0
     );
     let id = seen.header("mg-request-id").unwrap().to_owned();
+
+    // I-29: a request whose only upstream-family headers are the client-IP,
+    // URL-rewrite and method-override names is stripped and counted too,
+    // including an underscore spelling and a name `Connection` nominates.
+    let i29 = "GET /tls-i29 HTTP/1.1\r\nHost: example.com\r\nConnection: close, X-Original-URL\r\n\
+               X-Original-URL: /admin\r\nx_http_method_override: DELETE\r\n\
+               X-Cluster-Client-IP: 10.0.0.9\r\nFastly_Client_IP: 10.0.0.8\r\n\r\n";
+    let (r, _) = https(bind, &connector(b"\x08http/1.1", None), i29).unwrap();
+    assert_eq!(r.status, 200, "{}", r.head);
+    let seen = env.origin.last("/tls-i29").unwrap();
+    for (name, value) in &seen.headers {
+        let n = name.to_ascii_lowercase().replace('_', "-");
+        assert!(
+            ![
+                "x-original-url",
+                "x-http-method-override",
+                "x-cluster-client-ip",
+                "fastly-client-ip"
+            ]
+            .contains(&n.as_str()),
+            "{name}: {value} reached the origin"
+        );
+    }
+    assert_eq!(seen.header("mg-client-ip"), Some("127.0.0.1"));
+    assert_eq!(
+        edge.metric("mg_upstream_headers_stripped_total{profile=\"direct_tls\"}"),
+        2.0
+    );
     let line = edge.request_log(&id).expect("request log line");
     assert!(
         line.contains("tls_sni=edge.test tls_alpn=http/1.1"),

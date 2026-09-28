@@ -126,6 +126,7 @@ fn valid_token_key_files() {
             ttl_s: 1800,
             bind,
             rb: RiskBand::Low,
+            replay_unchecked: false,
         },
         &TestRng::new(3),
     )

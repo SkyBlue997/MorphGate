@@ -229,6 +229,11 @@ pub struct DecisionRecord {
     /// The request's challenge / clearance bindings (§6.4), which a
     /// CHALLENGE seals into its `C` (WP-E1c). `Debug` shows presence only.
     pub bind: BindInputs,
+    /// The request's clearance token was issued without a replay check
+    /// (`ruc`, I-30): the decision event's `token.replay_unchecked`. On a
+    /// `fail_closed` route such a token is not a clearance
+    /// (`identity::Acceptance`).
+    pub token_replay_unchecked: bool,
 }
 
 impl DecisionRecord {
@@ -293,6 +298,8 @@ pub async fn evaluate(
         bundle.clearance.ctp_shadow,
     );
     let cookies: Vec<&str> = built.cookies.iter().map(String::as_str).collect();
+    // A token issued without a replay check is no clearance on a
+    // fail_closed route (I-30).
     let clearance = identity::verify_clearance(
         &bundle.token_keys,
         site,
@@ -300,7 +307,9 @@ pub async fn evaluate(
         &cookies,
         &bind,
         facts.ts_ms.div_euclid(1000),
+        identity::Acceptance::for_route(facts.route.fail_closed),
     );
+    let token_replay_unchecked = clearance.replay_unchecked;
     ctx.identity.token = clearance.token;
     ctx.session_id = clearance.session;
     let now_us = ratelimit::unix_now_us();
@@ -391,6 +400,7 @@ pub async fn evaluate(
         route: facts.route.clone(),
         enforcement,
         bind,
+        token_replay_unchecked,
     }
 }
 

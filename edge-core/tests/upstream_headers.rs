@@ -36,9 +36,150 @@ fn family_list_is_exactly_the_spec_list() {
             "x-forward-port",
             "forwarded",
             "true-client-ip",
-            "x-real-ip"
+            "x-real-ip",
+            // I-29.
+            "client-ip",
+            "x-client-ip",
+            "x-cluster-client-ip",
+            "fastly-client-ip",
+            "x-originating-ip",
+            "x-remote-ip",
+            "x-remote-addr",
+            "x-original-url",
+            "x-rewrite-url",
+            "x-http-method-override",
+            "x-http-method",
+            "x-method-override",
         ]
     );
+}
+
+/// The I-29 names in their canonical spelling.
+const I29: [&str; 12] = [
+    "client-ip",
+    "x-client-ip",
+    "x-cluster-client-ip",
+    "fastly-client-ip",
+    "x-originating-ip",
+    "x-remote-ip",
+    "x-remote-addr",
+    "x-original-url",
+    "x-rewrite-url",
+    "x-http-method-override",
+    "x-http-method",
+    "x-method-override",
+];
+
+/// I-29: the client-IP, URL-rewrite and method-override headers belong to
+/// the families in any case and in their underscore spellings (the CGI
+/// variable `HTTP_X_ORIGINAL_URL` is the same for all of them).
+#[test]
+fn i29_names_match_in_any_case_and_with_underscores() {
+    for name in I29 {
+        let upper = name.to_ascii_uppercase();
+        let title: String = name
+            .split('-')
+            .map(|part| {
+                let mut c = part.chars();
+                c.next()
+                    .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("-");
+        let underscore = name.replace('-', "_");
+        let mixed = title.replacen('-', "_", 1);
+        for spelling in [
+            name.to_owned(),
+            upper.clone(),
+            title.clone(),
+            underscore.clone(),
+            underscore.to_ascii_uppercase(),
+            mixed,
+        ] {
+            assert!(is_upstream_family(&spelling), "{spelling}");
+        }
+    }
+    for name in [
+        "X-Original-URL",
+        "X_Original_Url",
+        "X-HTTP-Method-Override",
+        "x_http_method",
+        "Fastly-Client-IP",
+        "CLIENT_IP",
+        "X-Cluster-Client-Ip",
+    ] {
+        assert!(is_upstream_family(name), "{name}");
+    }
+}
+
+/// I-29 names are whole names, not prefixes: neighbours stay ordinary.
+#[test]
+fn i29_names_match_whole_names_only() {
+    for name in [
+        "client-ip2",
+        "client",
+        "x-client",
+        "x-client-ips",
+        "x-original-uri",
+        "x-original-urls",
+        "x-rewrite",
+        "x-http-methods",
+        "x-http-method-overrides",
+        "x-method",
+        "x-remote-address",
+        "x-remote",
+        "fastly-client",
+        "x-originating",
+        "original-url",
+        "method-override",
+    ] {
+        assert!(!is_upstream_family(name), "{name}");
+    }
+}
+
+/// I-29 with §9.3 steps 3-5: a `Connection` listing of an I-29 name is
+/// left to step 5 like every family name (step 5 strips it and counts it),
+/// so the header is removed whether or not the client nominated it.
+#[test]
+fn connection_listed_i29_names_are_left_to_step_5() {
+    let h = headers(&[
+        (
+            "Connection",
+            "X-Original-URL, x_http_method_override, CLIENT-IP, X-Custom",
+        ),
+        ("X-Original-URL", "/admin"),
+        ("x_http_method_override", "DELETE"),
+        ("Client-IP", "10.0.0.1"),
+    ]);
+    let listed = connection_listed(&h);
+    assert_eq!(
+        listed,
+        [
+            "x-original-url",
+            "x_http_method_override",
+            "client-ip",
+            "x-custom"
+        ]
+    );
+    let hop = hop_by_hop(&h);
+    assert_eq!(
+        hop,
+        [
+            "connection",
+            "x-custom",
+            "keep-alive",
+            "proxy-connection",
+            "te",
+            "upgrade"
+        ]
+    );
+    for name in &listed {
+        assert!(hop.contains(name) || is_upstream_family(name), "{name}");
+    }
+    for (name, _) in &h[1..] {
+        assert!(is_upstream_family(name), "{name}");
+    }
 }
 
 /// §9.3: a representative member of every prefix family, in several

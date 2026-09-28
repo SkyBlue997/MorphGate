@@ -98,6 +98,136 @@ fn upstream_families_are_stripped_including_underscore_spellings() {
     assert!(!seen.has("cf-connecting-ip") && !seen.has("x-forwarded-for"));
 }
 
+/// I-29: the client-IP, URL-rewrite and method-override headers, in their
+/// canonical form, upper case, underscore spellings and when the client
+/// nominates them in `Connection`.
+const I29: [&str; 12] = [
+    "client-ip",
+    "x-client-ip",
+    "x-cluster-client-ip",
+    "fastly-client-ip",
+    "x-originating-ip",
+    "x-remote-ip",
+    "x-remote-addr",
+    "x-original-url",
+    "x-rewrite-url",
+    "x-http-method-override",
+    "x-http-method",
+    "x-method-override",
+];
+
+/// I-29 header lines: every name in three spellings, each value a unique
+/// `spoof-*` marker, plus a `Connection` field that nominates some of them.
+fn i29_spoofed() -> String {
+    let mut lines = String::new();
+    for (i, name) in I29.iter().enumerate() {
+        let title: Vec<String> = name
+            .split('-')
+            .map(|p| p[..1].to_ascii_uppercase() + &p[1..])
+            .collect();
+        lines += &format!("{}: spoof-{i}-a\r\n", title.join("-"));
+        lines += &format!("{}: spoof-{i}-b\r\n", name.to_ascii_uppercase());
+        lines += &format!("{}: spoof-{i}-c\r\n", title.join("_"));
+    }
+    lines += "Connection: X-Original-URL, x_http_method_override, CLIENT-IP, X_Rewrite_Url\r\n";
+    lines
+}
+
+/// I-29: none of the extra client-IP, URL-rewrite and method-override
+/// headers reaches the origin, whatever the spelling and whether or not
+/// `Connection` nominates them; the origin sees the Edge's path, method and
+/// client address only.
+#[test]
+fn i29_client_ip_rewrite_and_override_headers_never_reach_the_origin() {
+    let env = TestEnv::new("i29");
+    let _edge = active(&env, "", |_| {});
+    let r = get(
+        env.listen,
+        "example.com",
+        "/i29",
+        &format!("{}{}X-Other: kept\r\n", cf("198.51.100.7"), i29_spoofed()),
+    );
+    assert_eq!(r.status, 200, "{}", r.head);
+    let seen = env.origin.last("/i29").unwrap();
+    assert!(seen.line.starts_with("GET /i29 "), "{}", seen.line);
+    for (name, value) in &seen.headers {
+        let normalized = name.to_ascii_lowercase().replace('_', "-");
+        assert!(
+            !I29.contains(&normalized.as_str()),
+            "{name} reached the origin: {:?}",
+            seen.headers
+        );
+        assert!(!value.contains("spoof-"), "{name}: {value}");
+    }
+    assert_eq!(seen.header("x-other"), Some("kept"));
+    assert_eq!(seen.all("mg-client-ip"), ["198.51.100.7"]);
+    assert_eq!(seen.all("x-forwarded-for"), ["198.51.100.7"]);
+}
+
+/// I-29 against framing tricks: an I-29 name hidden in an obs-fold
+/// continuation or spelled with whitespace before the colon is a malformed
+/// request (400, nothing reaches the origin; Pingora's request parser
+/// rejects both, and a Pingora bump must keep it that way). Several
+/// `Connection` lines in any case and repeated names in mixed spellings are
+/// all stripped, and a chunked request's trailer section never reaches the
+/// origin (its reader accepts no trailers, so it would drop the request).
+#[test]
+fn i29_names_survive_no_framing_trick() {
+    let env = TestEnv::new("i29-framing");
+    let _edge = active(&env, "", |_| {});
+    let head = |method: &str, path: &str| {
+        format!(
+            "{method} {path} HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n{}",
+            cf("198.51.100.7")
+        )
+    };
+    for (path, lines) in [
+        (
+            "/i29-fold-line",
+            "X-Other: a\r\n X-Original-URL: /spoof\r\n",
+        ),
+        ("/i29-fold-value", "X-Original-URL:\r\n /spoof\r\n"),
+        ("/i29-space", "X-Original-URL : /spoof\r\n"),
+        ("/i29-tab", "X-HTTP-Method-Override\t: DELETE\r\n"),
+    ] {
+        let req = format!("{}{lines}\r\n", head("GET", path));
+        let r = raw(env.listen, req.as_bytes()).unwrap();
+        assert_eq!(r.status, 400, "{path}: {}", r.head);
+        assert!(env.origin.last(path).is_none(), "{path} reached the origin");
+    }
+
+    let assert_clean = |path: &str| {
+        let seen = env.origin.last(path).unwrap_or_else(|| panic!("{path}"));
+        for (name, value) in &seen.headers {
+            let normalized = name.to_ascii_lowercase().replace('_', "-");
+            assert!(!I29.contains(&normalized.as_str()), "{path}: {name}");
+            assert!(!value.contains("spoof"), "{path}: {name}: {value}");
+        }
+        seen
+    };
+    let conn = "CONNECTION: X-Client-IP\r\nconnection: x_remote_addr, X-HTTP-Method\r\n\
+                X-Client-IP: spoof-a\r\nx_remote_addr: spoof-b\r\nX-HTTP-METHOD: spoof-c\r\n\
+                x-client-ip: spoof-d\r\nX_CLIENT_IP: spoof-e\r\nx-Client_Ip: spoof-f\r\n";
+    let r = raw(
+        env.listen,
+        format!("{}{conn}\r\n", head("GET", "/i29-conn")).as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(r.status, 200, "{}", r.head);
+    assert_clean("/i29-conn");
+
+    let chunked = format!(
+        "{}Transfer-Encoding: chunked\r\nContent-Type: text/plain\r\n\r\n\
+         3\r\nabc\r\n0\r\nX-Original-URL: /spoof\r\nX-HTTP-Method-Override: spoof\r\n\r\n",
+        head("POST", "/i29-trailer")
+    );
+    let r = raw(env.listen, chunked.as_bytes()).unwrap();
+    assert_eq!(r.status, 200, "{}", r.head);
+    let seen = assert_clean("/i29-trailer");
+    assert!(seen.line.starts_with("POST /i29-trailer "), "{}", seen.line);
+    assert_eq!(seen.body, b"abc");
+}
+
 #[test]
 fn client_ip_unknown_is_never_more_permissive() {
     let env = TestEnv::new("ipunknown");

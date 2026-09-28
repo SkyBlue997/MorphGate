@@ -14,6 +14,17 @@
 //! is then `binding_mismatch` (D-23). Statuses map as §6.5 says (unknown
 //! kid and expiry → `expired`).
 //!
+//! A token issued without a replay check (`ruc`, I-30) is accepted like any
+//! other, except on a `fail_closed` route: there it is not a clearance
+//! ([`Acceptance::FailClosed`]). It counts as `expired` (ABSENT: no level,
+//! no age, no session, no added risk), so the matrix challenges again
+//! wherever a clearance is required or would have satisfied the challenge,
+//! and the `C` of that challenge belongs to the `fail_closed` route, whose
+//! submission is 429 while the replay store is still unavailable (§9.7
+//! rule 4). A later candidate that is a full clearance is still chosen.
+//! [`Clearance::replay_unchecked`] reports the `ruc` of the chosen token
+//! either way (the decision event's `token.replay_unchecked`).
+//!
 //! # Crawlers
 //!
 //! [`apply_crawler`] maps a `CrawlerStatus` to `identity.crawler` (§9.6
@@ -78,10 +89,36 @@ pub struct Clearance {
     pub token: Token,
     /// The valid token's `sub` (`ctx.session_id`, `MG-Session`).
     pub session: Option<String>,
+    /// The chosen token verified and carries `ruc` (issued without a replay
+    /// check, I-30), whether or not the route accepted it.
+    pub replay_unchecked: bool,
+}
+
+/// Which clearances the selected route accepts (I-30).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acceptance {
+    /// Every valid token.
+    Any,
+    /// A `fail_closed` route: a token with `ruc` (issued without a replay
+    /// check) is not a clearance here.
+    FailClosed,
+}
+
+impl Acceptance {
+    /// The acceptance of a route with this `fail_closed` (OR-ed over the
+    /// matching routes, §9.4).
+    pub fn for_route(fail_closed: bool) -> Self {
+        if fail_closed {
+            Self::FailClosed
+        } else {
+            Self::Any
+        }
+    }
 }
 
 /// One candidate: its status, and for a verified token its claims and
-/// binding check.
+/// binding check. A binding-valid `ruc` token on a `fail_closed` route is
+/// `expired` (not a clearance there, I-30).
 fn candidate(
     keys: &TokenKeySet,
     site: &str,
@@ -89,6 +126,7 @@ fn candidate(
     token: &str,
     current: &BindInputs,
     now_s: i64,
+    accept: Acceptance,
 ) -> (TokenStatus, Option<(ClearanceClaims, BindCheck)>) {
     match mg_challenge::verify(keys, site, env, token, now_s) {
         Err(e) => (e.status(), None),
@@ -96,6 +134,8 @@ fn candidate(
             let check = check_clearance_bind(&claims, current);
             let status = if check.hard_failure() {
                 TokenStatus::BindingMismatch
+            } else if claims.ruc && accept == Acceptance::FailClosed {
+                TokenStatus::Expired
             } else {
                 TokenStatus::Valid
             };
@@ -105,7 +145,8 @@ fn candidate(
 }
 
 /// Verifies the clearance cookie of a request (see the module
-/// documentation) and counts `mg_token_verify_total{result}`.
+/// documentation) for a route with `accept`, and counts
+/// `mg_token_verify_total{result}` with the resulting status.
 pub fn verify_clearance(
     keys: &TokenKeySet,
     site: &str,
@@ -113,11 +154,12 @@ pub fn verify_clearance(
     cookie_headers: &[&str],
     current: &BindInputs,
     now_s: i64,
+    accept: Acceptance,
 ) -> Clearance {
     let mut first: Option<(TokenStatus, Option<(ClearanceClaims, BindCheck)>)> = None;
     let mut chosen = None;
     for token in clearance_cookies(cookie_headers) {
-        let c = candidate(keys, site, env, token, current, now_s);
+        let c = candidate(keys, site, env, token, current, now_s, accept);
         if c.0 == TokenStatus::Valid {
             chosen = Some(c);
             break;
@@ -135,8 +177,10 @@ pub fn verify_clearance(
             ..Token::default()
         },
         session: None,
+        replay_unchecked: false,
     };
     if let Some((claims, check)) = verified {
+        out.replay_unchecked = claims.ruc;
         out.token.bind = check.token_bind();
         if status == TokenStatus::Valid {
             out.token.level = Some(claims.lvl);
@@ -509,6 +553,17 @@ mod tests {
     const NOW: i64 = 1_790_000_000;
 
     fn mint(bind_from: &BindInputs, lvl: TokenLevel, now: i64, ttl: u32, env: &str) -> String {
+        mint_with(bind_from, lvl, now, ttl, env, false)
+    }
+
+    fn mint_with(
+        bind_from: &BindInputs,
+        lvl: TokenLevel,
+        now: i64,
+        ttl: u32,
+        env: &str,
+        replay_unchecked: bool,
+    ) -> String {
         let p = MintParams {
             env,
             session: None,
@@ -517,6 +572,7 @@ mod tests {
             ttl_s: ttl,
             bind: ClearanceBind::from_inputs(bind_from).unwrap(),
             rb: RiskBand::Low,
+            replay_unchecked,
         };
         mg_challenge::mint(&keys(), "blog", &p, &Counter(Default::default()))
             .unwrap()
@@ -534,7 +590,7 @@ mod tests {
         let token = mint(&here, TokenLevel::Pow, NOW, 1800, "production");
         let k = keys();
         let verify = |headers: &[&str], cur: &BindInputs, now: i64, env: &str| {
-            verify_clearance(&k, "blog", env, headers, cur, now)
+            verify_clearance(&k, "blog", env, headers, cur, now, Acceptance::Any)
         };
 
         let none = verify(&["a=1"], &here, NOW + 10, "production");
@@ -606,6 +662,70 @@ mod tests {
                 .status,
             TokenStatus::Expired
         );
+    }
+
+    /// I-30: a token issued without a replay check (`ruc`) is a clearance
+    /// on every route except a `fail_closed` one, where it is `expired`
+    /// (no level, no session: the matrix challenges again); a later full
+    /// clearance still wins there. `replay_unchecked` reports the `ruc` of
+    /// the chosen token either way.
+    #[test]
+    fn replay_unchecked_tokens_are_not_accepted_on_fail_closed_routes() {
+        let ua = mg_core::ua::parse("Mozilla/5.0 (X11) Chrome/131.0 Safari/537.36");
+        let here = bind_inputs(&ua, &net("203.0.113.7", Some(64500)), None, true);
+        let ruc = mint_with(&here, TokenLevel::Pow, NOW, 1800, "production", true);
+        let checked = mint(&here, TokenLevel::Invisible, NOW, 1800, "production");
+        let k = keys();
+        let verify = |headers: &[&str], accept: Acceptance| {
+            verify_clearance(&k, "blog", "production", headers, &here, NOW + 10, accept)
+        };
+        let c = cookie(&ruc);
+
+        let open = verify(&[&c], Acceptance::for_route(false));
+        assert_eq!(open.token.status, TokenStatus::Valid);
+        assert_eq!(open.token.level, Some(TokenLevel::Pow));
+        assert!(open.session.is_some());
+        assert!(open.replay_unchecked);
+
+        let closed = verify(&[&c], Acceptance::for_route(true));
+        assert_eq!(closed.token.status, TokenStatus::Expired);
+        assert_eq!((closed.token.level, closed.token.age_s), (None, 0));
+        assert!(closed.session.is_none());
+        assert!(closed.replay_unchecked);
+
+        // A checked token is a clearance on a fail_closed route.
+        let full = verify(&[&cookie(&checked)], Acceptance::FailClosed);
+        assert_eq!(full.token.status, TokenStatus::Valid);
+        assert!(!full.replay_unchecked);
+
+        // ruc first, then a checked token: the checked one is chosen there.
+        let both = format!(
+            "{}={ruc}; {}={checked}",
+            mg_challenge::COOKIE_NAME,
+            mg_challenge::COOKIE_NAME
+        );
+        let chosen = verify(&[&both], Acceptance::FailClosed);
+        assert_eq!(chosen.token.status, TokenStatus::Valid);
+        assert_eq!(chosen.token.level, Some(TokenLevel::Invisible));
+        assert!(!chosen.replay_unchecked);
+        // ... and on other routes the first valid one (the ruc token).
+        let any = verify(&[&both], Acceptance::Any);
+        assert_eq!(any.token.level, Some(TokenLevel::Pow));
+        assert!(any.replay_unchecked);
+
+        // A hard binding failure stays binding_mismatch on any route.
+        let firefox = mg_core::ua::parse("Mozilla/5.0 (X11) Gecko/20100101 Firefox/131.0");
+        let other = bind_inputs(&firefox, &net("203.0.113.7", Some(64500)), None, true);
+        let mm = verify_clearance(
+            &k,
+            "blog",
+            "production",
+            &[&c],
+            &other,
+            NOW + 10,
+            Acceptance::FailClosed,
+        );
+        assert_eq!(mm.token.status, TokenStatus::BindingMismatch);
     }
 
     #[test]

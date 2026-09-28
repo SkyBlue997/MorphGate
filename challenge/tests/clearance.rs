@@ -38,6 +38,7 @@ fn params<'a>(bind: &BindInputs) -> MintParams<'a> {
         ttl_s: 1800,
         bind: ClearanceBind::from_inputs(bind).unwrap(),
         rb: RiskBand::Medium,
+        replay_unchecked: false,
     }
 }
 
@@ -112,6 +113,9 @@ fn mint_verify_round_trip() {
     .map(|k| json.find(k).unwrap())
     .collect();
     assert!(order.windows(2).all(|w| w[0] < w[1]), "{json}");
+    // A checked token has no `ruc` claim (I-30: omitted by default).
+    assert!(!claims.ruc);
+    assert!(!json.contains("\"ruc\""), "{json}");
     assert!(
         json.contains(
             r#""bind":{"uah":"iXRgjCj6tPt2cFcPqeHr_A","ipp":"JxTqJG6DMjc-DDCAwG3WYw","ipa":"3jB742LLBC_uwzOiZPFFLg"}"#
@@ -316,6 +320,67 @@ fn forged_claims_are_invalid() {
     )
     .unwrap();
     assert_eq!(verify_old(&not_json, NOW), Err(TokenError::Claims));
+}
+
+/// I-30: a token issued with `ic.replay_unchecked` carries `ruc: true` as
+/// its last claim; a checked one omits it. A present `ruc` must be the
+/// boolean `true`: `false` (never minted), `null` and other types are
+/// invalid claims, like any other unexpected value.
+#[test]
+fn replay_unchecked_claim() {
+    let k = keys(&[OLD_KID]);
+    let mut p = params(&bindings());
+    p.replay_unchecked = true;
+    let (token, claims) = mint(&k, SITE, &p, &TestRng::new(9)).unwrap();
+    assert!(claims.ruc);
+    let json = serde_json::to_string(&claims).unwrap();
+    assert!(json.ends_with(r#","ruc":true}"#), "{json}");
+    assert_eq!(verify_old(&token, NOW), Ok(claims.clone()));
+    assert!(verify_old(&token, NOW).unwrap().ruc);
+    assert!(
+        verify_ignoring_expiry(&k, SITE, ENV, &token, NOW + 7200)
+            .unwrap()
+            .ruc
+    );
+    assert!(format!("{claims:?} {p:?}").contains("ruc: true"));
+    assert!(format!("{p:?}").contains("replay_unchecked: true"));
+
+    let base = claims_json();
+    assert!(base.get("ruc").is_none(), "{base}");
+    let variant = |ruc: Value| {
+        let mut c = base.clone();
+        c["ruc"] = ruc;
+        forge(&c, OLD_KID, SITE)
+    };
+    assert!(verify_old(&variant(json!(true)), NOW).unwrap().ruc);
+    assert!(!verify_old(&forge(&base, OLD_KID, SITE), NOW).unwrap().ruc);
+    for bad in [
+        json!(false),
+        Value::Null,
+        json!("true"),
+        json!(1),
+        json!([true]),
+        json!({}),
+    ] {
+        let err = verify_old(&variant(bad.clone()), NOW).expect_err(&bad.to_string());
+        assert_eq!(
+            (err, err.status()),
+            (TokenError::Claims, TokenStatus::Invalid),
+            "{bad}"
+        );
+    }
+    // A repeated claim is invalid too.
+    let key: Vec<u8> = (0x20..0x40).collect();
+    let text = serde_json::to_string(&base).unwrap();
+    let twice = format!("{},\"ruc\":true,\"ruc\":true}}", &text[..text.len() - 1]);
+    let repeated = LocalToken::encrypt(
+        &SymmetricKey::<V4>::from(&key).unwrap(),
+        twice.as_bytes(),
+        Some(br#"{"kid":"blog-t-20260927"}"#),
+        Some(&[b"mg-clr-v1".as_slice(), &[0], b"blog"].concat()),
+    )
+    .unwrap();
+    assert_eq!(verify_old(&repeated, NOW), Err(TokenError::Claims));
 }
 
 #[test]

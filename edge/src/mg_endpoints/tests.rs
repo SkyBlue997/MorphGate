@@ -1258,7 +1258,8 @@ fn issuance_quota() {
 
 /// §9.7 rules 3-5 without an authoritative replay store: a C of a
 /// `fail_closed` route (or of a route that is gone) is 429 without a
-/// cookie; other routes are issued with `ic.replay_unchecked`.
+/// cookie; other routes are issued with `ic.replay_unchecked`, and that
+/// token carries `ruc` (I-30).
 #[test]
 fn replay_store_unavailable() {
     let f = Fixture::with_state(&test_bundle(), |c| c.local_replay_authoritative = false);
@@ -1290,6 +1291,7 @@ fn replay_store_unavailable() {
     assert!(header(&out.response, "Set-Cookie").is_some());
     assert_eq!(reasons(&out), ["ic.replay_unchecked"]);
     assert_eq!(out.record.result, "solved");
+    assert!(token_claims(&f, &out.response, now_ms() / 1000).ruc);
 
     // The route was removed from the bundle: fail closed.
     let out = one("checkout", "/members/a");
@@ -1320,7 +1322,11 @@ fn full_local_replay_set_is_unavailable() {
             &solved(&c, ChallengeType::Pow, bits, ret, json!({})),
         )
     };
-    assert_eq!(one("members", "/members/a").response.status, 200);
+    let checked = one("members", "/members/a");
+    assert_eq!(checked.response.status, 200);
+    assert!(reasons(&checked).is_empty());
+    // A checked token has no `ruc` (I-30).
+    assert!(!token_claims(&f, &checked.response, now_ms() / 1000).ruc);
     assert_eq!(
         reasons(&one("login", "/account/login")),
         ["ic.replay_unavailable"]
@@ -1328,6 +1334,7 @@ fn full_local_replay_set_is_unavailable() {
     let out = one("members", "/members/b");
     assert_eq!(out.response.status, 200);
     assert_eq!(reasons(&out), ["ic.replay_unchecked"]);
+    assert!(token_claims(&f, &out.response, now_ms() / 1000).ruc);
 }
 
 /// §9.9: an RNG failure while minting is 503, never a token or a C.
