@@ -1,7 +1,7 @@
 # ADR-0007：精简部署：不用 Kafka / Kubernetes，Valkey Streams + VictoriaLogs，Edge 拉取配置
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：VictoriaLogs 双实例与保留期、密钥保管、分阶段配置下发）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：VictoriaLogs 双实例与保留期、密钥保管、分阶段配置下发）；2026-09-28 Phase 1 勘误（事件管道、配置下发与 Valkey 的落地方式，见文末"勘误"，依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-03、D-15、D-21、D-35 与裁决 I-3、I-11、I-15、I-16、I-25）
 - 相关：[01 整体架构](../01-architecture.md)、[02 数据流](../02-data-flow.md)、[07 分阶段路线](../07-roadmap.md)、[ADR-0004](0004-origin-protection-tunnel-aop.md)
 
 ## 背景
@@ -48,6 +48,21 @@ visitor -> Cloudflare (Free/Pro) -> cloudflared --loopback--> mg-edge (127.0.0.1
 - Valkey 故障切换可能丢失 Stream 中的事件；DecisionEvent 属尽力而为的遥测，可以接受。
 - 不支持多区域；需要时通过 `EventSink` 与新的 ADR 扩展。
 - VictoriaLogs 不适合复杂 SQL 与训练集导出，这正是引入 ClickHouse 的触发条件。
+
+## 勘误（2026-09-28，Phase 1 实现）
+
+结论不变（不用 Kafka / Kubernetes，Valkey Streams + VictoriaLogs，Edge 拉取配置）；下表记录 Phase 1 的具体落地方式与相对原文的修正。
+
+| 项 | Phase 1 落地 | 依据 |
+|---|---|---|
+| 事件管道 | 没有"环形缓冲 + 小磁盘溢写"：请求路径把记录放进三个有界队列（P0 免于采样的决定事件与 feedback、P1 访问记录、P2 参与采样的放行决定与遥测），满时丢新记录；之后 `vl-main`、`vl-short`、文件出口与 `mg:ev` 各有独立的积压与刷写任务，一个输出故障只影响它自己，积压满时先丢低优先级类别，丢弃按输出计入 `mg_event_dropped_total{sink, class}`（规格原稿由一个 flusher 依次写所有输出，VictoriaLogs 挂起时文件与 `mg:ev` 也会被拖慢，I-25 改为解耦） | I-25；[规格 §9.11](../impl/phase1-spec.md#911-事件wp-c4-实现wp-e1d-接线) |
+| `mg:ev` | 只在 Valkey 模式下写；每个有决定事件的请求一条摘要（不采样），`XADD MAXLEN ~`（缺省 300,000），经状态层的同一连接以管线写出，失败不重试。Phase 1 没有消费者（近线 worker 在 Phase 2） | 规格 §13.6 |
+| VictoriaLogs 写入 | `POST /insert/jsonline`，`_stream_fields=kind,site`；失败重试 3 次（200 ms、1 s、5 s）；`http://` 只接受回环、RFC 1918、ULA、100.64.0.0/10 的 IP 字面量，否则必须 `https://`（决定事件含客户端 IP 与路径）；User-Agent `morphgate-dev-tooling` | I-11、I-15 |
+| 配置下发 | 大脑 VM 上只需一个静态文件服务器（只绑定 WireGuard 或要求 mTLS）；`mgctl bundle publish` 写发布目录，先工件后配置包两步 rsync。Edge 每站点每 10 s（2–300 s 可配）条件拉取，没有 `mg:pub:cfg` 提示（Phase 3 起）；`file://` 根可用于同机部署。`mg_config_age_seconds` 衡量拉取是否正常，配置是否最新由 `mg_bundle_published_version` 与各 Edge 的 `mg_config_version` 比较 | D-15、I-16 |
+| last-known-good | LKG 为 `state_dir/bundles/<site>.bundle`，工件缓存在 `state_dir/artifacts/`。从未有过配置包 → `bootstrap`（缺省全部放行并记录，可设为 503）；LKG 存在但无法使用 → 缺省 503，可设 `on_lkg_invalid = "open"`；配置或信任出错时不静默放开 | D-21、I-3 |
+| Valkey | 客户端为 redis-rs（`redis` 1.7）；所有 Valkey I/O 只在一个后台 service 的运行时上执行，请求经有界通道提交、按超时（缺省 10 ms）回退本地模式；连续失败熔断。进程内重放集合是固定容量的 TTL 集合，从不逐出未过期的 nonce，满时按"重放存储不可用"处理（原稿的 LRU 会逐出已用 nonce，导致可以重放）。Edge 的 ACL 用户按键选择器授权，已在 Valkey 9.1.2 上实测 | D-03、D-35 |
+| PostgreSQL | Phase 1 用不到（没有 mg-control）；开发环境的 compose 仍包含它 | 规格 §0.1 |
+| 最小访问记录归档 | Phase 1 写 `kind=access` 到 `vl-main`，每日归档到对象存储的任务尚未实现 | — |
 
 ## 参考
 

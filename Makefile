@@ -20,10 +20,10 @@ ifeq ($(origin OPENSSL_DIR),undefined)
 endif
 
 .PHONY: help proto rust-check wasm-check go-check web-check adapters-check compose-check \
-        docs-check check dev-up dev-down edge-run edge-smoke lab-egress-check
+        docs-check check dev-up dev-down edge-run edge-smoke lab-egress-check lab-e2e
 
 help: ## List targets
-	@awk 'BEGIN { FS = ":.*## " } /^[a-z][a-z-]*:.*## / { printf "  %-17s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@awk 'BEGIN { FS = ":.*## " } /^[a-z][a-z0-9-]*:.*## / { printf "  %-17s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 proto: ## Regenerate Go protobuf code into control-plane/gen (Rust codegen runs in build.rs)
 	scripts/gen-proto.sh
@@ -89,3 +89,8 @@ edge-smoke: ## Loopback end-to-end: throwaway origin + mg-edge (edge.toml v1, fi
 # Needs a running Docker daemon, so it is not part of `check`; CI runs it.
 lab-egress-check: ## Validation Lab: assert the allowlist holds at the tool and network-egress layers
 	scripts/lab-egress-check.sh
+
+# Not part of `check` (it builds and runs mg-edge, Valkey and an origin); CI
+# runs it in its own job with the rust job's mg-edge binary (MG_EDGE_BIN).
+lab-e2e: ## Validation Lab Phase 1 scenarios end to end on loopback (mg-edge, valkey-server, mglab)
+	scripts/lab-e2e.sh

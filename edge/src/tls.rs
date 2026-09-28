@@ -9,6 +9,13 @@
 //! reaches the request filters through `SslDigest.extension`. WP-J1 extends
 //! the same structure (JA4); there is no second construction path.
 //!
+//! JA4 spike (WP-J1, §15): on a `direct_tls` listener with `ja4_spike = true`
+//! a BoringSSL select-certificate callback computes the JA4 of the raw
+//! ClientHello ([`client_hello`], [`ja4`]) and keeps it in the connection's
+//! ex_data; [`TlsFacts::ja4`] carries it to the request, where it only
+//! reaches the decision event (`ctx.tls.ja4`): the policy still sees
+//! `tls.ja4` as MISSING (D-07).
+//!
 //! `origin_mtls` requires a client certificate that chains to `client_ca`
 //! (`PEER | FAIL_IF_NO_PEER_CERT`); a failed handshake closes the
 //! connection. BoringSSL calls the verification callback once per
@@ -27,6 +34,12 @@ use pingora::tls::ssl::{NameType, SslFiletype, SslVerifyMode};
 use std::any::Any;
 use std::sync::Arc;
 
+pub mod client_hello;
+mod hook;
+pub mod ja4;
+
+pub use hook::compute as compute_ja4;
+
 /// Facts from the TLS handshake that the request path uses (§9.5 `tls`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TlsFacts {
@@ -34,6 +47,8 @@ pub struct TlsFacts {
     pub sni: Option<String>,
     /// The negotiated ALPN protocol (`h2`, `http/1.1`).
     pub alpn: Option<String>,
+    /// The JA4 of the ClientHello: `ja4_spike` listeners only (WP-J1).
+    pub ja4: Option<ja4::Ja4>,
 }
 
 /// The TLS accept callbacks of every Edge TLS listener.
@@ -53,13 +68,14 @@ impl TlsAccept for EdgeTlsAccept {
     }
 }
 
-/// SNI and ALPN of a completed handshake.
+/// SNI, ALPN and (JA4 spike) JA4 of a completed handshake.
 pub fn facts(ssl: &TlsRef) -> TlsFacts {
     TlsFacts {
         sni: ssl.servername(NameType::HOST_NAME).map(str::to_owned),
         alpn: ssl
             .selected_alpn_protocol()
             .map(|p| String::from_utf8_lossy(p).into_owned()),
+        ja4: hook::ja4_of(ssl),
     }
 }
 
@@ -87,6 +103,9 @@ pub fn settings(l: &ListenerConfig, resolver: &CredResolver) -> Result<TlsSettin
     s.check_private_key()
         .map_err(|e| at("tls_key does not match tls_cert", &e))?;
     s.enable_h2();
+    if l.ja4_spike {
+        hook::install(&mut s).map_err(|e| at("ja4_spike", &e))?;
+    }
 
     if l.auth() == ListenerAuth::OriginMtls {
         let ca = l

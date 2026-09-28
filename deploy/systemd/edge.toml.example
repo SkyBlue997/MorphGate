@@ -55,8 +55,9 @@ auth    = "loopback"
 # warns). values[0] of mgctl keys gen-upstream goes into the Cloudflare Tier 0 rule.
 upstream_keys = "cred://mg-upstream-keys"
 
-# Cloudflare Authenticated Origin Pulls instead of a Tunnel (TLS, client
-# certificate from Cloudflare's origin-pull CA):
+# Cloudflare Authenticated Origin Pulls instead of a Tunnel (TLS; zone-level or
+# per-hostname AOP with a client certificate issued by the owner's own CA,
+# never the shared global origin-pull certificate, ADR-0004):
 # [[listeners]]
 # name = "aop"
 # bind = "203.0.113.10:443"
@@ -64,8 +65,13 @@ upstream_keys = "cred://mg-upstream-keys"
 # auth = "origin_mtls"
 # tls_cert = "/etc/morphgate/tls/edge.pem"
 # tls_key = "cred://mg-edge-tls-key"
-# client_ca = "/etc/morphgate/tls/cloudflare-origin-pull-ca.pem"
+# client_ca = "/etc/morphgate/tls/owner-aop-ca.pem"
 # cloudflare_ip_filter = true
+#
+# A direct_tls listener (no CDN in front) may add the JA4 spike (WP-J1,
+# ADR-0002 erratum): the JA4 is recorded in decision events only, never
+# evaluated. Default false.
+# ja4_spike = false
 
 [[sites]]
 id       = "blog"                      # [a-z0-9][a-z0-9_-]{0,63}

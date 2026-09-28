@@ -104,6 +104,76 @@ jobs:
       - name: make edge-smoke
         run: make edge-smoke
 
+      # The lab-e2e job runs this binary instead of compiling BoringSSL and
+      # aws-lc a second time (docs/impl/phase1-spec.md §16).
+      - name: Build the mg-edge release binary
+        run: cargo build --release --locked -p mg-edge
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mg-edge
+          path: target/release/mg-edge
+          if-no-files-found: error
+          retention-days: 3
+
+  # Phase 1 acceptance (docs/impl/phase1-spec.md §15 WP-L1, §18): the
+  # Validation Lab scenarios against the rust job's mg-edge, on loopback only.
+  lab-e2e:
+    name: Validation Lab end to end (Phase 1 scenarios)
+    needs: rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Same pinned Valkey as the rust job; the Edge under test keeps its state
+    # there (keys carry the site id "lab"; nothing is flushed).
+    services:
+      valkey:
+        image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+        ports:
+          - 127.0.0.1:6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      MG_TEST_VALKEY_URL: redis://127.0.0.1:6379/
+      # A missing dependency fails the job instead of skipping the run.
+      MG_LAB_E2E_REQUIRE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # mgctl (keys, bundle) and mglab (scenarios, event checks).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache-dependency-path: "*/go.sum"
+
+      # The Edge serves a fresh build of the Web SDK (sdk/web).
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: sdk/web/package.json
+          cache: true
+          cache_dependency_path: sdk/web/pnpm-lock.yaml
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mg-edge
+          path: ${{ runner.temp }}/mg-edge
+
+      # Artifacts do not keep the executable bit. python3 (the throwaway
+      # origin) and curl come with the runner image.
+      - name: make lab-e2e
+        run: |
+          python3 --version
+          chmod +x "$RUNNER_TEMP/mg-edge/mg-edge"
+          MG_EDGE_BIN="$RUNNER_TEMP/mg-edge/mg-edge" make lab-e2e
+
   msrv:
     name: Rust MSRV (1.88, cargo check)
     runs-on: ubuntu-24.04

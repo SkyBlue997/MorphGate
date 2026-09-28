@@ -849,6 +849,11 @@ impl EdgeProxy {
                 version: ssl_version,
                 sni: ctx.tls.as_ref().and_then(|t| t.sni.as_deref()),
                 alpn: ctx.tls.as_ref().and_then(|t| t.alpn.as_deref()),
+                ja4: ctx
+                    .tls
+                    .as_ref()
+                    .and_then(|t| t.ja4.as_ref())
+                    .map(|j| j.as_str()),
             }),
             ListenerProfile::Cloudflare => None,
         };

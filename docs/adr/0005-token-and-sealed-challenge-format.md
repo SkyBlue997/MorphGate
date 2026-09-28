@@ -1,7 +1,7 @@
 # ADR-0005：凭证采用 PASETO v4，密封 Challenge 采用 protobuf（prost）编码 + XChaCha20-Poly1305
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：编码与 AEAD 定稿、按阶段绑定、TTL 与 epoch、epoch 密钥派生、Early-Data）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：编码与 AEAD 定稿、按阶段绑定、TTL 与 epoch、epoch 密钥派生、Early-Data）；2026-09-28 勘误：Phase 1 实现口径（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-04、D-05、D-23、D-29、D-30、I-14、I-18、I-30，见文末"勘误"）
 - 相关：[04 Challenge 与访问凭证](../04-challenge-and-tokens.md)、[09 自研交互式 Challenge](../09-interactive-challenge.md)、[ADR-0008](0008-interactive-challenge-self-built.md)、[ADR-0010](0010-single-owner-model.md)
 
 ## 背景
@@ -48,6 +48,22 @@ ct = XChaCha20-Poly1305.seal(k_epoch[kid], xnonce, prost(SealedChallengeClaims),
 - `C` 只由 Edge（Rust）编码和打开，SDK 只对 `hash(C)` 签名，不存在跨语言编码一致性问题；对打开与解码路径做模糊测试，未知 `v` 一律拒绝。
 - dalek 2 / 3 的版本分裂可能带来依赖调整。
 - Phase 1 没有会话密钥，凭证只靠 `uah` + `ipp` 与短 TTL；`cloudflare` profile 下 Phase 2 起主要依赖 `cnf.jkt` 与 `uah`，`ctp` 只有在实测稳定后才考虑提升。
+
+## 勘误（2026-09-28，Phase 1 实现）
+
+结论（PASETO v4.local 凭证；prost 编码 + XChaCha20-Poly1305 的密封 C）不变。Phase 1 按下表实现，字节级格式见规格 [§6](../impl/phase1-spec.md#6-挑战与凭证密码学mg-challengewp-r2) 与 `testdata/phase1/kat.json`（D-xx 见规格 [§0.3](../impl/phase1-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](../impl/phase1-spec.md#集成者裁决2026-09-28优先于正文)）：
+
+| 项 | Phase 1 |
+|---|---|
+| Ed25519 实现（D-04） | "全工作区只用一个 Ed25519 实现"按自有代码执行：自有代码只用 ed25519-compact（pasetors 的 `v4` 特性本就依赖它）验证配置包签名，Go 侧用标准库 `crypto/ed25519`；Pingora 的 BoringSSL 与 reqwest 的 rustls（aws-lc-rs）只做 TLS。原文"ed25519-dalek 3.x 或 aws-lc-rs"与 dalek 2 / 3 的版本分裂不再适用 |
+| 凭证 claims（D-29、I-30） | 新增 `sst`（会话开始，Unix 秒）；`sub`、`jti` 为 16 个随机字节的 base64url；`bind.uah`、`bind.ipp` 必有，`bind.ipa`、`bind.ctp` 可缺省；`ruc` 只出现在重放存储不可用时签发的凭证上，取值 true（`"ruc": false` 被拒），`fail_closed` 路由不接受这种凭证；`iat` / `exp` 保持 Unix 秒，只用 pasetors 的 `LocalToken::{encrypt, decrypt}` 加自有 claims 校验；footer `{"kid"}`，implicit assertion `"mg-clr-v1" ‖ 0x00 ‖ site`；`rb` 在解析时校验（未知值 → `invalid`）；Phase 1 的 `lvl` 只有 `invisible` / `pow`，TTL 缺省 1800 s |
+| 会话沿用（D-29） | `sub` / `sst` 只从通过站点 / 环境校验、没有硬绑定失败且 `now − sst ≤ session_max_s` 的凭证沿用（可以已过期），重签不延长会话上限；未知或已退役 kid 的凭证按 `expired`（ABSENT，不加风险） |
+| 绑定（D-05、D-23） | 新增 `ipa = hash(ASN)`（ASN 已知且不为 0 时）：`ipp` 前缀变化时，只有签发时绑定了 ASN 且当前 ASN 相同才是软结果，否则硬失败；客户端 IP 未知时不签发 C 与凭证，所以二者恒带 `ipp` |
+| 密钥 id（I-14） | `token.keys.json` 的 `kid` 为 `<site>-t-<YYYYMMDD>`，`seal.root.json` 的 `root_id` 为 `<site>-r-<YYYYMMDD>`，同日重复加 `-N`；密钥文件 ≤ 64 KiB；配置包 `token_key_ids` 的每一项都必须在 Edge 的 `token.keys.json` 中，否则拒绝该配置包 |
+| 根密钥（D-30） | `seal.root.json` 含 1–2 个根：`roots[0]` 封装，全部用于打开（按顺序试 AEAD）；轮换分 add / promote / retire 三步，任一时刻所有 Edge 都能打开彼此签发的 C |
+| epoch 与编码 | kid 为 `e<epoch_no>`；info 为 `"mg-seal-v1" ‖ 0x00 ‖ site ‖ 0x00 ‖ u64be(epoch_no)`；接受窗口收紧为当前 epoch，日界后 125 s 内另接受上一个、日界前 5 s 内另接受下一个（原文"接受当前与上一个 epoch"会让上一个 epoch 全天有效）；`aad` 各段带 u16be 长度前缀；`len(C) ≤ 1024`；`open` 只接受 `seal` 写出的规范信封编码，`seal` 拒绝 `open` 会拒绝的一切，且对所有类型要求 `exp − iat ≤ 120 s`（I-18） |
+| Early-Data | 任何 `Early-Data` 头都视为早期数据（RFC 8470 §5.1），见 [04 §4.3](../04-challenge-and-tokens.md#43-early-data0-rtt) |
+| `tfp` | 仍不签发。JA4 预研（[ADR-0002 勘误](0002-edge-pingora-boringssl.md#bindtfp-的建议)）表明原始 JA4 随 TLS 1.3 会话恢复与 ClientHello 长度变化，决策中"`tfp`（JA4 哈希）硬绑定"改为：只取恢复时不变的部分，先 shadow，Phase 2 前不启用 |
 
 ## 参考
 

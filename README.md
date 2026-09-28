@@ -34,3 +34,15 @@
 | [09 自研交互式 Challenge](docs/09-interactive-challenge.md) | 按住验证、无障碍路径、密封 Challenge、Provider 接口与 Turnstile 适配、遥测与服务端评分 |
 | [10 威胁模型](docs/10-threat-model.md) | STRIDE v0：资产、信任边界、分组件威胁、平台自身滥用与误伤、残余风险 |
 | [架构决策记录（ADR）](docs/adr/README.md) | 技术栈、Edge 与 TLS、上游模型、源站保护、凭证与密封 Challenge 格式、策略语言、精简部署、交互式 Challenge、JA4 许可、单一所有者与密钥保管 |
+
+设计文档说"是什么、为什么"，描述各阶段的目标设计，Phase 1 已落地的行为在文中标出（2026-09-28 勘误）。
+
+## 实现
+
+| 文档 | 内容 |
+|---|---|
+| [Phase 1 实现规格](docs/impl/phase1-spec.md) | Phase 1 的工作包、文件所有权与全部跨组件契约（IR、配置、`/__mg/*`、Valkey 键、事件、指标、文件格式）；开头的集成者裁决 I-1..I-35 优先于正文，§0.3 列出相对设计文档的全部决定 |
+| [Phase 1 进度](docs/impl/phase1-status.md) | 各阶段状态、当前代码状态、遗留项与仍待所有者确认的事项 |
+| [Stage 2 交接记录](docs/impl/stage2-handoff.md) | 阶段 2 各工作包的实现与验证报告（自动汇总） |
+
+**当前状态**（2026-09-28）：Phase 0 完成；Phase 1 的实现阶段 1–3 完成（`make check`、`make edge-smoke`、`make lab-e2e` 全绿；Validation Lab 验收场景、JA4 预研、文档勘误）；接下来是所有者在真实 Cloudflare zone 上的 monitor 周与验收（[07](docs/07-roadmap.md#phase-1-实现进度)）。开发命令与目录结构见 [CLAUDE.md](CLAUDE.md)。
