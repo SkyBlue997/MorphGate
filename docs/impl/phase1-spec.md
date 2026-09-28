@@ -42,6 +42,10 @@
 | I-26 | `RdnsJob` 增加私有作业序号，`complete()` / `abandon()` 只清除同一序号的在途标记，保证 §7.3 的"每键一个在途作业"在过期作业下也成立（WP-R3 的 API 小改，阶段 2 前完成）。 | §7.3、§7.6 |
 | I-27 | `mgctl` 的写命令（含 `cf ips sync`、`crawler sync`）在写任何工件之前先确认审计日志可用，失败则不写并返回 3。 | §14.1 |
 | I-28 | Web SDK 提交的表单解码：`+` 解码为空格；`env` 中可选字段允许 `null`（视为该探测无结果）；`build = "0000000000000000"` 合法。Edge 加载 SDK 目录时的模板校验与 `scripts/build-dist.mjs` 的 `validateTemplate` 规则一致（含占位符上下文规则）。 | §10、§11 |
+| I-29 | 阶段 2 最终审查后：转发给源站前额外删除以下请求头（不区分大小写，含下划线变体，与 §9.3 头族同样处理并计入 `mg_upstream_headers_stripped_total`）：客户端 IP 类 `client-ip`、`x-client-ip`、`x-cluster-client-ip`、`fastly-client-ip`、`x-originating-ip`、`x-remote-ip`、`x-remote-addr`；URL 改写类 `x-original-url`、`x-rewrite-url`；方法覆盖类 `x-http-method-override`、`x-http-method`、`x-method-override`。理由：源站若信任这些头，可绕过 Edge 的路由匹配（改写路径 / 方法）或伪造客户端 IP。请求体中的 `_method` 无法在 Edge 删除，写入所有者运行手册（源站不得对受保护路由启用方法覆盖）。 | §9.3、docs/08 §1.2、docs/02 §8 |
+| I-30 | 在重放存储不可用时以 `ic.replay_unchecked` 兑换出的凭证带声明 `ruc = true`（缺省省略）。`fail_closed` 路由不接受 `ruc = true` 的凭证：视为级别不足，重新挑战（重放存储仍不可用时按 §9.7 返回 429）；其他路由照常接受。事件中记录 `token.replay_unchecked`。 | §6.4、§9.7、§9.8 |
+| I-31 | `mg_edge_added_latency_seconds` 增加标签 `kind = "site" \| "mg"`（`/__mg/*` 请求为 `mg`）；Phase 1 验收的 p99 < 5 ms 只看 `kind="site"`。 | §13.7、§18 |
+| I-32 | `kind=telemetry` 只在 `POST /__mg/c` 的提交携带 `env` 时写出（§10.3）；没有 `env` 的提交不写 telemetry 行。 | §10.3、§13 |
 
 ## 0. 范围、决定与已落地文件
 
