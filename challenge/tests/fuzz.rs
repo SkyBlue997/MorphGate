@@ -139,6 +139,7 @@ fn clearance_verify_never_panics() {
         ttl_s: 1800,
         bind: ClearanceBind::from_inputs(&common::bindings()).unwrap(),
         rb: RiskBand::Low,
+        replay_unchecked: false,
     };
     let (valid, _) = mint(&keys, "blog", &params, &rng).unwrap();
     let footer = valid.rsplit('.').next().unwrap().to_owned();

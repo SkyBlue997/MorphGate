@@ -3,7 +3,9 @@
 //! labels, and the Edge's added latency never contains the origin
 //! connection: with an origin whose connection is artificially delayed,
 //! `mg_edge_added_latency_seconds` stays small while
-//! `mg_origin_connect_seconds` grows. Loopback only.
+//! `mg_origin_connect_seconds` grows. The added latency of `/__mg/*`
+//! requests is `kind="mg"`, apart from the site's own `kind="site"` (I-31).
+//! Loopback only.
 
 mod common;
 
@@ -22,7 +24,7 @@ const FAMILIES: &[(&str, &[&str])] = &[
         &["site", "env", "route", "action", "class"],
     ),
     ("mg_decision_latency_seconds", &["site"]),
-    ("mg_edge_added_latency_seconds", &["site"]),
+    ("mg_edge_added_latency_seconds", &["site", "kind"]),
     ("mg_origin_connect_seconds", &["site"]),
     ("mg_challenge_total", &["type", "provider", "result"]),
     (
@@ -173,6 +175,15 @@ fn every_family_is_served_with_its_labels() {
         assert_eq!(r.status, status, "{path}: {}\n{}", r.head, r.body);
     }
     assert_eq!(get(env.listen, "unknown.invalid", "/", "").status, 404);
+    // The Edge's own endpoints (I-31: kind="mg").
+    assert_eq!(
+        get(env.listen, "example.com", "/__mg/healthz", "").status,
+        200
+    );
+    assert_eq!(
+        get(env.listen, "example.com", "/__mg/nothing", "").status,
+        404
+    );
     let long = format!(
         "GET /{} HTTP/1.1\r\nHost: example.com\r\n{}\r\n",
         "a".repeat(9000),
@@ -215,7 +226,14 @@ fn every_family_is_served_with_its_labels() {
             "mg_challenge_total{provider=\"none\",result=\"issued\",type=\"invisible\"}",
             1.0,
         ),
-        ("mg_edge_added_latency_seconds_count{site=\"blog\"}", 8.0),
+        (
+            "mg_edge_added_latency_seconds_count{kind=\"site\",site=\"blog\"}",
+            8.0,
+        ),
+        (
+            "mg_edge_added_latency_seconds_count{kind=\"mg\",site=\"blog\"}",
+            2.0,
+        ),
         ("mg_origin_connect_seconds_count{site=\"blog\"}", 1.0),
     ] {
         let v = common::metric_value(&text, series).unwrap_or(0.0);
@@ -314,9 +332,12 @@ impl SlowOrigin {
     }
 }
 
-fn sum_and_count(text: &str, family: &str) -> (f64, f64) {
+/// `(sum, count)` of the `site="blog"` series of a histogram, with extra
+/// labels (sorted before `site`, as they are served) such as `kind="site",`.
+fn sum_and_count(text: &str, family: &str, labels: &str) -> (f64, f64) {
     let get = |suffix: &str| {
-        common::metric_value(text, &format!("{family}_{suffix}{{site=\"blog\"}}")).unwrap_or(0.0)
+        common::metric_value(text, &format!("{family}_{suffix}{{{labels}site=\"blog\"}}"))
+            .unwrap_or(0.0)
     };
     (get("sum"), get("count"))
 }
@@ -340,8 +361,9 @@ fn added_latency_excludes_the_origin_connection() {
     let edge = env.spawn(&env.write_config(&config));
     edge.wait_metric("mg_config_version{site=\"blog\"}", 10, |v| v == 1.0);
     let before = edge.metrics_text();
-    let (added0, added_n0) = sum_and_count(&before, "mg_edge_added_latency_seconds");
-    let (connect0, connect_n0) = sum_and_count(&before, "mg_origin_connect_seconds");
+    let site_added = "mg_edge_added_latency_seconds";
+    let (added0, added_n0) = sum_and_count(&before, site_added, "kind=\"site\",");
+    let (connect0, connect_n0) = sum_and_count(&before, "mg_origin_connect_seconds", "");
 
     origin.release.send(Duration::from_millis(400)).unwrap();
     let started = Instant::now();
@@ -352,8 +374,8 @@ fn added_latency_excludes_the_origin_connection() {
     assert!(took >= Duration::from_millis(400), "not delayed: {took:?}");
 
     let after = edge.metrics_text();
-    let (added1, added_n1) = sum_and_count(&after, "mg_edge_added_latency_seconds");
-    let (connect1, connect_n1) = sum_and_count(&after, "mg_origin_connect_seconds");
+    let (added1, added_n1) = sum_and_count(&after, site_added, "kind=\"site\",");
+    let (connect1, connect_n1) = sum_and_count(&after, "mg_origin_connect_seconds", "");
     assert_eq!(added_n1 - added_n0, 1.0);
     assert_eq!(connect_n1 - connect_n0, 1.0, "one new origin connection");
     let connect = connect1 - connect0;

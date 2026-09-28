@@ -31,12 +31,33 @@ pub fn fixture(rel: &str) -> PathBuf {
         .join(rel)
 }
 
+/// Ports handed to spawned processes come from `PORT_RANGE`, which lies below
+/// the ephemeral ranges of Linux (32768+) and macOS (49152+). A port taken
+/// with `bind(":0")` and released is an ephemeral port that the OS may give
+/// to an outgoing connection before the Edge binds it, which made the
+/// integration tests flaky. Each test binary starts at a pid-derived offset
+/// and walks the range with a counter, so tests running in parallel threads
+/// and consecutive test binaries do not collide.
+const PORT_RANGE: std::ops::Range<u16> = 20000..32000;
+static NEXT_PORT: AtomicU64 = AtomicU64::new(u64::MAX);
+
 pub fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    let span = u64::from(PORT_RANGE.end - PORT_RANGE.start);
+    // Lazily seed the counter from the pid, spacing binaries 97 ports apart.
+    let _ = NEXT_PORT.compare_exchange(
+        u64::MAX,
+        (u64::from(std::process::id()) * 97) % span,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    for _ in 0..span {
+        let n = NEXT_PORT.fetch_add(1, Ordering::Relaxed) % span;
+        let port = PORT_RANGE.start + u16::try_from(n).expect("span fits u16");
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no free port in {PORT_RANGE:?}");
 }
 
 pub fn free_addr() -> SocketAddr {

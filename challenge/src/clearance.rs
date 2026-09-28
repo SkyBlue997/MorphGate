@@ -7,6 +7,11 @@
 //!  "bind":{"uah":"…","ipp":"…","ipa":"…"},"rb":"medium","jti":"<base64url 16 random bytes>"}
 //! ```
 //!
+//! * `ruc` (I-30): `true` on a token issued with `ic.replay_unchecked`,
+//!   when the replay store could not vouch for the challenge's nonce
+//!   (spec §9.7 rule 4); omitted otherwise. `fail_closed` routes do not
+//!   accept such a token (the Edge re-challenges); a present `ruc` must be
+//!   `true`, so every token has exactly one encoding of "checked";
 //! * footer `{"kid":"<kid>"}` (plaintext, authenticated) selects the key;
 //! * implicit assertion `"mg-clr-v1" ‖ 0x00 ‖ site_id` binds the token to
 //!   its site without spending bytes on it;
@@ -67,6 +72,14 @@ pub struct ClearanceClaims {
     pub rb: RiskBand,
     /// Token id, base64url of 16 random bytes.
     pub jti: String,
+    /// Issued without a replay check (I-30, `ic.replay_unchecked`); the
+    /// claim is omitted when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ruc: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl fmt::Debug for ClearanceClaims {
@@ -82,6 +95,7 @@ impl fmt::Debug for ClearanceClaims {
             .field("exp", &self.exp)
             .field("bind", &self.bind)
             .field("rb", &self.rb)
+            .field("ruc", &self.ruc)
             .finish_non_exhaustive() // sub and jti deliberately omitted
     }
 }
@@ -149,6 +163,10 @@ pub struct MintParams<'a> {
     pub ttl_s: u32,
     pub bind: ClearanceBind,
     pub rb: RiskBand,
+    /// The replay store could not vouch for the challenge's nonce
+    /// (`ic.replay_unchecked`, spec §9.7 rule 4): the token carries
+    /// `ruc: true` (I-30).
+    pub replay_unchecked: bool,
 }
 
 impl fmt::Debug for MintParams<'_> {
@@ -161,6 +179,7 @@ impl fmt::Debug for MintParams<'_> {
             .field("ttl_s", &self.ttl_s)
             .field("bind", &self.bind)
             .field("rb", &self.rb)
+            .field("replay_unchecked", &self.replay_unchecked)
             .finish()
     }
 }
@@ -179,7 +198,8 @@ pub enum TokenError {
     #[error("token does not decrypt")]
     Decrypt,
     /// Undecodable or invalid claims: unknown fields, `v`, kid vs footer,
-    /// malformed `bind`, `sub` or `jti`, unknown `lvl`.
+    /// malformed `bind`, `sub` or `jti`, unknown `lvl`, a `ruc` other than
+    /// `true`.
     #[error("invalid token claims")]
     Claims,
     #[error("token belongs to another site")]
@@ -251,6 +271,16 @@ struct RawClaims {
     bind: ObjectOnly<ClearanceBind>,
     rb: RiskBand,
     jti: String,
+    /// Absent, or a JSON boolean (`null` and other types are rejected
+    /// here); `false` is rejected by `verify_inner`.
+    #[serde(default, deserialize_with = "some_bool")]
+    ruc: Option<bool>,
+}
+
+/// A present `ruc` must be a boolean; `Option<bool>` alone would take
+/// `null` for "absent".
+fn some_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+    bool::deserialize(d).map(Some)
 }
 
 /// Mints a token with the active key of `keys`. Draws `sub` (new sessions
@@ -297,6 +327,7 @@ pub fn mint(
         bind: p.bind.clone(),
         rb: p.rb,
         jti,
+        ruc: p.replay_unchecked,
     };
     let payload = serde_json::to_vec(&claims).map_err(|_| TokenError::Claims)?;
     let footer = serde_json::to_vec(&Footer { kid: kid.into() }).map_err(|_| TokenError::Footer)?;
@@ -323,7 +354,8 @@ pub fn mint(
 /// Verifies a token for `site_id` in `env` at `now_s` (spec §6.5, checks in
 /// order): length, footer, kid in the allowed set, decryption with the
 /// implicit assertion, claims (`v`, kid, site, env, `bind.uah` / `bind.ipp`,
-/// and `sub` / `jti` as base64url of 16 bytes), `sst ≤ iat ≤ now + 5`,
+/// `sub` / `jti` as base64url of 16 bytes, `ruc` absent or `true`),
+/// `sst ≤ iat ≤ now + 5`,
 /// `iat < exp ≤ iat + 86 400`, `exp > now`, `lvl`.
 ///
 /// Bindings are compared separately with [`check_clearance_bind`].
@@ -391,6 +423,11 @@ fn verify_inner(
     if bind.decode().is_none() || !is_random_id(&raw.sub) || !is_random_id(&raw.jti) {
         return Err(TokenError::Claims);
     }
+    // `mint` omits a false `ruc`: an explicit `false` is not a token it
+    // wrote (I-30).
+    if raw.ruc == Some(false) {
+        return Err(TokenError::Claims);
+    }
     if raw.sst > raw.iat {
         return Err(TokenError::Lifetime);
     }
@@ -418,6 +455,7 @@ fn verify_inner(
         bind,
         rb: raw.rb,
         jti: raw.jti,
+        ruc: raw.ruc == Some(true),
     })
 }
 

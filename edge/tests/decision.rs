@@ -372,6 +372,7 @@ fn token(ua: &str, ip: &str, lvl: TokenLevel) -> String {
         ttl_s: 1800,
         bind: ClearanceBind::from_inputs(&bind).unwrap(),
         rb: RiskBand::Low,
+        replay_unchecked: false,
     };
     mg_challenge::mint(&keys, "blog", &p, &mg_edge::rng::OsRng)
         .unwrap()

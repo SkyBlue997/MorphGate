@@ -314,6 +314,92 @@ fn four_kinds_with_envelopes_sampling_and_redaction() {
     }
 }
 
+/// A change to a submission's JSON.
+type Edit = dyn Fn(&mut Value);
+
+/// I-32 / §10.3: `kind=telemetry` is written only for a submission that
+/// carries `env`. Solved submissions without one, with `env: null`, or with
+/// an `env` that does not fit the SDK schema write their feedback event and
+/// no telemetry line; the last submission (with `env`) writes the only one.
+#[test]
+fn telemetry_only_for_submissions_with_env() {
+    let env = TestEnv::new("events-telemetry");
+    let (_edge, sinks) = start(&env, &bundle(), &env.default_config(""));
+    let ip = "198.51.100.36";
+    let edits: [(&str, &Edit); 5] = [
+        ("no env", &|v| {
+            v.as_object_mut().unwrap().remove("env");
+        }),
+        ("no env, no auto", &|v| {
+            let o = v.as_object_mut().unwrap();
+            o.remove("env");
+            o.remove("auto");
+        }),
+        ("env null", &|v| v["env"] = Value::Null),
+        ("env of another version", &|v| {
+            v["env"] = serde_json::json!({"v": 2})
+        }),
+        ("env not an object", &|v| v["env"] = "x".into()),
+    ];
+    for (i, (what, edit)) in edits.iter().enumerate() {
+        let r = get(
+            env.listen,
+            "example.com",
+            &format!("/members/t{i}"),
+            &browser(ip),
+        );
+        assert_eq!(r.status, 403, "{what}: {}", r.head);
+        let mut v = solved(&from_page(&r.body), challenge::CHROME);
+        edit(&mut v);
+        let r = submit_form(env.listen, ip, &v, "");
+        assert_eq!(r.status, 303, "{what}: {}\n{}", r.head, r.body);
+    }
+    // The last one carries env.
+    let r = get(env.listen, "example.com", "/members/with-env", &browser(ip));
+    let r = submit_form(
+        env.listen,
+        ip,
+        &solved(&from_page(&r.body), challenge::CHROME),
+        "",
+    );
+    assert_eq!(r.status, 303, "{}\n{}", r.head, r.body);
+
+    let deadline = Instant::now() + WAIT;
+    let feedback = loop {
+        let lines: Vec<Value> = parse(sinks.main.accepted_lines())
+            .into_iter()
+            .filter(|v| v["kind"] == "feedback")
+            .collect();
+        if lines.len() == edits.len() + 1 {
+            break lines;
+        }
+        assert!(Instant::now() < deadline, "feedback lines: {lines:#?}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        feedback.iter().all(|v| v["outcome"] == "pass"),
+        "{feedback:#?}"
+    );
+    let t = wait_line(&sinks.short, "telemetry", |v| v["kind"] == "telemetry");
+    assert_eq!(t["env"]["timeZone"], "Asia/Shanghai");
+    assert!(
+        feedback.iter().any(|v| v["request_id"] == t["request_id"]),
+        "{t}"
+    );
+    // Every submission's records were queued together with its feedback
+    // event; vl-short flushes every 50 ms, so any other telemetry line
+    // would have arrived by now.
+    std::thread::sleep(Duration::from_millis(500));
+    let telemetry = parse(sinks.short.accepted_lines());
+    assert_eq!(telemetry.len(), 1, "{telemetry:#?}");
+    let file = std::fs::read_to_string(&sinks.file).unwrap_or_default();
+    let in_file = file
+        .lines()
+        .filter(|l| l.contains("\"kind\":\"telemetry\""))
+        .count();
+    assert_eq!(in_file, 1, "{file}");
+}
+
 /// §9.11: under monitor, a non-ALLOW decision is always kept (and marked
 /// `dry_run`); a `bootstrap` site records its decisions with rule
 /// `bootstrap`.

@@ -30,7 +30,7 @@
 //! | 7 | `ret` valid and `ret_hash(ret)` sealed | `ic.ret` |
 //! | 8 | `auto.webdriver == true`; `env.ua.userAgent` not a prefix of `User-Agent` | `ic.automation_flag` / `ic.ua_mismatch` |
 //! | 9 | round trip 2: `mg_nonce_issue` (nonce + issuance quotas) | `ic.nonce_reused`; 429 `ic.issue_quota`; replay store unavailable: 429 `ic.replay_unavailable` on a `fail_closed` route, otherwise issued with `ic.replay_unchecked` |
-//! | 10 | mint the clearance (`sub` / `sst` carried over per §6.5) | success: 303 + cookie (form) or 200 JSON + cookie (fetch); RNG failure: 503 |
+//! | 10 | mint the clearance (`sub` / `sst` carried over per §6.5; `ruc: true` after `ic.replay_unchecked`, I-30) | success: 303 + cookie (form) or 200 JSON + cookie (fetch); RNG failure: 503 |
 //!
 //! A failure from step 5 on attaches a new `C` (D-27, I-10): type `pow`, the
 //! original `route_class`, the band `RiskBand::after_failure(original)` and
@@ -59,7 +59,11 @@
 //! the `C` belongs to decides ([`replay_fail_closed`]): the route of the
 //! request host's environment named `claims.route_class` (inside the AEAD,
 //! so trusted), OR the route the `ret` path selects for a GET; a route that
-//! no longer exists (a newer bundle) counts as `fail_closed`.
+//! no longer exists (a newer bundle) counts as `fail_closed`. A token issued
+//! with `ic.replay_unchecked` carries the claim `ruc` (I-30), and no
+//! `fail_closed` route accepts it (`crate::identity::Acceptance`): there the
+//! client is challenged again, and that `C` belongs to the `fail_closed`
+//! route, so its submission is 429 until the replay store is back.
 
 use crate::challenge::{self, IssueRequest, Issued, fallback_ret, pow_bits};
 use crate::context::{self, Built};
@@ -689,6 +693,7 @@ impl<'s> Flow<'_, 's> {
                 claims.iat_ms,
             )
             .await;
+        let mut replay_unchecked = false;
         let quotas = match nonce {
             NonceResult::Reused => return fail(reason::NONCE_REUSED),
             NonceResult::Fresh { limits } => limits,
@@ -703,6 +708,7 @@ impl<'s> Flow<'_, 's> {
                     .feedback
                     .reason_codes
                     .push(reason::REPLAY_UNCHECKED.to_owned());
+                replay_unchecked = true;
                 limits
             }
         };
@@ -739,6 +745,7 @@ impl<'s> Flow<'_, 's> {
                 ttl_s,
                 bind,
                 rb: claims.risk_band,
+                replay_unchecked,
             },
             self.rng,
         );
