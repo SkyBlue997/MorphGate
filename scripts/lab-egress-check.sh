@@ -99,10 +99,13 @@ log "host listener on $BIND:$PORT"
 requests_seen() { grep -c '"GET /marker.txt' "$tmp/listener.log" || true; }
 
 # --- 2. positive control -----------------------------------------------------
+# Pull first: on a fresh host `docker run` prints the pull progress on stderr,
+# which must not end up in the value compared against the marker token.
+docker pull -q "$PROBE_IMAGE" >/dev/null || fail "could not pull $PROBE_IMAGE"
 got="$(docker run --rm --add-host host.docker.internal:host-gateway "$PROBE_IMAGE" \
-  wget -q -T 5 -O - "http://host.docker.internal:$PORT/marker.txt" 2>&1 || true)"
+  wget -q -T 5 -O - "http://host.docker.internal:$PORT/marker.txt" 2>"$tmp/control.err" || true)"
 [[ "$got" == "$token" ]] ||
-  fail "positive control: a container on the default network cannot reach $BIND:$PORT either ($got); the egress check would prove nothing"
+  fail "positive control: a container on the default network cannot reach $BIND:$PORT either (stdout: '$got'; stderr: $(tr '\n' ' ' <"$tmp/control.err")); the egress check would prove nothing"
 log "ok: a container on the default network reaches the host listener (control)"
 
 # --- 3. tool layer -----------------------------------------------------------
