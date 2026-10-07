@@ -1418,6 +1418,20 @@ async fn hanging_vl_short_does_not_hold_back_vl_main() {
             .len(),
         4
     );
+    // FakeVl records acceptance before the client consumes its response.
+    // Wait for a subsequent batch on this serial output lane to prove the
+    // access delivery has finished before shutdown, which may abandon P1.
+    // The marker is P0, so shutdown preserves it even if its response is
+    // still in flight when the fake records it.
+    run.send(record(EventClass::Priority, 5));
+    let lines = main
+        .wait_for_accepted_lines(5, Duration::from_secs(3))
+        .await;
+    assert_eq!(lines.len(), 5, "vl_main stalled behind vl_short");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&lines[4]).unwrap()["seq"],
+        5
+    );
     assert_eq!(
         short.requests().len(),
         1,
