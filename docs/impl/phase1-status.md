@@ -1,7 +1,7 @@
 # Phase 1 进度记录
 
-**更新时间**：2026-09-28
-**分支**：`phase-1/edge-behind-cloudflare`（尚未合并到 `master`，没有远端）
+**更新时间**：2026-10-07
+**分支**：Phase 1 已通过 [PR #1](https://github.com/SkyBlue997/MorphGate/pull/1) 合并至 `master`（合并提交 `6395330`）；远程历史分支为 `phase-1/edge-behind-cloudflare`。
 **状态**：Stage 1–3 完成；下一步是所有者的运行步骤（规范 §17、§18）。
 
 ## 1. 总体进度
@@ -29,7 +29,7 @@ Stage 3 集成验证（2026-09-28，本机 macOS arm64，共享 `target/`）：
 | actionlint v1.7.12（`.github/workflows/ci.yml`） | 0 个问题（本机没有 shellcheck，`run` 脚本未经 shellcheck 检查） |
 | `ja4_spike` | 缺省关闭（`config::tests`）；非 `direct_tls` 监听器上 `--check-config` 退出 2；未开启的 `direct_tls` 监听器照常握手且事件中没有 JA4（`edge/tests/ja4_spike.rs`、`edge/tests/tls.rs`） |
 
-只在 CI 中验证：wasm32 检查、MSRV 1.88、Valkey 服务容器、`lab-egress-check`（需要 Docker）、使用 `rust` 作业 release 二进制的 `lab-e2e` 作业（尚无远端，未运行过）。
+远端验证：合并提交 `639533074e9953b1f7339f1d5f8d3aacd31e1744` 的 [CI run 37568198825](https://github.com/SkyBlue997/MorphGate/actions/runs/37568198825) 已全部通过，包括 Rust fmt / clippy / test / wasm / edge smoke、MSRV 1.88、Go 与生成代码、Web SDK、Compose 与 Lab 网络隔离、文档脚本，以及依赖 Rust release 二进制和新构建 SDK 的 Lab 端到端作业。上表测试数量是 2026-09-28 的本机记录；远端各次运行以其日志为准。
 
 ## 3. 验收状态与下一步
 
@@ -43,7 +43,7 @@ Stage 3 集成验证（2026-09-28，本机 macOS arm64，共享 `target/`）：
 | `mgctl cf audit` 全绿 | 工具已实现，待真实 zone | 所有者（§17 第 8 步） |
 | 真人浏览回归无功能破坏 | 未开始 | 所有者（§17 第 7 步） |
 
-下一步是所有者的运行步骤（规范 §17 运行手册）：在真实 Cloudflare zone 上配置规则、monitor 模式运行 ≥ 1 周、浏览器回归、`cf audit` 全绿；首次推送后确认 CI 的 `lab-e2e` 作业通过。
+下一步是所有者的运行步骤（规范 §17 运行手册）：在真实 Cloudflare zone 上配置规则、monitor 模式运行 ≥ 1 周、浏览器回归、`cf audit` 全绿。远端 CI 的 `lab-e2e` 作业已通过；它使用回环测试环境，不替代真实站点验收。
 
 ## 4. 已知的低优先级遗留
 

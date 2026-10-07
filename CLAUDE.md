@@ -40,7 +40,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `make go-check` / `make web-check` | `go vet` + `go test` in `control-plane` and `lab`; Web SDK install + `check` script |
 | `make adapters-check` | Cloudflare adapter templates: `node --test` suite + Worker typecheck |
 | `make proto` | Regenerate Go protobuf code (commit the result; CI fails on drift) |
-| `make compose-check` / `make docs-check` | Validate the compose file; check relative links and anchors in README, CLAUDE.md, docs/ |
+| `make compose-check` / `make docs-check` | Validate the compose file; check relative links and anchors in root project Markdown files and docs/ |
 | `make dev-up` / `make dev-down` | Start / stop the dev environment (`COMPOSE_PROFILES=grafana,tunnel,lab` for the optional services) |
 | `make edge-run` / `make edge-smoke` | Run mg-edge with the dev config; loopback end-to-end smoke test |
 | `make lab-e2e` | Validation Lab end-to-end on loopback: test keys, a signed enforce bundle, Valkey, mg-edge and the Phase 1 scenarios (impersonating crawlers, no clearance without JavaScript); not part of `check`, CI runs it |

@@ -4,6 +4,10 @@ Defensive bot-management and traffic-security platform for owner-controlled web 
 
 MorphGate protects a single owner's websites with a Rust/Pingora reverse proxy, a Go operations CLI, and a first-party browser SDK. Phase 1 provides request risk scoring, policy enforcement, rate limiting, proof-of-work challenges, short-lived clearance tokens, and audit logs, with Cloudflare-first deployment. Validation traffic is restricted to explicitly allowlisted targets.
 
+[Getting started](docs/getting-started.md) · [Releases](https://github.com/SkyBlue997/MorphGate/releases) · [Security policy](SECURITY.md) · [Maintainers](MAINTAINERS.md) · [Apache-2.0](LICENSE)
+
+**Status:** Phase 1 source preview. CI validates the implementation and loopback integration; real Cloudflare deployment acceptance is still pending. [Current status and evidence](docs/impl/phase1-status.md).
+
 所有者自用的 Bot 防护平台（Bot Management），只保护所有者自己的几个网站：在已有 CDN（Cloudflare 优先）之后以反向代理方式接入网页流量，提供自动化流量识别、分级处置、自研交互式 Challenge、AI Agent 访问治理，以及配套的策略、日志、指标与审计能力。约束是精简、低成本、单人可开发与维护。
 
 ## 适用范围
@@ -18,7 +22,7 @@ MorphGate protects a single owner's websites with a Rust/Pingora reverse proxy, 
 
 ## 使用边界
 
-- 仅部署在所有者自有的站点上；不作为托管服务或 SaaS 提供给他人（这也是 JA4+ 许可的前提，见 [ADR-0009](docs/adr/0009-ja4-only-licensing.md)）。
+- 本项目的开发与支持范围是所有者自有站点的防御部署，不包含托管服务或 SaaS。该工程范围不对 [Apache-2.0](LICENSE) 另加使用限制；当前实现不包含 JA4+，第三方材料的许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [ADR-0009](docs/adr/0009-ja4-only-licensing.md)。
 - 所有安全测试与验证仅在本地环境、自有测试环境和自有站点中进行；测试工具（Validation Lab）内置目标白名单，拒绝向白名单外的主机发送流量。
 - 不研究、不复现、不提供绕过任何第三方 Bot 防护或验证码产品（含 Cloudflare、Turnstile）的方法；对成熟产品仅参考其公开文档与功能方向，引用求解研究时只引用结果数字。
 - 客户端信号采集遵循最小必要原则。平台自用，但受保护网站的访客数据仍受 PIPL 等法规约束，上线前完成隐私与合规检查（见 [06](docs/06-policy-console-observability.md#7-隐私与合规)）。
@@ -49,4 +53,8 @@ MorphGate protects a single owner's websites with a Rust/Pingora reverse proxy, 
 | [Phase 1 进度](docs/impl/phase1-status.md) | 各阶段状态、当前代码状态、遗留项与仍待所有者确认的事项 |
 | [Stage 2 交接记录](docs/impl/stage2-handoff.md) | 阶段 2 各工作包的实现与验证报告（自动汇总） |
 
-**当前状态**（2026-09-28）：Phase 0 完成；Phase 1 的实现阶段 1–3 完成（`make check`、`make edge-smoke`、`make lab-e2e` 全绿；Validation Lab 验收场景、JA4 预研、文档勘误）；接下来是所有者在真实 Cloudflare zone 上的 monitor 周与验收（[07](docs/07-roadmap.md#phase-1-实现进度)）。开发命令与目录结构见 [CLAUDE.md](CLAUDE.md)。
+**当前状态**（2026-10-07）：Phase 0 完成；Phase 1 的实现阶段 1–3 已合并至 `master`（[PR #1](https://github.com/SkyBlue997/MorphGate/pull/1)，合并提交 `6395330` 的 [CI 全部通过](https://github.com/SkyBlue997/MorphGate/actions/runs/37568198825)）；接下来是所有者在真实 Cloudflare zone 上的 monitor 周与验收（[07](docs/07-roadmap.md#phase-1-实现进度)）。源码安装见 [Getting started](docs/getting-started.md)，开发命令与目录结构见 [CLAUDE.md](CLAUDE.md)。
+
+## License
+
+MorphGate's own code is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) and [third-party notices](THIRD_PARTY_NOTICES.md) for attribution and dependency-license boundaries.
