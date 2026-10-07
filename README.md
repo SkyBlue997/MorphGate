@@ -1,5 +1,9 @@
 # MorphGate
 
+Defensive bot-management and traffic-security platform for owner-controlled web properties.
+
+MorphGate protects a single owner's websites with a Rust/Pingora reverse proxy, a Go operations CLI, and a first-party browser SDK. Phase 1 provides request risk scoring, policy enforcement, rate limiting, proof-of-work challenges, short-lived clearance tokens, and audit logs, with Cloudflare-first deployment. Validation traffic is restricted to explicitly allowlisted targets.
+
 所有者自用的 Bot 防护平台（Bot Management），只保护所有者自己的几个网站：在已有 CDN（Cloudflare 优先）之后以反向代理方式接入网页流量，提供自动化流量识别、分级处置、自研交互式 Challenge、AI Agent 访问治理，以及配套的策略、日志、指标与审计能力。约束是精简、低成本、单人可开发与维护。
 
 ## 适用范围
