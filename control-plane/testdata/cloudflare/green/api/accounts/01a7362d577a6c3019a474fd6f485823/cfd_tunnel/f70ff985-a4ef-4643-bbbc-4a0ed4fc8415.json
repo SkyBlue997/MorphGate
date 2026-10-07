@@ -1,0 +1,23 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "f70ff985-a4ef-4643-bbbc-4a0ed4fc8415",
+    "name": "blog-edge",
+    "status": "healthy",
+    "tun_type": "cfd_tunnel",
+    "connections": [
+      {
+        "colo_name": "hkg01",
+        "id": "1bedc50d-42b3-473c-b108-ff3d10c0d925",
+        "is_pending_reconnect": false
+      },
+      {
+        "colo_name": "sin02",
+        "id": "2bedc50d-42b3-473c-b108-ff3d10c0d925",
+        "is_pending_reconnect": false
+      }
+    ]
+  }
+}

@@ -11,11 +11,26 @@
 - Free / Pro / Business 下源站拿不到访客的 JA4、HTTP/2 指纹、头顺序与 TCP 特征（状态为 `MISSING`）。一条 Request Header Transform Rule（所有套餐，免费）可以转发部分 TLS 参数、RTT、ASN、HTTP 版本、已验证爬虫标志和头名集合，作为低权重的 `EDGE_TLS` 族（先 shadow）。
 - 与 Cloudflare 自带功能共存：Free 关闭 Bot Fight Mode；`/__mg/*`（内容哈希的 SDK 构建除外）与 Challenge 响应一律 `no-store, private`，并用最后一条 Cache Rule Bypass；MorphGate 挑战的路径不叠加 Cloudflare 挑战。`mgctl cf audit` 自动检查这些配置。
 
+**Phase 1 实现状态**（2026-09-28 勘误；细节以 [Phase 1 实现规格](impl/phase1-spec.md) 为准，D-xx 见规格 [§0.3](impl/phase1-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](impl/phase1-spec.md#集成者裁决2026-09-28优先于正文)；Cloudflare 侧模板与设置清单见 [`adapters/cloudflare/README.md`](../adapters/cloudflare/README.md)）
+
+| 本文内容 | Phase 1 做法 | 规格 |
+|---|---|---|
+| profile 与认证（§1.1–§1.2） | `cloudflare`（`loopback` 或 `origin_mtls`，可叠加 `upstream_keys`）与 `direct_tls`；监听器在主机本地的 `edge.toml`，站点的 profile 在配置包中，两者必须一致 | [§8.1](impl/phase1-spec.md#81-edgetoml-v1wp-e1a)、[§9.2](impl/phase1-spec.md#92-监听器与上游认证) |
+| 头族与清洗（§1.2） | 规范清单加 I-29 的 12 个头名；名称先小写、`_` 换成 `-` 再匹配；`Connection` 列出的头族名与消息分帧头不在逐跳删除中删掉 | [§9.3](impl/phase1-spec.md#93-头部清洗与可信头解析wp-c1-实现wp-e1a-接线) |
+| 可信头（§1.4、§2.3、§2.4） | 只解析精确的小写连字符名，按格式校验，非法按缺失处理 | [§9.3](impl/phase1-spec.md#93-头部清洗与可信头解析wp-c1-实现wp-e1a-接线) |
+| 客户端 IP 与 `CF-Worker`（§2.2） | IP 未知时从不更宽松；外部 zone 的 `CF-Worker` 直接 403（D-23）；配置包生效前用 `bootstrap_owner_zones`（I-4） | [§9.3.2](impl/phase1-spec.md#932-客户端-ip-未知d-23)、[§9.4](impl/phase1-spec.md#94-站点环境与路由) |
+| 配置划分（§1.5） | `edge.toml` 与站点 YAML（D-14） | [§8.1](impl/phase1-spec.md#81-edgetoml-v1wp-e1a)、[§8.2](impl/phase1-spec.md#82-站点-yaml-v1wp-g2) |
+| `mgctl cf audit`（§2.10） | 21 项检查，只读 token，所有者在工作站运行 | [§14.3](impl/phase1-spec.md#143-mgctl-cf-auditwp-g3) |
+| IP 段同步（§2.11） | `mgctl cf ips sync`（工作站），工件随签名配置包下发 | [§12.2](impl/phase1-spec.md#122-cloudflare-ipsjson)、[§14.4](impl/phase1-spec.md#144-mgctl-cf-ips-syncwp-g3) |
+| 未实现 | HMAC Cookie 跳过（§2.9）、`mgctl cf apply`、SDK 侧的 `cf-mitigated` 处理（§2.8）、其他 CDN 与 PROXY protocol（§3–§4）；`direct_tls` 的 JA4 仍在预研（D-07） | [§0.1](impl/phase1-spec.md#01-范围) |
+
 ## 1. UpstreamProfile 上游模型
 
 ### 1.1 取值与阶段
 
 决策记录见 [ADR-0003](adr/0003-upstream-profile-cdn-first.md)。profile 绑定在**监听器**（bind 地址 + TLS 配置）上，不由 Host 头决定（Host 由客户端控制）。一个站点可以接受多个监听器（例如国际流量经 Cloudflare Tunnel、已备案的境内流量经 ESA），每个监听器只有一个 profile；请求从站点未声明的监听器进入时拒绝并告警。每个 profile 声明三件事：(a) 上游如何被认证；(b) 上游头 → 规范信号的映射；(c) 该上游**预期能提供**哪些信号（§1.4）。
+
+Phase 1：profile 绑定在 `edge.toml` 的 `[[listeners]]`；站点 YAML 的 `profile` 成为配置包的 `upstream.kind`，加载时必须等于服务该站点的每个监听器的 profile。一个站点挂在不同 profile 的监听器上是配置错误（`--check-config` 拒绝）。请求从站点未声明的监听器（`edge.toml` 站点的 `listeners` 与配置包的 `allowed_listeners` 都要包含）进入时 403，计 `mg_listener_rejected_total{listener, site}`。
 
 | profile | 场景 | 认证方式 | 客户端 IP 来源 | TLS 指纹 | 阶段 |
 |---|---|---|---|---|---|
@@ -35,10 +50,10 @@
 
 | `auth_method` | 用于 | Edge 侧校验 | 失败处理 |
 |---|---|---|---|
-| `loopback` | `cloudflare`（Tunnel） | 监听器只绑定 127.0.0.1 / ::1，对端必须是回环地址 | 监听器不暴露公网，无失败路径；主机上不运行不受信的本地进程 |
-| `origin_mtls` | `cloudflare`（AOP）、`cloudfront`、`gcp_alb`、`esa`、`edgeone`、`envoy`、`openresty` | 要求客户端证书，链到该 profile 配置的**所有者自有 CA**（可再固定叶证书指纹） | 握手失败，断开 |
-| `secret_header` | 所有 CDN profile（单独使用或叠加在 mTLS 上） | `x-mg-upstream-key` 常量时间比较，同时接受新旧两个值以便轮换 | 403 + 告警；CDN 专用监听器不回退为"直连"处理 |
-| `src_cidr` | `proxy_protocol` | TCP 对端 ∈ `allowed_src_cidrs` | 断开 |
+| `loopback` | `cloudflare`（Tunnel） | 监听器只绑定 127.0.0.1 / ::1，对端必须是回环地址 | 对端不是回环地址时 403（`reason="non_loopback_peer"`）；主机上不运行不受信的本地进程 |
+| `origin_mtls` | `cloudflare`（AOP）、`cloudfront`、`gcp_alb`、`esa`、`edgeone`、`envoy`、`openresty` | 要求客户端证书，链到该 profile 配置的**所有者自有 CA**（可再固定叶证书指纹）；Phase 1 为 BoringSSL `PEER \| FAIL_IF_NO_PEER_CERT` + `client_ca` | 握手失败，断开；计 `reason="untrusted_ca"`（每个握手至多一次；未出示证书的握手不计） |
+| `secret_header` | 所有 CDN profile（单独使用或叠加在 mTLS 上） | `x-mg-upstream-key` 常量时间比较，同时接受新旧两个值以便轮换；Phase 1 由 `edge.toml` 监听器的 `upstream_keys` 开启（仅 `cloudflare`），叠加在 `loopback` / `origin_mtls` 上 | 403 纯文本 `forbidden`（`reason="bad_secret_header"`）；CDN 专用监听器不回退为"直连"处理 |
+| `src_cidr` | `proxy_protocol`（Phase 5） | TCP 对端 ∈ `allowed_src_cidrs` | 断开 |
 | `none` | `direct_tls`，或未通过认证 | — | 按下方第 3 步处理 |
 
 云防火墙 / 安全组的 IP 白名单在 Edge 之外执行，只做纵深防御，**永远不作为唯一依据**：IP 段只证明"来自该 CDN 网络"，其他客户的流量也能通过。认证失败计入 `mg_upstream_auth_failures_total`（reason 取值见 [06 §5](06-policy-console-observability.md#5-日志指标与告警)）。
@@ -50,11 +65,31 @@
 3. 认证未通过或 profile 为 `direct_tls`：删除全部已知上游头族（计入 `mg_upstream_headers_stripped_total`），客户端 IP = TCP 对端地址。
 4. 认证通过但缺少该 profile 的客户端 IP 头：记配置告警（`cloudflare` 下计入 `mg_cf_connecting_ip_missing_total`），**不回退**到上游对端 IP（对端是 CDN 节点，用它限速会误伤所有访客）。该请求按"客户端 IP 未知"处理，见 [02 §2.1](02-data-flow.md#21-第-0-步上游认证与客户端-ip)。
 
+**Phase 1 处理顺序**（[规格 §9.3](impl/phase1-spec.md#93-头部清洗与可信头解析wp-c1-实现wp-e1a-接线)）：
+
+| 步 | 做法 |
+|---|---|
+| ① | 监听器认证（上表） |
+| ② | 协议输入上限（路径、查询串、头值、头名、头个数、方法；[规格 §9.3.1](impl/phase1-spec.md#931-协议输入上限d-26)） |
+| ③ | 删除 `Connection` 及其列出的头，以及 `Keep-Alive`、`Proxy-Connection`、`TE`、非 WebSocket 的 `Upgrade`。例外：列出的名字属于上游头族时留给 ④ 解析、⑤ 剥离，否则 `Connection: CF-Worker` 就能藏起外部 Worker（I-12）；`Content-Length` / `Transfer-Encoding` 从不在此删除，删掉会让请求体与连接失步，形成请求走私 |
+| ④ | 认证通过的 `cloudflare` 请求只按**精确的小写连字符名**解析可信头；下划线写法永不解析，也不遮蔽 Cloudflare 写入的头；同名头重复即按非法处理 |
+| ⑤ | 删除全部头族（包括 Cloudflare 添加的），再为源站重新写入 `MG-*` 与保留的 Cloudflare 头（[02 §8](02-data-flow.md#8-edge-与源站的约定)）。`direct_tls` 与未认证请求带任一头族时计 `mg_upstream_headers_stripped_total{profile}` |
+
 **已知上游头族（剥离清单，规范口径）**：`cf-*`、`x-mg-*`、`CloudFront-*`、`Tls-Ja3` / `Tls-Ja4` / `Tls-Hash`、`ali-*`、`Ali-Cdn-*`、`Esa-*`（如 ESA 的 `Esa-User-Risk`）、`EO-*`、`X-Forwarded-*`、`X-Forward-Port`（腾讯云 CDN）、`Forwarded`（RFC 7239；Cloudflare 在试验用它转发 Intermediary Agent 的终端用户身份）、`True-Client-IP`、`X-Real-IP`。
+
+Phase 1 按名称小写并把 `_` 换成 `-` 后匹配（`CF_Connecting_IP`、`MG_Bot_Score` 同样命中；前缀另含 `mg-`），并另外删除 I-29 的三类头（它们也不进入策略的 `req.headers`）：
+
+| 类 | 头名 | 源站信任它们的后果 |
+|---|---|---|
+| 客户端 IP | `client-ip`、`x-client-ip`、`x-cluster-client-ip`、`fastly-client-ip`、`x-originating-ip`、`x-remote-ip`、`x-remote-addr` | 采信伪造的客户端 IP（如 PHP 的 `HTTP_CLIENT_IP`） |
+| URL 改写 | `x-original-url`、`x-rewrite-url` | 源站执行的路径与 Edge 路由判定的不同 |
+| 方法覆盖 | `x-http-method-override`、`x-http-method`、`x-method-override` | 源站执行的方法与 Edge 路由判定的不同，可绕过按方法限定的敏感路由 |
 
 ### 1.3 转发给源站前的处理
 
 出站方向（附加 `MG-Client-IP` 等 `MG-*` 头、`X-Forwarded-For` 改写为单值、`X-Forwarded-Proto`、保留的 Cloudflare 标准头、`x-mg-*` 一律不转发、源站只接受 Edge 流量）以 [02 §8](02-data-flow.md#8-edge-与源站的约定) 为准，本文不重复。
+
+请求体（以及 POST 的查询串）中的 `_method` 参数 Edge 删不掉（Symfony / Laravel 等框架的方法覆盖）：源站不得对受保护路由启用方法覆盖（I-29，写入所有者运行手册）。
 
 ### 1.4 信号溯源与预期信号
 
@@ -66,9 +101,9 @@
 | `upstream.auth_method` | `loopback` \| `origin_mtls` \| `secret_header` \| `src_cidr` \| `none` | §1.2 |
 | `upstream.cf_ray` | `Cf-Ray` | 写入 DecisionEvent，便于与 Cloudflare 日志对照 |
 | `upstream.client_ip_header_missing` | §1.2 第 4 步 | 配置告警 |
-| `net.ip`、`net.ip_source` | `tcp_peer`、`cf_connecting_ip`、`cf_connecting_ipv6`、`proxy_v2` 等（完整取值见 02 §7） | — |
+| `net.ip`、`net.ip_source` | `tcp_peer`、`cf_connecting_ip`、`cf_connecting_ipv6`、`proxy_v2` 等（完整取值见 02 §7） | Phase 1 只有前三个 |
 | `net.upstream_asn` / `upstream_country` / `upstream_region` / `upstream_timezone`、`net.rtt_ms` | `x-mg-cf-asn`、visitor location 头、`x-mg-cf-rtt` / `x-mg-cf-quic-rtt` | 只作交叉核对；ASN / 地理以本地 GeoLite2 为准 |
-| `tls.ja4` | `{value, source: self \| cloudfront \| gcp_alb \| esa \| envoy \| openresty, authenticated}` | 转发的 JA4 权重为 Edge 自算的 0.8 倍（初值，用自有流量校准）；`authenticated = false` 的值不进入评分 |
+| `tls.ja4` | `{value, source: self \| cloudfront \| gcp_alb \| esa \| envoy \| openresty, authenticated}` | 转发的 JA4 权重为 Edge 自算的 0.8 倍（初值，用自有流量校准）；`authenticated = false` 的值不进入评分。Phase 1 恒为 MISSING（`direct_tls` 的 JA4 只在预研中写入事件，D-07） |
 | `edge_tls.{version, cipher, ciphers_sha1, ext_sha1, hello_len}` | `x-mg-cf-tls-*`（§2.3） | 仅 `cloudflare` |
 
 RequestContext **不含** `client_random`：`x-mg-cf-tls-random` 只在内存与近线中以 `client_conn_key = hash(value)` 使用，不进入事件。
@@ -78,39 +113,57 @@ profile 编译出 `expected_mask`（该上游应提供的信号族），请求�
 | 情况 | 状态 | 告警 |
 |---|---|---|
 | 上游本就不提供（不在 `expected_mask`，如 `cloudflare` 下的 JA4） | `MISSING` | 否 |
-| 上游应注入的头未到达（如 Tier 0 Transform Rule 被改 / 删） | `MISSING` | 计入 `mg_upstream_signal_missing_total`，缺失率超阈值告警。Tier 0 头由 Set 覆盖写入、客户端无法删除，这类缺失是配置问题，不计入客户端风险 |
+| 上游应注入的头未到达（如 Tier 0 Transform Rule 被改 / 删） | `MISSING` | 计入 `mg_upstream_signal_missing_total`，缺失率超阈值告警。Tier 0 头由 Set 覆盖写入、客户端无法删除，这类缺失是配置问题，不计入客户端风险。例外：`hdr-names` 照常计数但不进告警的缺失率，因为任何客户端发一个超过 64 字节的头名就能让它缺失（I-12）。Phase 1 只统计通过 403 / 503 检查、且不是 `/__mg/healthz` 的请求 |
 | Tier 1 未运行（未启用、路由未覆盖、fail-open）或来源无法确认（缺少 `x-mg-cf-t1`，§2.4） | `MISSING` | 否 |
-| 条件性字段：明文 HTTP 没有 TLS 字段；TCP 客户端没有 QUIC RTT，QUIC 客户端没有 TCP RTT | `MISSING` | 不计入 `mg_upstream_signal_missing_total`，不告警 |
+| 条件性字段：明文 HTTP 没有 TLS 字段；TCP 客户端没有 QUIC RTT，QUIC 客户端没有 TCP RTT | `MISSING` | 不计入 `mg_upstream_signal_missing_total`，不告警（Phase 1：TLS 字段只对 `cf-visitor` 为 https 的请求计缺失；HTTP/3 看 QUIC RTT，其余看 TCP RTT） |
 | profile 能提供、但本请求没有的客户端侧输入（SDK 遥测、凭证） | `ABSENT` | 见 03 |
 
 `MISSING` 不计入置信度的分子与分母，绝不当作人类证据。
 
 ### 1.5 配置示意
 
-由控制面编译进签名配置包（字段名为设计草案）：
+Phase 1 按 D-14 分成两处（完整字段见 [规格 §8.1](impl/phase1-spec.md#81-edgetoml-v1wp-e1a)、[§8.2](impl/phase1-spec.md#82-站点-yaml-v1wp-g2)）：监听器（绑定地址、TLS 文件、上游认证、上游密钥文件）与站点的源站地址每台主机不同、无法热更换，只写在主机本地的 `edge.toml`；站点的 Cloudflare 属性与 `mgctl cf audit` 的结果绑定，属于策略，写在站点 YAML，随签名配置包下发。
+
+```toml
+# edge.toml (host-local, never in a bundle)
+[[listeners]]
+name = "cf-tunnel"
+bind = "127.0.0.1:8080"                      # cloudflared -> http://127.0.0.1:8080
+profile = "cloudflare"
+auth = "loopback"                            # or origin_mtls: tls_cert, tls_key, client_ca (owner CA), cloudflare_ip_filter
+upstream_keys = "cred://mg-upstream-keys"    # optional: x-mg-upstream-key required (2.1)
+
+[[listeners]]
+name = "direct"
+bind = "0.0.0.0:443"
+profile = "direct_tls"
+auth = "none"
+tls_cert = "/etc/morphgate/tls/edge.pem"
+tls_key = "cred://mg-edge-tls-key"
+
+[[sites]]
+id = "blog"
+hosts = ["example.com", "www.example.com"]   # must equal the bundle's hosts
+listeners = ["cf-tunnel"]
+origin = "127.0.0.1:3000"
+bundle_root = "file:///srv/mg/"
+bootstrap = "open"                           # before the first bundle: open | closed
+# bootstrap_owner_zones = ["example.com"]    # CF-Worker zones trusted before the first bundle (I-4)
+```
 
 ```yaml
-listeners:
-  - name: cf-tunnel
-    bind: 127.0.0.1:8080          # cloudflared -> http://127.0.0.1:8080
-    tls: none
-    upstream:
-      profile: cloudflare
-      auth: loopback
-      require_upstream_key: true  # optional, see 2.1
-      owner_zones: [example.com]  # CF-Worker from other zones -> drop + alarm
-  - name: cf-aop
-    bind: 0.0.0.0:443
-    tls: { cert: edge.pem, client_ca: owner-aop-ca.pem, require_client_cert: true }
-    upstream: { profile: cloudflare, auth: origin_mtls }
-  - name: direct
-    bind: 0.0.0.0:443
-    tls: { cert: edge.pem, ja4: true }
-    upstream: { profile: direct_tls }
-sites:
-  - id: blog
-    hosts: [example.com, www.example.com]
-    allowed_listeners: [cf-tunnel]
+# site YAML (compiled into the signed bundle)
+site: blog
+profile: cloudflare                   # must equal the profile of every listener serving the site
+hosts: [example.com, www.example.com]
+allowed_listeners: [cf-tunnel]
+cloudflare:
+  zone: example.com
+  location_headers: true              # only after mgctl cf audit confirms the Managed Transform
+  tier1: false
+  owner_zones: [example.com]          # CF-Worker from other zones -> 403 (2.2)
+  pseudo_ipv4_overwrite: false
+  origin_mode: tunnel                 # tunnel | aop; used by mgctl cf audit only
 ```
 
 ## 2. Cloudflare 前置（`cloudflare` profile）
@@ -144,16 +197,16 @@ both hosts: inbound firewall deny all (admin via VPN / WireGuard only)
 |---|---|
 | 副本 | 每台 Edge 主机一个 cloudflared 副本，共享同一个 tunnel：请求发往地理上最近的副本，连接失败时 Cloudflare 重试其他副本，一台主机宕机时其余副本继续服务。这是就近路由而非负载均衡；加权或健康检查分流需付费的 Load Balancer（不在范围内） |
 | ingress | 只指向 Edge，不能直接指向源站 |
-| 同机 SSRF | Edge 与源站同机时，源站应用的 SSRF 可向 127.0.0.1:8080 发出带伪造 `CF-Connecting-IP` 的请求 → 启用 `require_upstream_key`：Tier 0 规则以静态值设置 `x-mg-upstream-key`（`mgctl` 轮换，Edge 同时接受新旧两个值） |
+| 同机 SSRF | Edge 与源站同机时，源站应用的 SSRF 可向 127.0.0.1:8080 发出带伪造 `CF-Connecting-IP` 的请求 → 启用上游密钥头：`edge.toml` 监听器的 `upstream_keys` 指向 `mgctl keys gen-upstream` 生成的密钥文件；Cloudflare 侧另部署一条只设置 `x-mg-upstream-key` 静态值的 Transform Rule（`ref` = `mg_upstream_key_v1`，模板 `adapters/cloudflare/transform-rule.upstream-key.json`）。轮换时密钥文件保留新旧两个值，Edge 同时接受。回环监听器服务的站点源站也在回环地址、却没有配置 `upstream_keys` 时，`mg-edge --check-config` 警告 |
 | 网络 | 出站端口 7844（TCP/UDP，默认 QUIC）；默认 `edge-ip-version 4`，纯 IPv6 主机设为 `6` 或 `auto`（纯 IPv6 端到端未经验证） |
 | SBFM | 使用 SBFM 的 zone 须保持 "Definitely Automated" = Allow，否则 tunnel 连接可能以 `websocket: bad handshake` 失败 |
-| 代理头 | `CF-Connecting-IP` 等头经 Tunnel 到达源站的行为应与 AOP 一致，官方页面未明写 → **需实测**（Phase 1 验收项） |
+| 代理头 | `CF-Connecting-IP` 等头经 Tunnel 到达源站的行为应与 AOP 一致，官方页面未明写 → **需实测**（Phase 1 验收项：monitor 周首日确认 `mg_cf_connecting_ip_missing_total` 为 0） |
 
 **AOP（备选）**：Browser → Cloudflare（SSL 模式 Full (strict)；AOP zone-level 或 per-hostname，客户端证书由所有者 CA 签发）→ 云安全组（443 只放行 Cloudflare 段，§2.11）→ Edge :443（要求客户端证书，链到所有者 AOP CA）→ 源站。
 
 - SSL 模式须为 Full 或 Full (strict)，推荐 Full (strict)。
 - 上传的必须是叶证书（上传根 CA 返回 `missing leaf certificate`），源站安装签发它的根 CA。per-hostname 优先于 zone-level，zone-level 优先于全局，三者是独立开关。可配置 Cloudflare 在证书到期前 30 / 14 天告警。
-- Edge 只在通过客户端证书校验的连接上采信 `CF-Connecting-IP` 与 `x-mg-cf-*`。纵深防御：Pingora `ConnectionFilter` 在 TLS 之前丢弃来源不在 Cloudflare IP 段内的连接（快照来自 §2.11）。
+- Edge 只在通过客户端证书校验的连接上采信 `CF-Connecting-IP` 与 `x-mg-cf-*`。`client_ca` 是签发上传证书的**所有者自有 CA**，不是 Cloudflare 全局 origin-pull 证书的 CA。纵深防御：Pingora `ConnectionFilter` 在 TLS 之前丢弃来源不在 Cloudflare IP 段内的连接（快照来自 §2.11；Phase 1 为 `origin_mtls` 监听器的 `cloudflare_ip_filter = true`，用各站点 `cloudflare-ips` 工件的并集，尚无工件时放行并把 `mg_cf_ip_filter_active` 置 0）。
 - Worker 子请求回源时是否出示 zone-level AOP 证书 → **需实测**（与 §2.4 的 Worker 组合前验证）。
 
 ### 2.2 客户端 IP
@@ -165,11 +218,14 @@ both hosts: inbound firewall deny all (admin via VPN / WireGuard only)
 | `X-Forwarded-For` | 只作交叉核对 | Cloudflare 追加而不是覆盖，左侧由客户端控制 |
 | `True-Client-IP` | 不用，删除 | 仅 Enterprise 的 Managed Transform 添加；非 Enterprise 时客户端可伪造 |
 | `X-Real-IP` | 不用，删除 | 无 Worker 子请求时 Cloudflare 会剥离；Worker 代码可改写 |
-| `CF-Worker` | 校验 | 只出现在 Worker 子请求上，值为 Worker 所属 zone；不属于所有者 zone 时丢弃并告警 |
+| `CF-Worker` | 校验 | 只出现在 Worker 子请求上，值为 Worker 所属 zone；不属于所有者 zone（含值非法）时 403 纯文本，计 `mg_cf_foreign_worker_total{site}`，不进入决策（D-23） |
 
 - Pseudo IPv4 在所有套餐默认关闭，建议保持关闭（API 设置名 `pseudo_ipv4`，取值 `off` / `add_header` / `overwrite_header`）。
 - 认证通过的请求缺 `CF-Connecting-IP` 时按 §1.2 第 4 步处理。最常见的原因是误开了 Managed Transform "Remove visitor IP headers"（`remove_visitor_ip_headers`），它删除 `cf-connecting-ip`、`true-client-ip`，以及前面还有其他 CDN 时 XFF 中的访客部分。
 - 同 zone 的 Worker 子请求中，`CF-Connecting-IP` 反映 `x-real-ip`，后者可被 Worker 代码修改 → Worker 代码不得设置 `x-real-ip`。
+- Phase 1（[规格 §9.3.2](impl/phase1-spec.md#932-客户端-ip-未知d-23)）：客户端 IP 未知时 Edge 从不比已知时更宽松。`CF-Connecting-IP` 缺失、非法或重复 → IP 未知：NETWORK 族 MISSING，限速维度用共享兜底值 `?`，不签发 C 与凭证（429），`fail_closed` 路由 429，爬虫声明只能是 `DECLARED_AGENT`，源站收到 `MG-Client-IP: unknown`（D-23）。
+- `owner_zones` 来自配置包；尚无配置包时用 `edge.toml` 站点的 `bootstrap_owner_zones`，未配置则任何 `CF-Worker` 都视为外部（I-4）。`Connection: CF-Worker` 藏不住该头（§1.2 Phase 1 处理顺序第 ③ 步）。
+- 待实测（规格 [§19](impl/phase1-spec.md#19-待实测与未决)）：访客自己发送的 `CF-Worker` 头是否被 Cloudflare 删除或覆盖。不删除时，访客只能让自己的请求被 403，不能借此得到更宽松的处理。
 
 ### 2.3 信号转发 Tier 0：Request Header Transform Rule
 
@@ -194,10 +250,10 @@ both hosts: inbound firewall deny all (admin via VPN / WireGuard only)
 同一条规则还：
 
 - `remove` Tier 1 头名 `x-mg-cf-priority`、`x-mg-cf-accept-encoding`、`x-mg-cf-as-org`、`x-mg-cf-t1`：Tier 1 未运行（未启用或 fail-open）时，这些名字不会带着客户端伪造的值到达 Edge。Snippet 在 Request Header Transforms 之后执行（有文档）；Worker 与 Transform Rule 的先后顺序**需实测**。
-- 启用 `require_upstream_key` 时以静态值 `set` `x-mg-upstream-key`（由 `mgctl` 写入并轮换，不进仓库）。
-- 表达式必须覆盖该站点的全部主机名（模板用 `true` 覆盖整个 zone，也可写 `http.host in {...}`），否则未覆盖的主机名上客户端可以自带 `x-mg-cf-*`。`mgctl cf audit` 检查覆盖范围。
+- 上游密钥头不在这条规则里：启用 `upstream_keys` 时另部署一条只设置 `x-mg-upstream-key` 的规则（`ref` = `mg_upstream_key_v1`，§2.1），密钥与信号规则分开，轮换只改那一条；值不进仓库，`mgctl cf audit` 从不打印它，发现模板占位符时报错。
+- 表达式必须覆盖该站点的全部主机名（模板用 `true` 覆盖整个 zone，也可写 `http.host in {...}`，主机名必须小写：字符串比较区分大小写），否则未覆盖的主机名上客户端可以自带 `x-mg-cf-*`。`mgctl cf audit` 检查覆盖范围。
 
-另开启 Managed Transform "Add visitor location headers"（`add_visitor_location_headers`），得到 `cf-ipcountry`、`cf-ipcity`、`cf-ipcontinent`、`cf-iplatitude`、`cf-iplongitude`、`cf-region`、`cf-region-code`、`cf-metro-code`、`cf-postal-code`、`cf-timezone`。`cf-ipcountry` 为 ISO-3166-1 alpha-2，外加 `XX`（无数据）和 `T1`（Tor）。`cf-timezone` 与 SDK 上报的时区对比，作为弱地理一致性信号；本地 IP 库仍为权威。这些头只在 `mgctl cf audit` 确认该 Managed Transform 已开启时采信。
+另开启 Managed Transform "Add visitor location headers"（`add_visitor_location_headers`），得到 `cf-ipcountry`、`cf-ipcity`、`cf-ipcontinent`、`cf-iplatitude`、`cf-iplongitude`、`cf-region`、`cf-region-code`、`cf-metro-code`、`cf-postal-code`、`cf-timezone`。`cf-ipcountry` 为 ISO-3166-1 alpha-2，外加 `XX`（无数据）和 `T1`（Tor）。`cf-timezone` 与 SDK 上报的时区对比，作为弱地理一致性信号；本地 IP 库仍为权威。这些头只在 `mgctl cf audit` 确认该 Managed Transform 已开启时采信。Phase 1 以站点 YAML 的 `cloudflare.location_headers: true` 表示已确认，只解析 `cf-ipcountry`（`XX` 视为缺失，`T1` 另作为 `net.tor` 的来源之一）、`cf-region-code`、`cf-timezone`，其余位置头（城市、经纬度、邮编等）一律丢弃。
 
 **约束**
 
@@ -211,6 +267,8 @@ both hosts: inbound firewall deny all (admin via VPN / WireGuard only)
 | 套餐可用性 | TLS、timings、ASN、verified bot 字段在字段参考中无套餐标注，"Add visitor location headers" 的可用性同样是推断 → **需实测**：`GET /zones/{id}/managed_headers` 只返回本套餐可用的项 |
 | `accept-encoding` | 规则内 `http.request.headers["accept-encoding"]` 返回原值还是改写后的 `br, gzip` 未文档化 → 不依赖 |
 
+**Edge 端校验**（Phase 1，[规格 §9.3](impl/phase1-spec.md#93-头部清洗与可信头解析wp-c1-实现wp-e1a-接线) 的解析表）：每个头只接受规定格式（例如 `x-mg-cf-tls-ciphers-sha1` 为解码后 20 字节的 base64，`x-mg-cf-asn` 为 1–4294967295，`x-mg-cf-rtt` 的 `0` 视为缺失），非法值按缺失处理；`x-mg-cf-tls-random` 只校验，不进入任何结构、日志或事件（`client_conn_key` 在 Phase 2 的近线使用）；`x-mg-cf-hdr-names` 每项 1–64 个 token 字符、至多 128 项。`mgctl cf audit` 第 6 项接受 `ciphers_sha1` 的两种拼写。
+
 **API**：`PUT /client/v4/zones/{zone_id}/rulesets/{ruleset_id}` 会整体替换该阶段的规则列表，`mgctl` 以 `ref` 前缀 `mg_` 识别自己的规则并保留其他规则。Managed Transform 用 `PATCH /client/v4/zones/{zone_id}/managed_headers`：`add_visitor_location_headers` 开启，`remove_visitor_ip_headers` 关闭。
 
 ### 2.4 信号转发 Tier 1：Snippet / Worker（可选）
@@ -223,6 +281,8 @@ Tier 0 拿不到的值只存在于 `request.cf`。实现见 `adapters/cloudflare
 | `x-mg-cf-accept-encoding` | `request.cf.clientAcceptEncoding`（改写前的原值） | 恢复 Accept-Encoding 一致性检测 |
 | `x-mg-cf-as-org` | `request.cf.asOrganization`（UTF-8 百分号编码，Edge 解码） | Console 展示、与本地库交叉核对 |
 | `x-mg-cf-t1` | 固定值 `snippet` / `worker` | 标明 Tier 1 已运行；缺少时其余 Tier 1 头一律按 `MISSING` 处理 |
+
+Phase 1：只在站点 YAML `cloudflare.tier1: true` 且 `x-mg-cf-t1` 有效时解析；`x-mg-cf-as-org` 只记录，写在决定事件的顶层字段 `upstream_as_org`。
 
 | 载体 | 套餐 | 限制 | 选择 |
 |---|---|---|---|
@@ -279,7 +339,9 @@ MorphGate 的规则（[04](04-challenge-and-tokens.md) 与 `adapters/cloudflare/
 | 2 | Challenge 使用 403 / 429，不用 200：两者不在默认缓存 TTL 列表中 |
 | 3 | 一条 Cache Rule（`ref` = `mg_bypass_mg_paths`）设为 Bypass cache，表达式 `starts_with(http.request.uri.path, "/__mg/") and not starts_with(http.request.uri.path, "/__mg/s/")`（语法**需实测**），放在所有 Cache Rule 的**最后**；以后新增的 Cache Rule 插在它之前。站点把 `/__mg/` 配成随机前缀时（见 [02](02-data-flow.md) §3），规则由 `mgctl` 按实际前缀生成 |
 | 4 | 覆盖可能返回 Challenge 的 HTML 路径的 "Eligible for cache" 规则不得带 `override_origin` 或 Status code TTL（控制面审计） |
-| 5 | SDK 在同源 fetch 中读到 `/__mg/*` 响应的 `cf-cache-status` 为 `HIT` 时立即上报告警。Bypass 规则生效时为 `DYNAMIC`；`BYPASS` 表示在响应阶段才决定不缓存，例如 Eligible 规则遇到源站 `no-store` |
+| 5 | SDK 在同源 fetch 中读到 `/__mg/*` 响应的 `cf-cache-status` 为 `HIT` 时立即上报告警（Phase 2 的 SDK 功能；Phase 1 在 monitor 周人工抽查）。Bypass 规则生效时为 `DYNAMIC`；`BYPASS` 表示在响应阶段才决定不缓存，例如 Eligible 规则遇到源站 `no-store` |
+
+`mgctl cf audit` 第 13 项（Phase 1）把叠加的规则当作整体判断：一条规则设 Eligible for cache、另一条只覆盖 Edge TTL，对两者都匹配的请求同样是陷阱。只按静态扩展名限定、且为纯合取（没有 `or` / `xor`，否定不包住扩展名条件）的表达式才算"静态"；确认过的例外用 `--ack ttl_override_trap:<rule ref>=<说明>` 登记覆盖 Edge TTL 的那条规则。
 
 Speed Brain 在 Free 上默认开启：预取只从缓存返回、不到达源站，也不预取不可缓存的 HTML 或运行 Worker 的路由，不会在 Edge 产生"无交互导航"的假事件，保持默认即可。
 
@@ -294,7 +356,7 @@ Speed Brain 在 Free 上默认开启：预取只从缓存返回、不到达源�
 | Managed Challenge / JS Challenge 规则 | 所有套餐 | 不覆盖 MorphGate 挑战的路径 | 双重挑战；Cloudflare 也警告挑战与 Rules 功能组合可能形成挑战循环 |
 | Precursor | 未写明（需确认） | 关闭 | Maximize Security 模式要求有效 `cf_clearance`，不带 Cookie 的 fetch 会失败 |
 | Rocket Loader | 所有套餐 | 关闭，或给 SDK / Challenge 脚本标签（及其依赖脚本）加 `data-cfasync="false"` | 会延迟并改写脚本加载，干扰计时与完整性检查 |
-| 0-RTT Connection Resumption | 所有套餐，默认关闭 | 首选保持关闭（API 设置名 `0rtt`）。若开启，`/__mg/*` 的状态变更端点对 `Early-Data: 1` 返回 425（Cloudflare 是否透传 425 **需实测**），见 [04 §4.3](04-challenge-and-tokens.md#43-early-data0-rtt) | 0-RTT 只存在于客户端与 Cloudflare 之间，只覆盖 GET / HEAD / OPTIONS；开启时源站看到 `Early-Data: 1` |
+| 0-RTT Connection Resumption | 所有套餐，默认关闭 | 首选保持关闭（API 设置名 `0rtt`）。若开启，`/__mg/*` 的状态变更端点对 `Early-Data: 1` 返回 425（Cloudflare 是否透传 425 **需实测**），见 [04 §4.3](04-challenge-and-tokens.md#43-early-data0-rtt)（含 Phase 1 的实现语义） | 0-RTT 只存在于客户端与 Cloudflare 之间，只覆盖 GET / HEAD / OPTIONS；开启时源站看到 `Early-Data: 1` |
 | Pseudo IPv4 | 所有套餐，默认关闭 | 保持关闭 | 见 §2.2 |
 | Remove visitor IP headers | Managed Transform | **必须关闭** | 否则拿不到客户端 IP |
 | AI bot policies（Search / Agent / Training） | 所有套餐 | MorphGate 为唯一权威时设为 Allow | 2026-09-15 起新 zone 默认在有广告的页面上阻止 Training 与 Agent（Search 仍允许）；混合 Search + Training 的爬虫会被任何训练阻止配置拦下；旧的 "Block AI bots" 开关已弃用。不改则 Cloudflare 先在边缘拦截，MorphGate 看不到也记录不到。需要在边缘省流量时，由控制面把 [05](05-ai-agent-policy.md) 的同一份策略下推为 Cloudflare 规则（Free 只有 5 条 custom rules） |
@@ -321,9 +383,11 @@ Cloudflare 的所有挑战页响应都带 `cf-mitigated: challenge`（该头唯�
 
 - 不计入 MorphGate Challenge 失败率，不触发失败计数，也不触发"SDK 从未运行"信号（[03](03-risk-scoring.md)）。
 - 计入 `mg_double_challenge_total`；Console 按站点、路由、国家展示。计数持续非零说明 §2.7 的某项配置有冲突。
-- Web SDK 的实现属于 Phase 2（见 [04 §7](04-challenge-and-tokens.md#7-客户端信号采集web--mobile-sdk)）。
+- Web SDK 的实现属于 Phase 2（见 [04 §7](04-challenge-and-tokens.md#7-客户端信号采集web--mobile-sdk)）；`mg_double_challenge_total` 随之出现。Phase 1 靠 `mgctl cf audit` 第 9、10、11、14 项预防双重挑战。
 
 ### 2.9 可选：HMAC Cookie 跳过（Pro 及以上）
+
+Phase 1 未实现（仅在双重挑战计数确实出现后才考虑）。
 
 用途：Pro 及以上保留 SBFM / Security Level / 限速时，让已通过 MorphGate 的会话不再被 Cloudflare 重复挑战。依赖 `is_timed_hmac_valid_v0()` 与 `http.request.cookies`，两者都需要 Pro / Business / Enterprise。仅在双重挑战计数确实出现后启用。
 
@@ -339,32 +403,37 @@ Cloudflare 的所有挑战页响应都带 `cf-mitigated: challenge`（该头唯�
 
 Go 控制面通过 Cloudflare API 检查每个 zone，输出表格；有"错误"级别项时退出码非零，失败项计入 `mg_cf_audit_failed_checks`（zone、check）。Phase 1 验收要求全绿。
 
-| # | 检查项 | 期望 | 数据来源 | 级别 |
+Phase 1 由所有者在工作站运行 `mgctl cf audit --site-config <site.yaml> [--cf-ips <工件>] [--vm-url <url>] [--sdk-dir <dir>]`（只读 token `CLOUDFLARE_API_TOKEN`；User-Agent `morphgate-dev-tooling`，I-15）。每项的状态为 `pass`、`fail`、`warn`（警告 / 提示级失败）、`manual`（token 权限不足或没有读取接口；在 Dashboard 确认后用 `--ack <id>=<说明>` 记为已确认）或 `skip`；任一错误级 `fail`（`--strict` 时含 `manual`）→ 退出码 1。`--json` 输出机器可读结果，`--metrics-textfile` 写 `mg_cf_audit_failed_checks{zone, check}` 与 `mg_cf_audit_last_run_timestamp_seconds{zone}`。判定细节见 [规格 §14.3](impl/phase1-spec.md#143-mgctl-cf-auditwp-g3)。
+
+| # | id | 期望 | 数据来源 | 级别 |
 |---|---|---|---|---|
-| 1 | 源站保护 | 站点监听器为 Tunnel，或 zone-level / per-hostname AOP 已启用；不能只开全局 AOP（`tls_client_auth`） | `origin_tls_client_auth` 端点、zone setting `tls_client_auth`；Tunnel 状态 API 需确认 | 错误 |
-| 2 | SSL 模式（AOP 时） | Full 或 Full (strict) | zone settings（设置名需确认） | 错误 |
-| 3 | AOP 证书到期 | 剩余 ≥ 30 天（`mg_aop_cert_expiry_seconds`） | `origin_tls_client_auth` 证书列表 | 警告 |
-| 4 | Remove visitor IP headers | 关闭 | `GET /zones/{id}/managed_headers` | 错误 |
-| 5 | Add visitor location headers | 开启（本套餐可用时） | 同上 | 警告 |
-| 6 | Tier 0 Transform Rule | `mg_signals_v*` 存在；头齐全（含 Tier 1 头名的 `remove`）；表达式覆盖站点全部主机名 | Rulesets API，`http_request_late_transform` | 错误 |
-| 7 | Pseudo IPv4 | `off`，或 Edge 已配置读取 `CF-Connecting-IPv6` | zone setting `pseudo_ipv4` | 错误 |
-| 8 | 0-RTT | `off`；若开启，Edge 对 `/__mg/*` 状态变更端点的 `Early-Data: 1` 返回 425 | zone setting `0rtt` | 警告 |
-| 9 | Bot Fight Mode（Free） | 关闭 | 读取接口需确认；无法读取时要求人工确认，并参考第 18 项 | 错误 |
-| 10 | SBFM（Pro+） | 各组 Allow，或 `mg_skip_mg_paths` 覆盖 `/__mg/`；Tunnel 时 Definitely Automated = Allow | Rulesets API（custom rules）；SBFM 设置的读取方式需确认 | 错误 |
-| 11 | Skip 规则 | `mg_skip_mg_paths` 位于所有可能对 `/__mg/` Block / Challenge 的自定义规则之前，有 `/__mg/` 洪泛限速规则时其 `phases` 不含 `http_ratelimit`；`mg_skip_cleared` 的表达式排除 `/__mg/`（§2.9） | Rulesets API | 警告 |
-| 12 | `/__mg/` 缓存 Bypass | `mg_bypass_mg_paths` 存在，表达式同 §2.6，且是最后一条 Cache Rule | Rulesets API（Cache Rules） | 错误 |
-| 13 | TTL 覆盖陷阱 | 覆盖 HTML 路径的 Eligible for cache 规则不带 `override_origin` / `status_code_ttl` | Rulesets API（Cache Rules） | 错误 |
-| 14 | Cloudflare 挑战叠加 | 没有 challenge 类动作的规则覆盖 MorphGate 挑战路径 | Rulesets API | 警告 |
-| 15 | Rocket Loader | 关闭，或 Edge 注入模板带 `data-cfasync="false"` | zone settings（设置名需确认）+ 本地模板 | 警告 |
-| 16 | AI bot policies | 与 [05](05-ai-agent-policy.md) 的单一权威设置一致 | 读取接口需确认 | 警告 |
-| 17 | Precursor | 关闭 | 读取接口需确认 | 警告 |
-| 18 | 运行时指标（Edge / SDK） | `mg_cf_connecting_ip_missing_total` = 0；`mg_upstream_signal_missing_total` 缺失率 ≈ 0；`mg_upstream_auth_failures_total{reason="bad_secret_header"}` = 0；外部 zone 的 `CF-Worker` = 0；`/__mg/*` 出现 `cf-cache-status: HIT` = 0；`mg_double_challenge_total` | VictoriaMetrics | 错误 / 警告 |
-| 19 | IP 段快照 | 最近一次成功同步在 48 小时内（`mg_cf_ips_sync_age_seconds`） | 控制面任务状态 | 警告 |
-| 20 | 可选规则 | `/__mg/` 洪泛限速规则存在且未被 Skip；HMAC Skip 规则的 key 版本与 Edge 一致 | Rulesets API | 提示 |
+| 1 | `origin_protection` | Tunnel 为 healthy（站点 YAML 给出 `account_id` / `tunnel_id` 时，否则 manual）；或 zone-level / 每个主机的 per-hostname AOP 已启用，且不是只有全局 AOP | `cfd_tunnel`、`origin_tls_client_auth`（settings、hostnames）、`settings/tls_client_auth` | 错误 |
+| 2 | `ssl_mode` | AOP 时为 Full 或 Full (strict) | `settings/ssl` | 错误 |
+| 3 | `aop_cert_expiry` | AOP 客户端证书剩余 ≥ 30 天 | `origin_tls_client_auth` 证书列表 | 警告 |
+| 4 | `remove_visitor_ip_headers` | 关闭 | `managed_headers` | 错误 |
+| 5 | `visitor_location_headers` | 站点 `location_headers: true` 时已开启 | 同上 | 警告 |
+| 6 | `transform_rule_signals` | `mg_signals_v*` 存在且启用；13 个 Tier 0 头的表达式与模板一致（`ciphers_sha1` 两种拼写都接受）；4 个 Tier 1 头名为 `remove`；表达式为 `true` 或覆盖站点全部主机名；上游密钥规则 `mg_upstream_key_v1` 的值不是模板占位符（值从不打印） | `http_request_late_transform` 入口规则集 | 错误 |
+| 7 | `pseudo_ipv4` | `off`，或 `overwrite_header` 且站点 `pseudo_ipv4_overwrite: true` | `settings/pseudo_ipv4` | 错误 |
+| 8 | `zero_rtt` | `off`（若开启，Edge 按 [04 §4.3](04-challenge-and-tokens.md#43-early-data0-rtt) 返回 425） | `settings/0rtt` | 警告 |
+| 9 | `bot_fight_mode` | Free 上 `fight_mode` 为 false；读取被拒时 manual | `bot_management` | 错误 |
+| 10 | `sbfm_skip` | Pro+ 的 SBFM 各组 Allow，或 `mg_skip_mg_paths` 覆盖 `/__mg/` 且 `phases` 含 `http_request_sbfm`；Tunnel 时 Definitely Automated 必须 Allow | `bot_management`、custom rules | 错误 |
+| 11 | `skip_rule_order` | `mg_skip_mg_paths` 排在所有 block / challenge 规则之前；有 `/__mg/` 洪泛限速规则时 Skip 不含 `http_ratelimit`；`mg_skip_cleared`（若有）排除 `/__mg/`（§2.9） | custom rules、`http_ratelimit` 入口规则集 | 警告 |
+| 12 | `cache_bypass_mg` | 最后一条 Cache Rule 为 `mg_bypass_mg_paths`，动作 bypass，表达式同 §2.6 | `http_request_cache_settings` 入口规则集 | 错误 |
+| 13 | `ttl_override_trap` | 没有"可缓存 + 覆盖 Edge TTL"且未只限定静态扩展名的规则；叠加规则按 §2.6 一并判断 | 同上 | 错误 |
+| 14 | `cf_challenge_overlap` | 没有 challenge 类规则的表达式为 `true` 或提到站点路由路径；简单的 `not …` 排除项（如 `and not starts_with(…, "/__mg/")`）不算覆盖 | custom rules | 警告 |
+| 15 | `rocket_loader` | `off`，或 `--sdk-dir` 模板的 SDK 标签带 `data-cfasync="false"` | `settings/rocket_loader` + 本地模板 | 警告 |
+| 16 | `ai_bot_policy` | 与 [05](05-ai-agent-policy.md) 的单一权威一致：模式 A 全部 Allow；字段缺失时 manual | `bot_management` | 警告 |
+| 17 | `precursor` | 关闭 | 没有读取接口：总是 manual，`--ack` 确认 | 警告 |
+| 18 | `runtime_metrics` | 24 h 增量：`mg_cf_connecting_ip_missing_total`、`mg_upstream_auth_failures_total{reason="bad_secret_header"}`、`mg_cf_foreign_worker_total` 为 0（错误）；`mg_upstream_signal_missing_total` 缺失率 < 1%，不含 `hdr-names`（警告，I-12）；没有 `mg_requests_total` 样本时 warn，样本非有限值时失败；无 `--vm-url` 时 skip。`/__mg/*` 的 `cf-cache-status: HIT` 与 `mg_double_challenge_total` 在 Phase 2 由 SDK 提供 | VictoriaMetrics `/api/v1/query` | 错误 / 警告 |
+| 19 | `ip_snapshot_age` | `--cf-ips` 工件旁 `.state.json` 的 `last_success` 在 48 小时内；无参数时 skip | 本地文件 | 警告 |
+| 20 | `optional_rules` | 报告 `/__mg/` 洪泛限速规则是否存在 | `http_ratelimit` 入口规则集 | 提示 |
+| 21 | `always_use_https` | 开启（`__Host-` 凭证 Cookie 只在 https 下保存，D-32）；另报告 HSTS 是否开启 | `settings/always_use_https` | 错误 |
+
+第 11、14、20 项判断规则是否覆盖 `/__mg/` 时忽略简单的 `not …` 排除项，否定复合条件或无法解析的表达式按字面理解（仍算覆盖）；`mg_skip_cleared` 的表达式只要有顶层 `or` / `xor` 就视为没有排除 `/__mg/`。入口规则集返回 404 视为"没有规则"。测试全部用 `httptest` 伪造的 API（`control-plane/testdata/cloudflare/<scenario>/`）。
 
 其他职责：
 
-- **模板下发**（可选写权限）：`mgctl cf apply` 按 §2.3、§2.6、§2.7 生成并更新规则，只改 `ref` 以 `mg_` 开头的规则。
+- **模板下发**（可选写权限）：`mgctl cf apply` 按 §2.3、§2.6、§2.7 生成并更新规则，只改 `ref` 以 `mg_` 开头的规则（Phase 3；Phase 1 由所有者按 [`adapters/cloudflare/README.md`](../adapters/cloudflare/README.md) 手工应用模板）。
 - **Turnstile widget 管理**：见 [09 §8.1](09-interactive-challenge.md#81-widget-与控制面)。
 - **API Token 最小权限**：审计只用 zone 级只读权限；启用 `apply` 时才加对应的写权限；Turnstile 只需 Turnstile Sites Write。zone 级权限的具体名称需确认。
 
@@ -374,6 +443,8 @@ Go 控制面通过 Cloudflare API 检查每个 zone，输出表格；有"错误"
 - Cloudflare 很少变更 IP 段，新段先公布再启用。控制面每日拉取，按 etag 判断变化；校验格式与数量，数量突变时需人工确认；失败保留上一版并告警（超过 48 小时未成功同步即告警，[06 §5](06-policy-console-observability.md#5-日志指标与告警)）。结果推送到 Edge 可信代理快照（随签名配置包下发）和云安全组。
 - AWS：路由目标为内部地址、且范围**宽于** 172.16.0.0/12 的 VPC 路由（如 172.x 的 /8 超网）会吞掉发往 172.64.0.0/13 的流量；恰好是 /12 的路由不重叠。控制面在 AWS 上检查路由表。
 - Tunnel 模式下源站没有入站端口，IP 段主要用于 AOP 模式的安全组，以及识别异常来源。
+
+**Phase 1 实现**（[规格 §12.2](impl/phase1-spec.md#122-cloudflare-ipsjson)、[§14.4](impl/phase1-spec.md#144-mgctl-cf-ips-syncwp-g3)）：所有者工作站上每日运行 `mgctl cf ips sync --out <file>`（`--url` 只接受 https；User-Agent `morphgate-dev-tooling`）。要求 `success == true`；按规格校验（IPv4 5–64 条、IPv6 2–32 条，规范网络地址，前缀长度 IPv4 8–32、IPv6 16–128，不与 I-13 的特殊地址段相交，文档段一律拒绝）；`etag` 不变时不改写工件，配置包里的工件哈希不会因每日同步而变化；条数变化超过 30% 时拒绝，确认后加 `--accept-change`；成功时写 `<out>.state.json`（`cf audit` 第 19 项读取），`--metrics-textfile` 写 `mg_cf_ips_sync_timestamp_seconds`（告警用 `time() - …` 得到同步年龄）。工件 `cloudflare-ips` 随签名配置包下发，Edge 用于 `origin_mtls` 监听器的 `cloudflare_ip_filter`。云安全组同步与 AWS 路由表检查未实现，由所有者手工维护。
 
 ### 2.12 套餐能力对照
 
@@ -539,7 +610,7 @@ Turnstile 与 zone 套餐无关，额度见 [09 §8.1](09-interactive-challenge.
 
 | 项 | 影响 | 何时 |
 |---|---|---|
-| `cf.tls_ciphers_sha1` 与 `cf.tls_client_ciphers_sha1` 哪个被 Rulesets API 接受 | Tier 0 模板 | Phase 1 |
+| `cf.tls_ciphers_sha1` 与 `cf.tls_client_ciphers_sha1` 哪个被 Rulesets API 接受 | Tier 0 模板（`cf audit` 两种拼写都接受） | Phase 1 |
 | Free / Pro 上 `cf.tls_*`、`cf.timings.*` 等字段与 visitor location 是否可用 | Tier 0 | Phase 1 |
 | `cf.tls_*` 在 Chrome / Firefox / Safari、HTTP/3、会话恢复下的稳定性（GREASE、扩展顺序随机化） | EDGE_TLS 权重、`bind.ctp` | Phase 1–2 shadow |
 | `CF-Connecting-IP` 等头经 Tunnel 到达源站 | 客户端 IP | Phase 1 验收 |
@@ -549,6 +620,9 @@ Turnstile 与 zone 套餐无关，额度见 [09 §8.1](09-interactive-challenge.
 | BFM、SBFM、AI bot policies、Precursor、Rocket Loader、SSL 模式的 API 读取方式；Precursor 的套餐可用性 | `mgctl cf audit` 自动化程度、共存清单 | Phase 1 |
 | Free 限速规则支持的表达式（能否按方法、支持哪些运算符） | `/__mg/` 洪泛规则 | Phase 1 |
 | 0-RTT 开启时 Cloudflare 是否把源站的 425 透传给浏览器 | 0-RTT 策略 | 仅在需开启 0-RTT 时 |
+| 访客自己发送的 `CF-Worker` 头是否被 Cloudflare 删除或覆盖 | 不删除时访客只能让自己被 403（§2.2） | Phase 1 monitor 周 |
+| Cloudflare 是否把源站（Edge）的 414 / 431 原样回传浏览器 | 超长请求的用户体验（只影响超长请求） | Phase 1 monitor 周 |
+| 挑战页（403 + `no-store`）经 Cloudflare 后的 `cf-cache-status` 应为 `DYNAMIC` / `BYPASS` | 缓存泄漏（10 CH-09） | Phase 1 monitor 周 |
 | HMAC token 的 MAC 计算与 `is_timed_hmac_valid_v0` 一致 | §2.9 | 启用前 |
 | Cloudflare 挑战页对大陆访客的可用性（全局 zone） | 大陆策略 | 观察 |
 | 纯 IPv6 主机上运行 cloudflared | 更便宜的 VPS 选项 | 可选 |

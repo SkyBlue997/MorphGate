@@ -1,0 +1,12 @@
+# want: challenge.ttl_s: must be between 10 and 120, got 300
+version: 1
+site: shop
+profile: direct_tls
+hosts: [shop.example.test, admin.example.test]
+allowed_listeners: [public-tls]
+token:
+  active_kid: shop-t-20260927
+challenge: {ttl_s: 300}
+environments:
+  - name: production
+    hosts: [shop.example.test, admin.example.test]

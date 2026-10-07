@@ -1,0 +1,272 @@
+{
+  "version": 1,
+  "about": "GCRA case table shared by mg_core::gcra and the Valkey Lua script mg_gcra (docs/impl/phase1-spec.md \u00a79.7). Generated from an independent model of the Lua script (Lua 5.1 doubles). now_us is never 0 here: the script reads 0 as the server clock. Read-only: change the spec first.",
+  "params": [
+    {
+      "rate": 20,
+      "period_s": 60,
+      "burst": 5,
+      "interval_us": 3000000
+    },
+    {
+      "rate": 600,
+      "period_s": 60,
+      "burst": 1,
+      "interval_us": 100000
+    },
+    {
+      "rate": 10,
+      "period_s": 1,
+      "burst": 3,
+      "interval_us": 100000
+    },
+    {
+      "rate": 5,
+      "period_s": 900,
+      "burst": 1,
+      "interval_us": 180000000
+    },
+    {
+      "rate": 1,
+      "period_s": 86400,
+      "burst": 7,
+      "interval_us": 86400000000
+    },
+    {
+      "rate": 1,
+      "period_s": 86400,
+      "burst": 8,
+      "interval_us": null
+    },
+    {
+      "rate": 0,
+      "period_s": 60,
+      "burst": 1,
+      "interval_us": null
+    },
+    {
+      "rate": 1,
+      "period_s": 0,
+      "burst": 1,
+      "interval_us": null
+    },
+    {
+      "rate": 1,
+      "period_s": 60,
+      "burst": 0,
+      "interval_us": null
+    },
+    {
+      "rate": 3,
+      "period_s": 1,
+      "burst": 1,
+      "interval_us": 333333
+    },
+    {
+      "rate": 1000001,
+      "period_s": 1,
+      "burst": 1,
+      "interval_us": null
+    },
+    {
+      "rate": 7,
+      "period_s": 10,
+      "burst": 2,
+      "interval_us": 1428571
+    }
+  ],
+  "checks": [
+    {
+      "name": "fresh_state_allowed",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 1,
+      "stored_tat_us": null,
+      "now_us": 1790000000000000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 3000000,
+      "new_tat_us": 1790000003000000
+    },
+    {
+      "name": "stored_in_past_is_fresh",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 1,
+      "stored_tat_us": 1789999990000000,
+      "now_us": 1790000000000000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 3000000,
+      "new_tat_us": 1790000003000000
+    },
+    {
+      "name": "within_burst",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 1,
+      "stored_tat_us": 1790000009000000,
+      "now_us": 1790000000000000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 12000000,
+      "new_tat_us": 1790000012000000
+    },
+    {
+      "name": "last_slot_of_burst",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 1,
+      "stored_tat_us": 1790000012000000,
+      "now_us": 1790000000000000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 15000000,
+      "new_tat_us": 1790000015000000
+    },
+    {
+      "name": "burst_exhausted_denied",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 1,
+      "stored_tat_us": 1790000015000000,
+      "now_us": 1790000000000000,
+      "allowed": false,
+      "retry_after_us": 3000000,
+      "tat_minus_now_us": 15000000,
+      "new_tat_us": null
+    },
+    {
+      "name": "denied_far_ahead",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 1,
+      "stored_tat_us": 1790000060000000,
+      "now_us": 1790000000000000,
+      "allowed": false,
+      "retry_after_us": 48000000,
+      "tat_minus_now_us": 60000000,
+      "new_tat_us": null
+    },
+    {
+      "name": "allowed_again_after_interval",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 1,
+      "stored_tat_us": 1790000015000000,
+      "now_us": 1790000003000000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 15000000,
+      "new_tat_us": 1790000018000000
+    },
+    {
+      "name": "clock_behind_stored_state",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 1,
+      "stored_tat_us": 1790000003000000,
+      "now_us": 1789999999000000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 7000000,
+      "new_tat_us": 1790000006000000
+    },
+    {
+      "name": "now_smaller_than_dvt_saturates",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 1,
+      "stored_tat_us": null,
+      "now_us": 1000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 3000000,
+      "new_tat_us": 3001000
+    },
+    {
+      "name": "burst_one_second_request_denied",
+      "interval_us": 1000000,
+      "burst": 1,
+      "cost": 1,
+      "stored_tat_us": 1790000001000000,
+      "now_us": 1790000000000000,
+      "allowed": false,
+      "retry_after_us": 1000000,
+      "tat_minus_now_us": 1000000,
+      "new_tat_us": null
+    },
+    {
+      "name": "burst_one_exact_boundary",
+      "interval_us": 1000000,
+      "burst": 1,
+      "cost": 1,
+      "stored_tat_us": 1790000000000000,
+      "now_us": 1790000000000000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 1000000,
+      "new_tat_us": 1790000001000000
+    },
+    {
+      "name": "cost_two",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 2,
+      "stored_tat_us": 1790000009000000,
+      "now_us": 1790000000000000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 15000000,
+      "new_tat_us": 1790000015000000
+    },
+    {
+      "name": "cost_two_denied",
+      "interval_us": 3000000,
+      "burst": 5,
+      "cost": 2,
+      "stored_tat_us": 1790000012000000,
+      "now_us": 1790000000000000,
+      "allowed": false,
+      "retry_after_us": 3000000,
+      "tat_minus_now_us": 12000000,
+      "new_tat_us": null
+    },
+    {
+      "name": "max_dvt_fresh",
+      "interval_us": 86400000000,
+      "burst": 7,
+      "cost": 1,
+      "stored_tat_us": null,
+      "now_us": 1790000000000000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 86400000000,
+      "new_tat_us": 1790086400000000
+    },
+    {
+      "name": "max_dvt_denied",
+      "interval_us": 86400000000,
+      "burst": 7,
+      "cost": 1,
+      "stored_tat_us": 1790604800000000,
+      "now_us": 1790000000000000,
+      "allowed": false,
+      "retry_after_us": 86400000000,
+      "tat_minus_now_us": 604800000000,
+      "new_tat_us": null
+    },
+    {
+      "name": "year_2100_values",
+      "interval_us": 86400000000,
+      "burst": 7,
+      "cost": 1,
+      "stored_tat_us": 4102444800000100,
+      "now_us": 4102444800000000,
+      "allowed": true,
+      "retry_after_us": 0,
+      "tat_minus_now_us": 86400000100,
+      "new_tat_us": 4102531200000100
+    }
+  ]
+}

@@ -16,6 +16,17 @@
 | 所有基于 IP 的验证（官方 IP 段、rDNS、授权的 `source_ips`）只用 UpstreamProfile 解析出的客户端 IP | `cloudflare` profile 下 TCP 对端是 Cloudflare 边缘或 cloudflared 回环地址，不是访客 |
 | Cloudflare 的 verified bot 标记只作佐证 | 它是另一方的判断，粒度与 MorphGate 的分类不同，且 2026-07-01 起包含已签名 Agent |
 
+**Phase 1 实现状态**（2026-09-28 勘误；细节以 [Phase 1 实现规格](impl/phase1-spec.md) 为准，D-xx 见规格 [§0.3](impl/phase1-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](impl/phase1-spec.md#集成者裁决2026-09-28优先于正文)）
+
+| 本文内容 | Phase 1 | 规格 |
+|---|---|---|
+| 分类（§2） | 实现 `VERIFIED_CRAWLER`、`IMPERSONATOR`、`DECLARED_AGENT`、`SCANNER`（来自策略标签）、`AUTOMATION_LIKELY`、`HUMAN_LIKELY`、`UNKNOWN`；`AUTHORIZED_AGENT`、`SIGNED_AGENT` 与 `delegated` 在 Phase 3（`identity.agent.*` 恒为 MISSING，D-07） | [§5.7](impl/phase1-spec.md#57-phase-1-检测器与评分-v1wp-r1) |
+| 身份来源（§3） | 公开爬虫的官方 IP 段 + 异步 rDNS；Web Bot Auth、mTLS、OAuth 在 Phase 3 | [§7.3](impl/phase1-spec.md#73-爬虫注册表与验证)、[§9.6](impl/phase1-spec.md#96-身份wp-e1b) |
+| verified bot 佐证（§3.4） | EXTERNAL 族信号与分歧计数；分歧只告警，不自动刷新情报 | [§5.7](impl/phase1-spec.md#57-phase-1-检测器与评分-v1wp-r1) |
+| 爬虫策略（§7.1） | 站点 YAML `crawlers`：缺省动作 + 按用途覆盖；已验证爬虫只在 GET / HEAD 或非 `require_clearance` 路由上直接放行（D-36） | [§5.5](impl/phase1-spec.md#55-默认处置矩阵wp-r1)、[§8.2](impl/phase1-spec.md#82-站点-yaml-v1wp-g2) |
+| Crawler Registry（§7.2） | 注册表工件、同步与校验见 §7.2 的 Phase 1 段落 | [§12.3](impl/phase1-spec.md#123-爬虫注册表)、[§14.5](impl/phase1-spec.md#145-mgctl-crawler-syncwp-g3) |
+| Agent Registry、测试授权工单、robots 代管、AI bot policy 下推 | 未实现（Phase 3 起） | [§0.1](impl/phase1-spec.md#01-范围) |
+
 ## 2. 分类
 
 | 类别 | 定义 | 身份依据 | 默认策略 |
@@ -103,6 +114,8 @@ Signature: sig1=:<base64 signature>:
 
 **IP 类验证的客户端 IP**：IP 段、rDNS、`source_ips` 只用 UpstreamProfile 解析出的客户端 IP（解析规则见 [08 §2.2](08-upstream-and-cloudflare.md#22-客户端-ip)；`direct_tls` 或上游认证失败时为 TCP 对端）。`cloudflare` 下认证通过却缺少 `CF-Connecting-IP` 时：配置告警（`mg_cf_connecting_ip_missing_total`），IP 类验证结果记为 `unverifiable`，不回退到 Cloudflare 对端 IP，不判 `IMPERSONATOR`（签名验证照常）。
 
+Phase 1 的 rDNS 用系统解析配置，从不读 `/etc/hosts`（本机 hosts 条目不能让爬虫通过验证），正向查询同时查 A 与 AAAA；DNS 错误只带固定文本，不含查询名（PTR 名就是客户端 IP，I-17）。
+
 ### 3.4 Cloudflare verified bot 标记（佐证）
 
 `cloudflare` profile 的 Transform Rule 转发 `x-mg-cf-vbot`（`to_string(cf.client.bot)`，所有套餐可用）与 `x-mg-cf-vbot-cat`（`cf.verified_bot_category`，类别取值需实测），映射见 [08 §2.3](08-upstream-and-cloudflare.md#23-信号转发-tier-0request-header-transform-rule)。
@@ -123,6 +136,8 @@ Signature: sig1=:<base64 signature>:
 | 无法验证 | `false` 或缺失 | `DECLARED_AGENT` 或按通用评分；`false` 不算人类证据 |
 
 Cloudflare 标记永远不能单独产生 `VERIFIED_CRAWLER`、`AUTHORIZED_AGENT` 或 `IMPERSONATOR`，不能单独决定放行或阻断，也不能进入测试环境。
+
+Phase 1：上表由 EXTERNAL 族信号 `external.cf_vbot` 实现：`x-mg-cf-vbot = true` 而自有验证未通过，或为 `false` 而 UA 声称已知爬虫 → +0.3（置信度 0.8）；其余为 0；头缺失为 MISSING。分歧计入 `mg_cf_vbot_disagree_total`；"触发异步刷新"未实现，告警后由所有者运行 `mgctl crawler sync`。
 
 ## 4. Agent Registry 与授权模型
 
@@ -236,11 +251,26 @@ sequenceDiagram
 | 用户触发抓取 | 用户在 AI 产品中让其读取某个页面 | 允许，严格限额，仅公开页面 |
 | 归档 / 研究 | 网页归档、学术爬虫 | 按站点决定 |
 
+Phase 1：站点 YAML `crawlers.default_action`（`allow` / `block`，缺省 `allow`）加按用途覆盖的 `purposes`，用途取值 `search`、`ai_training`、`ai_search`、`user_triggered`、`archive`、`other`（例如 `{ai_training: block}`）。默认处置矩阵中，已验证爬虫的用途为 `block` → BLOCK（`matrix.crawler.block`）；否则只在 GET / HEAD 或非 `require_clearance` 路由上 ALLOW（`matrix.crawler.allow`），写方法落到 `require_clearance` 路由时按普通矩阵处理，已验证爬虫从不越过凭证要求（D-36）。"限额"用站点限速器表达，没有按爬虫的专用限额；"需许可"与 `402` 未实现。
+
 ### 7.2 Crawler Registry
 
 - 记录运营方、UA 标识、用途类别、验证方式（IP 段 URL、rDNS 域名、Web Bot Auth 目录），由控制面 Intel Sync 定期刷新；站点只需按运营方或用途类别选择策略。
 - 所有 IP 类验证按 §3.3 使用解析出的客户端 IP；Cloudflare 标记按 §3.4 只作佐证。
 - **冒充**：UA 声称已知爬虫，但 IP 不在官方段、rDNS 不符、也没有有效签名 → `IMPERSONATOR`，阻断。Cloudflare 标记不能推翻这一结论，但两者分歧会触发情报刷新与告警（§3.4）；缺少客户端 IP 导致的 `unverifiable` 不算失败（§3.3）。
+
+**Phase 1 实现**（[规格 §7.3](impl/phase1-spec.md#73-爬虫注册表与验证)、[§9.6](impl/phase1-spec.md#96-身份wp-e1b)、[§12.3](impl/phase1-spec.md#123-爬虫注册表)、[§14.5](impl/phase1-spec.md#145-mgctl-crawler-syncwp-g3)）
+
+| 项 | Phase 1 |
+|---|---|
+| 来源 | 所有者维护 `deploy/intel/crawler-registry.yaml`（初始：Googlebot、Bingbot、Applebot 为 `ip_ranges_or_rdns`；GPTBot、OAI-SearchBot、ChatGPT-User 为 `ip_ranges`）；工作站上每日 `mgctl crawler sync` 抓取官方 IP 段，写出工件 `crawler-registry.json`，随签名配置包下发。Web Bot Auth 目录在 Phase 3 |
+| 验证方式（D-18） | `ip_ranges`：IP 不在官方段 → 同步判 `failed`（`IMPERSONATOR`），从第一个请求起即可识别；`rdns` / `ip_ranges_or_rdns`：缓存未命中时本次为 `pending`（`DECLARED_AGENT`），异步反查后结论入缓存；`pending` 且运营方发布了 IP 段而 IP 不在其中 → 风险信号 +0.5（`outside_ranges`），rDNS 被挤满时冒充者也不是零风险 |
+| UA 声明 | 运营方 `ua_tokens`（不区分大小写的子串）按注册表顺序匹配清洗后的完整 `User-Agent`（≤ 8 KiB），不用截到 512 字节的 `http.user_agent`：否则把爬虫标记放在第 512 字节之后就能躲开验证，而源站仍看到完整的声明 |
+| rDNS | 后缀必须以 `.` 开头且去掉开头的点后至少两段标签，只在标签边界匹配（`evilgooglebot.com` 不匹配 `.googlebot.com`，I-22）；PTR 至多 5 个名字，正向结果含该 IP 才通过；每次查询超时 `dns_timeout_ms`（缺省 2 s），整个任务 `2 × dns_timeout_ms + 1 s` |
+| 缓存与限流 | 键 `(ip, operator)`：通过 24 h、失败 1 h、DNS 错误 5 min，迟到的 DNS 错误不覆盖仍有效的结论；同一键同时只有一个在途任务（在途标记 `2 × dns_timeout_ms + 3 s`，作业带序号，I-17、I-26）；每个 `ip_prefix` 每分钟至多 `rdns_jobs_per_prefix_per_min`（缺省 10）个新任务（进程内计数，各站点共用）、并发至多 `rdns_concurrency`（缺省 16），超出即放弃并计 `mg_rdns_lookups_total{result="dropped"}`（告警） |
+| 注册表校验（D-36） | 写入方（`crawler sync`、`bundle build`）与读取方（Edge）规则相同，任一条不合格即拒绝整个工件：CIDR 为规范网络地址，IPv4 ≥ /16、IPv6 ≥ /32，不与 I-13 的特殊地址段相交（私有、回环、链路本地、组播、CGNAT、保留段，IPv6 只允许 `2000::/3` 且不含 `2001::/23`）；文档段只在 `test: true` 的注册表中允许；每个运营方 ≤ 20,000 条 |
+| 变化保护 | 与上一版相比任一运营方条数变化超过 50%，或新增段覆盖的地址数超过原有总数一倍 → 拒绝，确认后加 `--accept-change`；某个运营方抓取失败（含返回空列表）时沿用上一版并标记 `stale`，上一版没有该运营方则整个同步失败；内容不变时不改写工件，配置包里的工件哈希保持稳定 |
+| 源站 | 已验证爬虫的请求带 `MG-Verified: crawler:<operator>`（`origin_headers.scores` 开启时） |
 
 ### 7.3 robots.txt 与内容使用偏好
 
@@ -248,6 +278,7 @@ sequenceDiagram
 - Cloudflare 默认缓存 `robots.txt`：更新后需要清除该 URL 的缓存，或给 `robots.txt` 设置较短的缓存时间。
 - Cloudflare Free 也提供托管 `robots.txt`。由 MorphGate 代管时关闭 Cloudflare 的托管 `robots.txt`，只保留一个来源。
 - **可选 402**：对"需许可"的用途返回 `402` 并附带许可说明链接，为后续内容授权留接口。
+- Phase 1 未实现本节（robots.txt 仍由源站或 Cloudflare 提供）。
 
 ### 7.4 与 Cloudflare AI bot policies 对齐
 
@@ -264,6 +295,7 @@ Cloudflare AI bot policies 所有套餐可用，分 Search、Agent、Training �
 - Cloudflare 三个类别与 §7.1 各用途的对应关系需确认；无法一一对应的用途不下推，留在 Edge 执行。
 - `mgctl cf audit` 读取每个 zone 的 AI bot policy（检查项见 [08 §2.10](08-upstream-and-cloudflare.md#210-mgctl-cf-audit)）：模式 A 下任何非 Allow 都报告为失败（新 zone 尤其要检查默认值）；模式 B 下与控制面期望值不一致即报告漂移。结果计入 `mg_cf_audit_failed_checks`，在 Console 的 Cloudflare 集成页展示（见 [06 §4](06-policy-console-observability.md#4-管理后台)）。
 - Cloudflare 侧其他会提前处理爬虫的功能（Bot Fight Mode、Super Bot Fight Mode 等）的共存设置见 [08 §2.7](08-upstream-and-cloudflare.md#27-与-cloudflare-自带功能共存)。
+- Phase 1 只有模式 A：`mgctl cf audit` 第 16 项 `ai_bot_policy` 要求三类全部 Allow（warning；API 字段缺失时为 `manual`，所有者确认后 `--ack`）。模式 B 的下推依赖 `mgctl cf apply`，不在 Phase 1。
 
 ## 8. 未声明 Agent 的识别
 
@@ -289,6 +321,7 @@ Cloudflare AI bot policies 所有套餐可用，分 Search、Agent、Training �
 
 - 每个 Agent 请求记录 `agent_id`、`grant_id`、`ticket_id`、验证方式、验证结果、授权匹配结果，以及 `cf_vbot` / `cf_vbot_cat`（若有）和 `cf_ray`。
 - 指标名称与标签见 [06 §5](06-policy-console-observability.md#5-日志指标与告警)。
+- Phase 1 只有爬虫部分：`mg_crawler_verify_total{method, result}`（`ip_range` 按请求计，`rdns` 在任务落定时计一次）、`mg_rdns_lookups_total{result}`、`mg_cf_vbot_disagree_total{direction}`；决定事件的 `ctx.identity.crawler` 记录 `claimed`、`operator`、`purpose`、`verified`、`verification`、`method`、`outside_ranges`、`cf_vbot`、`cf_vbot_cat`（[规格 §13.2](impl/phase1-spec.md#132-kinddecisionvl-main)、[§13.7](impl/phase1-spec.md#137-指标)）。Agent 字段与 `mg_wba_verify_total` 在 Phase 3。
 - 后台按 Agent 展示：请求量、路由分布、超范围尝试、错误率、授权剩余时间。
 - 告警：超范围访问、签名失败或 `component_rewritten` 激增、冒充激增、`mg_fail_cf_true` 分歧出现、测试环境出现非授权自动化、授权即将过期、`mg_cf_audit_failed_checks` 中 AI bot policy 检查失败。阈值与通知出口见 [06 §5](06-policy-console-observability.md#5-日志指标与告警)。
 

@@ -1,7 +1,7 @@
 # ADR-0008：交互式 Challenge 自研（按住验证）+ 可插拔 Provider，Turnstile 仅用于非大陆访客
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：Provider 实现位置、a11y 封顶与 TTL）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：Provider 实现位置、a11y 封顶与 TTL）；2026-09-28 勘误：Phase 1 的 PoW 实现与阶段性行为（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-08、D-12、D-27、D-37，见文末"勘误"）
 - 相关：[09 自研交互式 Challenge](../09-interactive-challenge.md)、[04 Challenge 与访问凭证](../04-challenge-and-tokens.md)、[ADR-0005](0005-token-and-sealed-challenge-format.md)
 
 ## 背景
@@ -37,6 +37,17 @@
 - 评分阈值先 shadow，用所有者自己的流量确定。
 - 启用 Turnstile 时需更新隐私声明（IP、TLS 指纹、UA 发往 Cloudflare）；CSP 只在选用 Turnstile 的页面放开；CI 使用测试 sitekey / secret。
 - 引用的 2026 年结果多为预印本，数字只作参考。
+
+## 勘误（2026-09-28，Phase 1 实现）
+
+结论不变，交互式 Challenge 与 Provider 仍在 Phase 2。Phase 1 中与本 ADR 相关的做法（D-xx 见规格 [§0.3](../impl/phase1-spec.md#03-决定与偏离)）：
+
+| 项 | Phase 1 |
+|---|---|
+| 阶段性行为（D-08） | 规则或矩阵要求 `interactive` 时按 `pow`（该请求风险段的难度）执行，事件中可区分；策略编译器对 `params.type: interactive` 给警告 |
+| PoW 实现（决策 1，D-12） | 浏览器端在 Web Worker 中用纯 JS SHA-256 同步搜索（前缀预先填好，每次尝试只做一次压缩），WebCrypto 只做启动自检：`crypto.subtle.digest` 逐次异步调用，hashcash 搜索慢一个数量级以上。算法 `sha256-hashcash-v1`（规格 [§6.3](../impl/phase1-spec.md#63-pow)），交互式沿用 |
+| 失败升级（D-27） | 失败后附的新 C 为风险段更高的 `pow`（`attempt_no` 保持 0，它只用于交互式）；次数由失败配额约束 |
+| 签发配额（D-37） | 按 ipp / ASN 的凭证签发配额已强制执行（超额 429），交互式沿用 |
 
 ## 参考
 

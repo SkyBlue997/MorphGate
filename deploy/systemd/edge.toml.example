@@ -1,17 +1,31 @@
-# /etc/morphgate/edge.toml - mg-edge configuration for deploy/systemd/mg-edge.service.
+# /etc/morphgate/edge.toml - mg-edge configuration v1 for deploy/systemd/mg-edge.service
+# (docs/impl/phase1-spec.md §8.1).
+#
+# Host-local settings only: listeners, sites (hosts, origin, where the signed
+# bundle comes from), credentials, state and event sinks. Every policy comes
+# from the owner-signed site bundle (mgctl bundle build / sign / publish).
+# Unknown keys are errors.
 #
 # Install: install -m 0640 -o root -g morphgate edge.toml.example /etc/morphgate/edge.toml
 # Validate: mg-edge --check-config --config /etc/morphgate/edge.toml
-# (edge/tests/shipped_configs.rs checks this file against the unit.)
+#           (reads every key file, credential, the SDK directory and each
+#           site's last-known-good bundle; no network access)
+# edge/tests/shipped_configs.rs checks this file against the unit.
+#
+# Secrets are systemd credentials: cred://<name> is $CREDENTIALS_DIRECTORY/<name>,
+# provided by the unit's LoadCredentialEncrypted= lines (docs/impl/phase1-spec.md
+# §17 step 4). An absolute path also works; mg-edge warns when such a file is
+# readable by group or others.
 
-site_id          = "blog"              # 1-64 of [a-z0-9_-]
-listen           = "127.0.0.1:8080"    # cloudflared on this host forwards here (loopback only in Phase 0)
-origin           = "127.0.0.1:8081"    # the site's origin server (plain HTTP)
-upstream_profile = "cloudflare"        # "cloudflare" | "direct_tls" (TLS listener: Phase 1)
+config_version = 1
+edge_id        = "edge-1"              # [a-z0-9][a-z0-9-]{0,31}; recorded in every decision event
 # Prometheus /metrics (no authentication). VictoriaMetrics on the brain VM
 # scrapes it: bind to the private or WireGuard address it uses. mg-edge refuses
 # wildcard (0.0.0.0 / ::) and public addresses here.
-metrics_listen   = "127.0.0.1:9901"
+metrics_listen = "127.0.0.1:9901"
+# StateDirectory=morphgate: bundles/<site>.bundle (last-known-good) and
+# artifacts/<sha256> (the artifact cache).
+state_dir      = "/var/lib/morphgate"
 
 [server]
 threads = 2
@@ -24,3 +38,89 @@ upgrade_sock = "/run/morphgate/mg-edge-upgrade.sock"
 # unit's TimeoutStopSec.
 grace_period_seconds              = 10
 graceful_shutdown_timeout_seconds = 5
+
+[trust]
+# Owner public keys (mgctl keys gen writes <kid>.pub). During an owner key
+# rotation list both; remove the old one only after every Edge runs a bundle
+# signed with the new key (otherwise the LKG no longer verifies).
+owner_keys = ["/etc/morphgate/owner-keys/owner-2026.pub"]
+
+[[listeners]]
+name    = "cf-tunnel"
+bind    = "127.0.0.1:8080"             # cloudflared on this host forwards here
+profile = "cloudflare"
+auth    = "loopback"
+# Required in practice when the origin runs on this host: without it an SSRF in
+# the origin could reach the Edge with a forged CF-Connecting-IP (--check-config
+# warns). values[0] of mgctl keys gen-upstream goes into the Cloudflare Tier 0 rule.
+upstream_keys = "cred://mg-upstream-keys"
+
+# Cloudflare Authenticated Origin Pulls instead of a Tunnel (TLS; zone-level or
+# per-hostname AOP with a client certificate issued by the owner's own CA,
+# never the shared global origin-pull certificate, ADR-0004):
+# [[listeners]]
+# name = "aop"
+# bind = "203.0.113.10:443"
+# profile = "cloudflare"
+# auth = "origin_mtls"
+# tls_cert = "/etc/morphgate/tls/edge.pem"
+# tls_key = "cred://mg-edge-tls-key"
+# client_ca = "/etc/morphgate/tls/owner-aop-ca.pem"
+# cloudflare_ip_filter = true
+#
+# A direct_tls listener (no CDN in front) may add the JA4 spike (WP-J1,
+# ADR-0002 erratum): the JA4 is recorded in decision events only, never
+# evaluated. Default false.
+# ja4_spike = false
+
+[[sites]]
+id       = "blog"                      # [a-z0-9][a-z0-9_-]{0,63}
+hosts    = ["example.com", "www.example.com"]   # must equal the bundle's hosts
+listeners = ["cf-tunnel"]
+origin   = "127.0.0.1:8081"            # the site's origin server (plain HTTP)
+# Where mgctl bundle publish puts bundles/ and artifacts/: file://, https://,
+# or http:// to a loopback / private / WireGuard IP address only.
+bundle_root = "http://10.0.0.5:8088/"
+bundle_poll_seconds = 10               # 2..300
+bootstrap = "open"                     # before the first bundle: open (forward and record) | closed (503)
+on_lkg_invalid = "closed"              # LKG present but unusable: closed (503, default) | open
+# bootstrap_owner_zones = ["example.com"]   # CF-Worker zones trusted before the first bundle
+token_keys = "cred://mg-blog-token-keys"
+seal_root  = "cred://mg-blog-seal-root"
+
+[bundle_client]                        # used for https:// bundle roots
+# ca_file = "/etc/morphgate/brain-ca.pem"
+# client_cert = "/etc/morphgate/edge-client.pem"
+# client_key = "cred://mg-edge-client-key"
+timeout_ms = 5000
+
+[pseudo]
+key = "cred://mg-pseudo-key"           # pseudo.key.json (K_pseudo)
+
+[valkey]
+mode = "valkey"                        # valkey | local
+url  = "redis://edge@10.0.0.5:6379/0"  # never contains a password
+password = "cred://mg-valkey-password"
+timeout_ms = 10
+connect_timeout_ms = 500
+local_replay_authoritative = false     # true only when exactly one Edge serves these sites
+local_limiter_capacity = 200000
+local_nonce_capacity = 200000
+
+[events]
+# http:// only to loopback / private / 100.64.0.0/10 IP literals (events carry
+# client IPs and paths); anything else must be https://.
+# vl_main, vl_short, the optional file and mg:ev (Valkey mode only) are
+# independent outputs: each has its own backlog (queue_* records per class) and
+# flush loop, so one failing output never holds back the others (I-25).
+vl_main  = "http://10.0.0.5:9428"
+vl_short = "http://10.0.0.5:9429"
+flush_interval_ms = 1000
+
+[intel]
+dns_resolver = "system"
+dns_timeout_ms = 2000
+rdns_concurrency = 16
+
+[sdk]
+dir = "/opt/morphgate/sdk"             # a copy of sdk/web/dist/sdk/

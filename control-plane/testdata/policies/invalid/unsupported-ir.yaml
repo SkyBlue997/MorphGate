@@ -1,0 +1,37 @@
+# CEL that type-checks but cannot be lowered to the policy IR
+# (docs/impl/phase1-spec.md §5.2). Each error points at the offending
+# sub-expression, not at the whole rule.
+policies:
+  - id: arithmetic
+    phase: bot
+    expr: risk.score > 1 && risk.score * 2 > 100
+    action: log
+
+  - id: macro
+    phase: bot
+    expr: labels.exists(l, l.startsWith("bad_"))
+    action: log
+
+  - id: regex
+    phase: protocol
+    expr: req.path.matches("^/wp-")
+    action: block
+
+  - id: has-on-header
+    phase: protocol
+    expr: has(req.headers.cookie)
+    action: log
+
+  - id: step-bound
+    phase: custom
+    expr: >
+      glob(req.path, "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaa/*") && glob(req.path, "/bbbbbbbbbbbbbbbbbbbbbbbbbbbbb/*")
+      && glob(req.path, "/ccccccccccccccccccccccccccccc/*") && glob(req.path, "/ddddddddddddddddddddddddddddd/*")
+      && glob(req.path, "/eeeeeeeeeeeeeeeeeeeeeeeeeeeee/*") && glob(req.path, "/fffffffffffffffffffffffffffff/*")
+      && glob(req.path, "/ggggggggggggggggggggggggggggg/*")
+    action: block
+
+  - id: computed-map
+    phase: protocol
+    expr: '(has(tls.ja4) ? req.headers : req.headers)["accept"] == "text/html"'
+    action: log

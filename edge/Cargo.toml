@@ -1,6 +1,6 @@
 [package]
 name = "mg-edge"
-description = "MorphGate Edge: Pingora-based reverse proxy that will host the Decision Core"
+description = "MorphGate Edge: Pingora-based reverse proxy that hosts the Decision Core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,16 +12,38 @@ path = "src/main.rs"
 
 [dependencies]
 mg-core.workspace = true
+mg-proto.workspace = true
+mg-challenge.workspace = true
+mg-intel.workspace = true
+mg-edge-core.workspace = true
 pingora.workspace = true
 pingora-prometheus.workspace = true
+arc-swap.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 bytes.workspace = true
 clap.workspace = true
 env_logger.workspace = true
+getrandom.workspace = true
+hickory-resolver.workspace = true
 log.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 toml.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+mg-edge-core = { workspace = true, features = ["testkit"] }
+prost.workspace = true
+# Valkey test clients (edge/tests/valkey_acl.rs, ratelimit_valkey.rs, verdicts.rs).
+redis.workspace = true
+# A second, independent TLS client stack (rustls) for the JA4 spike and its
+# session resumption (edge/tests/ja4_spike.rs, WP-J1); already a dependency of
+# mg-edge-core, so nothing new is built.
+reqwest.workspace = true
 
 [lints]
 workspace = true

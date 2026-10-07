@@ -1,0 +1,20 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": [
+    {
+      "id": "9a7806061c88ada191ed06f989cc3dac",
+      "name": "example.org",
+      "status": "active",
+      "plan": {
+        "id": "0feeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "name": "Free Website",
+        "legacy_id": "free"
+      },
+      "account": {
+        "id": "11a7362d577a6c3019a474fd6f485823"
+      }
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+# tor exits (fixture: documentation ranges)
+192.0.2.10
+198.51.100.0/28
+2001:db8::10

@@ -1,0 +1,314 @@
+{
+  "version": 1,
+  "about": "Shared known-answer vectors for Phase 1 (docs/impl/phase1-spec.md \u00a76, \u00a79.7, \u00a711). Read-only for every work package; regenerate only by changing the spec.",
+  "epoch_keys": {
+    "formula": "HKDF-SHA256(salt = empty, ikm = K_seal_root, info = label || 0x00 || site_id || 0x00 || u64be(epoch_no), L = 32); label mg-seal-v1 (k_epoch) or mg-bind-v1 (k_bind_epoch); epoch_no = floor(unix_ms / 86400000)",
+    "root_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+    "cases": [
+      {
+        "key": "k_epoch",
+        "site": "blog",
+        "epoch_no": 20724,
+        "info_hex": "6d672d7365616c2d763100626c6f670000000000000050f4",
+        "okm_hex": "930f95db33358ef53978f78888920331bc22846dbc8a076743cc1d63657e8d26"
+      },
+      {
+        "key": "k_bind_epoch",
+        "site": "blog",
+        "epoch_no": 20724,
+        "info_hex": "6d672d62696e642d763100626c6f670000000000000050f4",
+        "okm_hex": "84b6131726844664f4441db4cf31f0827bac79681d5804d1d34ae9343a655295"
+      },
+      {
+        "key": "k_epoch",
+        "site": "blog",
+        "epoch_no": 20723,
+        "info_hex": "6d672d7365616c2d763100626c6f670000000000000050f3",
+        "okm_hex": "6ef0144f52c712f6d61efb0a7ba323a3ebd76b8cb715a79b88e3fe538f9c3e68"
+      },
+      {
+        "key": "k_bind_epoch",
+        "site": "blog",
+        "epoch_no": 20723,
+        "info_hex": "6d672d62696e642d763100626c6f670000000000000050f3",
+        "okm_hex": "553eedc2fa56ffa925ae0dfca2ff47ac7ca263582c1dd6556a065710eb9430e4"
+      },
+      {
+        "key": "k_epoch",
+        "site": "shop",
+        "epoch_no": 20724,
+        "info_hex": "6d672d7365616c2d76310073686f700000000000000050f4",
+        "okm_hex": "138b1c47aa7ae9f9953d1fe4747ce9e49a4ceb6e6b544d6426248e526e3c7cbe"
+      },
+      {
+        "key": "k_bind_epoch",
+        "site": "shop",
+        "epoch_no": 20724,
+        "info_hex": "6d672d62696e642d76310073686f700000000000000050f4",
+        "okm_hex": "fef9f3c3780b99e7c94038a322248ea4e1c0fcfdb3eaa297e1212ceafa746b4e"
+      }
+    ]
+  },
+  "accepted_epochs": {
+    "formula": "e = floor(now_ms / 86400000); accept e; also e-1 iff now_ms - e*86400000 <= 125000 (max C lifetime 120 s + 5 s skew); also e+1 iff (e+1)*86400000 - now_ms <= 5000 (spec \u00a76.1)",
+    "cases": [
+      {
+        "name": "start_of_day",
+        "now_ms": 1790553600000,
+        "min_epoch": 20723,
+        "max_epoch": 20724
+      },
+      {
+        "name": "previous_epoch_still_open",
+        "now_ms": 1790553725000,
+        "min_epoch": 20723,
+        "max_epoch": 20724
+      },
+      {
+        "name": "previous_epoch_closed",
+        "now_ms": 1790553725001,
+        "min_epoch": 20724,
+        "max_epoch": 20724
+      },
+      {
+        "name": "midday",
+        "now_ms": 1790596800000,
+        "min_epoch": 20724,
+        "max_epoch": 20724
+      },
+      {
+        "name": "next_epoch_opens_5s_before",
+        "now_ms": 1790639995000,
+        "min_epoch": 20724,
+        "max_epoch": 20725
+      },
+      {
+        "name": "next_epoch_not_yet",
+        "now_ms": 1790639994999,
+        "min_epoch": 20724,
+        "max_epoch": 20724
+      },
+      {
+        "name": "last_ms",
+        "now_ms": 1790639999999,
+        "min_epoch": 20724,
+        "max_epoch": 20725
+      }
+    ]
+  },
+  "aad": {
+    "formula": "u16be(len(host)) || host || u16be(len(type)) || type || u16be(len(kid)) || kid (UTF-8)",
+    "cases": [
+      {
+        "host": "example.com",
+        "type": "pow",
+        "kid": "e20724",
+        "aad_hex": "000b6578616d706c652e636f6d0003706f770006653230373234"
+      },
+      {
+        "host": "www.example.com",
+        "type": "invisible",
+        "kid": "e20723",
+        "aad_hex": "000f7777772e6578616d706c652e636f6d0009696e76697369626c650006653230373233"
+      }
+    ]
+  },
+  "bind": {
+    "formula": "base64url_nopad(SHA-256('mg-bind-v1' || 0x00 || kind || 0x00 || value)[0..16])",
+    "cases": [
+      {
+        "kind": "uah",
+        "value": "chrome/131",
+        "hash_b64url": "iXRgjCj6tPt2cFcPqeHr_A"
+      },
+      {
+        "kind": "uah",
+        "value": "firefox/128",
+        "hash_b64url": "ICCBKA-9X6pC-itW8bS8hw"
+      },
+      {
+        "kind": "uah",
+        "value": "other/0",
+        "hash_b64url": "PVE5kWy-1oD4PvZkaP9liQ"
+      },
+      {
+        "kind": "ipp",
+        "value": "203.0.113.0/24",
+        "hash_b64url": "JxTqJG6DMjc-DDCAwG3WYw"
+      },
+      {
+        "kind": "ipp",
+        "value": "2001:db8:abcd::/48",
+        "hash_b64url": "Lb_t7sZvsWDM19t_pr2FKA"
+      },
+      {
+        "kind": "ipa",
+        "value": "64500",
+        "hash_b64url": "3jB742LLBC_uwzOiZPFFLg"
+      },
+      {
+        "kind": "ctp",
+        "value": "TLSv1.3|TLS_AES_128_GCM_SHA256|3zN0vNnT0h1r1TmXnq4B3Ic1S0c=|8",
+        "hash_b64url": "C2tkYHq60tpwf0WpO45r4A"
+      }
+    ]
+  },
+  "ret": {
+    "formula": "SHA-256('mg-ret-v1' || 0x00 || ret)[0..16], shown base64url_nopad",
+    "cases": [
+      {
+        "ret": "/",
+        "hash_b64url": "Cx_T4FDNC30Hl7nCUSGXXQ"
+      },
+      {
+        "ret": "/account/login?next=%2Fcart",
+        "hash_b64url": "BZL8lOAcbWVNumefvuIJtw"
+      }
+    ]
+  },
+  "entity_key": {
+    "formula": "lower-hex(HMAC-SHA256(K_pseudo, domain || 0x00 || type || 0x00 || value))[0..32]",
+    "k_pseudo_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "cases": [
+      {
+        "domain": "mg-ent-v1",
+        "type": "ip",
+        "value": "203.0.113.7",
+        "key_hex": "083956bb9c00bbcfdac40338c45b515a"
+      },
+      {
+        "domain": "mg-ent-v1",
+        "type": "prefix",
+        "value": "203.0.113.0/24",
+        "key_hex": "66e68905fcd729e0729795701f890bff"
+      },
+      {
+        "domain": "mg-ent-v1",
+        "type": "ip",
+        "value": "2001:db8::/64",
+        "key_hex": "3b645483868f3dcc072bef9eebc3dda5"
+      },
+      {
+        "domain": "mg-rl-v1",
+        "type": "login-per-ip",
+        "value": "ip=203.0.113.7",
+        "key_hex": "995b56ad7b7571e7cb2cbb0abbecb26c"
+      },
+      {
+        "domain": "mg-rl-v1",
+        "type": "mg.c.submit",
+        "value": "ip_prefix=203.0.113.0/24",
+        "key_hex": "e9346385155c03e943b044f15fbb674b"
+      },
+      {
+        "domain": "mg-rl-v1",
+        "type": "login-per-ip",
+        "value": "ip=2001:db8:abcd:12::/64",
+        "key_hex": "a98aadec2a93ead3e4a81bcc62d1ea00"
+      },
+      {
+        "domain": "mg-rl-v1",
+        "type": "login-per-ip",
+        "value": "ip=?",
+        "key_hex": "fc0088f74ac76001f2bb7e6401b22bd2"
+      },
+      {
+        "domain": "mg-rl-v1",
+        "type": "mg.clr.issue.asn",
+        "value": "asn=64500",
+        "key_hex": "f5504a762e32221f7162e61d969eed7f"
+      },
+      {
+        "domain": "mg-rl-v1",
+        "type": "api-mixed",
+        "value": "ip_prefix=203.0.113.0/24&route=api",
+        "key_hex": "948f739b69a7af5fc878ab15e026a4b5"
+      }
+    ],
+    "note": "Unknown dimension values are the literal '?' (shared fallback bucket, spec \u00a79.7); ASN 0 (GeoLite2 NotFound) is unknown."
+  },
+  "ip_entity": {
+    "formula": "ip entity: IPv4 address text; IPv6 /64 network text (RFC 5952 + \"/64\"); IPv4-mapped IPv6 counts as IPv4. ip_prefix: IPv4 /24, IPv6 /48 (spec \u00a79.7)",
+    "cases": [
+      {
+        "ip": "203.0.113.7",
+        "entity": "203.0.113.7",
+        "prefix": "203.0.113.0/24"
+      },
+      {
+        "ip": "::ffff:203.0.113.7",
+        "entity": "203.0.113.7",
+        "prefix": "203.0.113.0/24"
+      },
+      {
+        "ip": "2001:db8:abcd:12:a:b:c:d",
+        "entity": "2001:db8:abcd:12::/64",
+        "prefix": "2001:db8:abcd::/48"
+      },
+      {
+        "ip": "2001:db8::1",
+        "entity": "2001:db8::/64",
+        "prefix": "2001:db8::/48"
+      },
+      {
+        "ip": "2001:db8:0:0:1::1",
+        "entity": "2001:db8::/64",
+        "prefix": "2001:db8::/48"
+      },
+      {
+        "ip": "2001:db8:abcd:ffff:ffff:ffff:ffff:ffff",
+        "entity": "2001:db8:abcd:ffff::/64",
+        "prefix": "2001:db8:abcd::/48"
+      }
+    ]
+  },
+  "pow": {
+    "formula": "digest = SHA-256('mg-pow-v1' || 0x00 || SHA-256(C as ASCII) || u64be(counter)); solved iff leading_zero_bits(digest) >= bits; first_counter = smallest counter >= 0",
+    "cases": [
+      {
+        "c": "mg-test-c-1",
+        "bits": 8,
+        "first_counter": 387,
+        "digest_hex": "009aee2a5de4aec75ed511c1274f95bbbce373bd16436d3282e18990dbd6cb6a",
+        "leading_zero_bits": 8,
+        "prefix_hex": "6d672d706f772d763100423d4ff7641b5611f93c29bb284052f03d8653c6e76e295e05c998118fa5be71"
+      },
+      {
+        "c": "mg-test-c-1",
+        "bits": 12,
+        "first_counter": 10648,
+        "digest_hex": "000cdaf77b0a804bdb87840ab96de250357830336d848c19a71f7d8043ce5837",
+        "leading_zero_bits": 12,
+        "prefix_hex": "6d672d706f772d763100423d4ff7641b5611f93c29bb284052f03d8653c6e76e295e05c998118fa5be71"
+      },
+      {
+        "c": "mg-test-c-2",
+        "bits": 16,
+        "first_counter": 38467,
+        "digest_hex": "00001d0ea65f1a2bf83fce02f27540b35981585a22e81526716b819d9185b127",
+        "leading_zero_bits": 19,
+        "prefix_hex": "6d672d706f772d76310033b8bef01d036c501ff93494fd94cc2e8546697ad168e08765be197a0c2a5a56"
+      },
+      {
+        "c": "AAECAwQ",
+        "bits": 4,
+        "first_counter": 4,
+        "digest_hex": "04ccdd888df8d9b53dbd7f1432e315724c872b04d7892d3117aec88744a414cc",
+        "leading_zero_bits": 5,
+        "prefix_hex": "6d672d706f772d7631006ebc1470ff40151a35d0c189792bc3b91bcf37f2a77835e5d537912d82166934"
+      },
+      {
+        "c": "AAECAwQ",
+        "bits": 0,
+        "first_counter": 0,
+        "digest_hex": "d7ad849fd2512f5ac54c1d041338e8a64d70452c6ffdde4965d0c3a527b0057f",
+        "leading_zero_bits": 0,
+        "prefix_hex": "6d672d706f772d7631006ebc1470ff40151a35d0c189792bc3b91bcf37f2a77835e5d537912d82166934"
+      }
+    ]
+  },
+  "bundle_signature": {
+    "formula": "Ed25519-Sign(owner_key, 'mg-bundle-v1' || 0x00 || SiteBundle bytes)",
+    "domain_prefix_hex": "6d672d62756e646c652d763100"
+  }
+}

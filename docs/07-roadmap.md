@@ -11,7 +11,7 @@
 | Phase 0 | 基础 | 1–2 周 | Monorepo 骨架、ADR、数据模型、CI、STRIDE 初版、Validation Lab 骨架、compose 开发环境 |
 | Phase 1 | MVP：Cloudflare 之后的 Edge | 4–6 周 | 在自有站点 Cloudflare 之后以 monitor 模式运行的 Edge；`mgctl cf audit` |
 | Phase 2 | Web SDK 与自研交互式 Challenge | 5–7 周 | Web SDK v1、`cnf.jkt` 绑定、防重放、按住验证 + 无障碍路径、Provider trait + Turnstile 适配、近线 verdict |
-| Phase 3 | AI Agent 治理与控制面 | 5–7 周 | mg-control（配置签名移到大脑 VM）、签名配置包拉取、Agent Registry、Web Bot Auth、Console v1、审计哈希链 |
+| Phase 3 | AI Agent 治理与控制面 | 5–7 周 | mg-control（配置签名移到大脑 VM）、签名配置包长轮询与吊销、Agent Registry、Web Bot Auth、Console v1、审计哈希链迁入控制面 |
 | Phase 4 | 分析与扩展 | 按需 | ClickHouse、GBDT、其他 UpstreamProfile、可选大陆验证码 Provider、图关联 |
 | Phase 5 | Morph 与加固 | 持续 | SDK 多态构建、动态表单字段、Privacy Pass / PAT、内存困难 PoW、PROXY protocol |
 
@@ -24,16 +24,23 @@ P0 (1-2w) --> P1 (4-6w) --> P2 (5-7w) --> P3 (5-7w)        main line: 15-22 week
 
 Phase 4 / 5 的单项可在 Phase 1 稳定后按需插入（例如某站点改用境内 CDN 时提前做对应 UpstreamProfile），不必等 Phase 3 结束。
 
+**当前进度**（2026-09-28）：Phase 0 完成；Phase 1 的实现阶段 1–3 已完成，接下来是所有者在真实 zone 上的运行步骤（见 [Phase 1 实现进度](#phase-1-实现进度)）。
+
 ## Phase 0：基础（1–2 周）
 
 **Monorepo 结构**
 
 ```
-Cargo.toml              Rust  workspace: core, edge, proto
+Cargo.toml              Rust  workspace: core, edge, proto (Phase 1 adds challenge, intel, edge-core)
 core/                   Rust  mg-core: pure kernel (signals, scoring, policy IR evaluator,
-                              tokens, challenge sealing); no I/O; builds for wasm32-unknown-unknown
-edge/                   Rust  mg-edge: thin Pingora adapter (pin =0.9.x, BoringSSL), UpstreamProfile
+                              challenge claims); no I/O; builds for wasm32-unknown-unknown
+challenge/              Rust  mg-challenge (Phase 1): sealed challenges, PoW, PASETO clearance tokens
+intel/                  Rust  mg-intel (Phase 1): IP sets, GeoLite2, crawler registry + verification
+edge-core/              Rust  mg-edge-core (Phase 1): Edge components that do not need Pingora
+edge/                   Rust  mg-edge: thin Pingora adapter (pin =0.9.0, BoringSSL), UpstreamProfile
 proto/                        shared protobuf definitions (Rust + Go codegen)
+testdata/                     (Phase 1) cross-language fixtures: KAT vectors, key and artifact
+                              samples, policy IR conformance cases
 control-plane/          Go    Go module
   cmd/mgctl/                  CLI: policy compiler (cel-go -> IR), signing, cf audit, CF IP sync
   cmd/mg-control/             control plane service (Phase 3)
@@ -69,29 +76,50 @@ docs/                         design docs + adr/
 
 | 领域 | 内容 |
 |---|---|
-| Edge | Pingora（BoringSSL）；systemd 运行，支持平滑升级；Tunnel 部署时只监听 127.0.0.1 |
-| UpstreamProfile `cloudflare` | 上游认证：Cloudflare Tunnel（只信任回环对端）或 AOP（zone-level / per-hostname，自有 CA）；认证失败删除全部已知上游头族，以 TCP 对端为客户端 IP（[08 §1.2](08-upstream-and-cloudflare.md#12-信任规则)） |
-| UpstreamProfile `direct_tls` | Edge 自己终止 TLS；**JA4 技术预研**：验证 BoringSSL 回调取 ClientHello → 计算 JA4 → 请求过滤器读取的链路（步骤见 [01 §9](01-architecture.md#9-技术选型建议)），结论写入 [ADR-0002](adr/0002-edge-pingora-boringssl.md) |
-| 可信客户端 IP | 只取 `CF-Connecting-IP`；缺失即配置告警，不回退到 Cloudflare 对端 IP（[08 §2.2](08-upstream-and-cloudflare.md#22-客户端-ip)） |
-| 信号 | 解析 `x-mg-cf-*`（Tier 0 Transform Rule 模板在 `adapters/cloudflare/`；Tier 1 Worker / Snippet 可选）；`EDGE_TLS` 族只 shadow；在 Cloudflare 之后失真的信号标记为 MISSING（[08 §2.5](08-upstream-and-cloudflare.md#25-在-cloudflare-之后失真的信号)），策略中的求值语义见 [06 §2](06-policy-console-observability.md#2-策略语言) |
-| 路由与情报 | 路由匹配；GeoLite2 IP / ASN |
-| 爬虫验证 | 官方 IP 段 + 异步 rDNS；冒充检测 |
-| 限速 | 本地 + Valkey GCRA；Edge 与 Valkey 同区域 / 同 VPC（RTT < 1 ms），否则退化为本地模式 |
-| Decision Core v1 | 纯函数、无 I/O；信号框架、分族封顶规则评分、默认处置矩阵（见 [03](03-risk-scoring.md#5-分级处置)） |
-| 策略 | `mgctl` 用 cel-go 编译，在所有者工作站签名（配置签名私钥 age 加密，见 [06 §8](06-policy-console-observability.md#8-平台自身安全)），上传到大脑 VM 上的静态位置，Edge 以 ETag 条件请求拉取（[02 §6](02-data-flow.md#6-配置模型与密钥下发)）；`mgctl` 操作写本地追加审计日志（同一哈希链格式，[06 §6](06-policy-console-observability.md#6-审计)）；Phase 3 控制面复用同一编译器 |
-| 动作 | allow / log / tag / rate_limit / block / 无感 Challenge（JS 执行 + SHA-256 PoW + 基础环境信号）；`/__mg/*`（内容哈希的 SDK 构建除外）与 Challenge 响应发 `Cache-Control: no-store, private`，Challenge 用 403 / 429 |
-| 凭证 | PASETO v4.local 凭证 Cookie；Phase 1 绑定 `uah`（硬）+ `ipp`（软）；`bind.ctp` 仅 `cloudflare`、只 shadow，稳定性 ≥ 99% 后才可转为软绑定；`bind.tfp` 仅 `direct_tls`，JA4 预研成功后启用；Cloudflare 0-RTT 保持关闭，若开启则 `/__mg/*` 状态变更端点对 `Early-Data: 1` 返回 425（[04 §4.3](04-challenge-and-tokens.md#43-early-data0-rtt)） |
-| 事件与指标 | DecisionEvent → Edge 有界环形缓冲 → 批量写入 VictoriaLogs `vl-main`（30 天）；最小访问记录每日归档到对象存储（≥ 6 个月）；pingora-prometheus → VictoriaMetrics（13 个月）；指标名见 [06 §5](06-policy-console-observability.md#5-日志指标与告警) |
-| 运维开关 | 全局 monitor 开关 |
-| Cloudflare 集成 | `mgctl cf audit`（检查项见 [08 §2.10](08-upstream-and-cloudflare.md#210-mgctl-cf-audit)）；共存配置按套餐（[08 §2.7](08-upstream-and-cloudflare.md#27-与-cloudflare-自带功能共存)）：Free 关闭 Bot Fight Mode，Skip 规则只能跳过 `bic` / `securityLevel`；Pro 及以上可 Skip SBFM；用限速规则挡 `POST /__mg/` 洪泛时（Free 唯一的一条即用于此），Skip 规则不跳过 `http_ratelimit`；`/__mg/` 缓存 Bypass 规则放在最后；定时同步 Cloudflare IP 段（带 etag）；API Token 最小权限 |
+| Edge | Pingora（BoringSSL）；systemd 运行，支持平滑升级；Tunnel 部署时只监听 127.0.0.1。实现：`edge.toml` v1（监听器与站点的主机本地配置，D-14）、站点状态机（`active` / `bootstrap` / `lkg_invalid`，D-21）、`mg-edge --check-config` |
+| UpstreamProfile `cloudflare` | 上游认证：Cloudflare Tunnel（只信任回环对端）或 AOP（zone-level / per-hostname，自有 CA）；认证失败删除全部已知上游头族，以 TCP 对端为客户端 IP（[08 §1.2](08-upstream-and-cloudflare.md#12-信任规则)）。实现：可叠加上游密钥头；外部 zone 的 `CF-Worker` 403（D-23）；转发前另删客户端 IP、URL 改写与方法覆盖类头（I-29） |
+| UpstreamProfile `direct_tls` | Edge 自己终止 TLS；**JA4 技术预研**：验证 BoringSSL 回调取 ClientHello → 计算 JA4 → 请求过滤器读取的链路（步骤见 [01 §9](01-architecture.md#9-技术选型建议)），结论写入 [ADR-0002](adr/0002-edge-pingora-boringssl.md)。预研期间 JA4 在策略与评分中恒为 MISSING（D-07） |
+| 可信客户端 IP | 只取 `CF-Connecting-IP`；缺失即配置告警，不回退到 Cloudflare 对端 IP（[08 §2.2](08-upstream-and-cloudflare.md#22-客户端-ip)）。客户端 IP 未知时从不比已知时更宽松（[02 §2.1](02-data-flow.md#21-第-0-步上游认证与客户端-ip)） |
+| 信号 | 解析 `x-mg-cf-*`（Tier 0 Transform Rule 模板在 `adapters/cloudflare/`；Tier 1 Worker / Snippet 可选）；`EDGE_TLS` 族只 shadow；在 Cloudflare 之后失真的信号标记为 MISSING（[08 §2.5](08-upstream-and-cloudflare.md#25-在-cloudflare-之后失真的信号)），策略中的求值语义见 [06 §2](06-policy-console-observability.md#2-策略语言)。协议输入上限：enforce 下 414 / 431 / 400，monitor 下跳过求值（D-26、I-2） |
+| 路由与情报 | 路由匹配；GeoLite2 IP / ASN。实现：多路径视图、取最敏感路由（D-25，[02 §2.4](02-data-flow.md#24-路由匹配与输入上限phase-1)）；数据中心 ASN 与 Tor 出口文本名单；全部情报以签名配置包引用的工件下发 |
+| 爬虫验证 | 官方 IP 段 + 异步 rDNS；冒充检测。实现：注册表由 `mgctl crawler sync` 生成（逐条校验 CIDR、单个运营方条数变化超过 50% 时拒绝，D-36）；rDNS 后缀须以 `.` 开头且至少两段，只在标签边界匹配（I-22） |
+| 限速 | 本地 + Valkey GCRA；Edge 与 Valkey 同区域 / 同 VPC（RTT < 1 ms），否则退化为本地模式。实现：`ip` 维度按 IPv4 地址 / IPv6 /64 计（D-24），IP 未知时用共享兜底桶；`/__mg/c` 的提交限速、两级失败配额与凭证签发配额（D-28、D-37） |
+| Decision Core v1 | 纯函数、无 I/O；信号框架、分族封顶规则评分、默认处置矩阵（见 [03](03-risk-scoring.md#5-分级处置)）。实现：18 个检测器、verdict 只升不降（D-10）、凭证已满足时的矩阵抑制（D-20） |
+| 策略 | `mgctl` 用 cel-go 编译，在所有者工作站签名（配置签名私钥 age 加密，见 [06 §8](06-policy-console-observability.md#8-平台自身安全)），上传到大脑 VM 上的静态位置，Edge 以 ETag 条件请求拉取（[02 §6](02-data-flow.md#6-配置模型与密钥下发)）；`mgctl` 操作写本地追加审计日志（同一哈希链格式，[06 §6](06-policy-console-observability.md#6-审计)）；Phase 3 控制面复用同一编译器。实现：每条规则的静态步数上界（[ADR-0006](adr/0006-policy-cel-ir.md) 勘误）；Go 与 Rust 的 IR 一致性套件 |
+| 动作 | allow / log / tag / rate_limit / block / 无感 Challenge（JS 执行 + SHA-256 PoW + 基础环境信号）；`/__mg/*`（内容哈希的 SDK 构建除外）与 Challenge 响应发 `Cache-Control: no-store, private`，Challenge 用 403 / 429。实现：失败后附的新 C 为 `pow` 且风险段升一级（D-27）；http 访客先 308 到 https（D-32） |
+| 凭证 | PASETO v4.local 凭证 Cookie；Phase 1 绑定 `uah`（硬）+ `ipp`（软）；`bind.ctp` 仅 `cloudflare`、只 shadow，稳定性 ≥ 99% 后才可转为软绑定；`bind.tfp` 仅 `direct_tls`，预研结论为不用原始 JA4 硬绑定（ADR-0002 勘误），Phase 2 前不启用；Cloudflare 0-RTT 保持关闭，若开启则 `/__mg/*` 状态变更端点对 `Early-Data: 1` 返回 425（[04 §4.3](04-challenge-and-tokens.md#43-early-data0-rtt)） |
+| 事件与指标 | DecisionEvent → Edge 有界缓冲 → 批量写入 VictoriaLogs `vl-main`（30 天）；最小访问记录每日归档到对象存储（≥ 6 个月）；pingora-prometheus → VictoriaMetrics（13 个月）；指标名见 [06 §5](06-policy-console-observability.md#5-日志指标与告警)。实现：三级队列、每个输出独立积压（I-25）；`kind=access` 已写入 `vl-main`，每日归档任务尚未实现 |
+| 运维开关 | 全局 monitor 开关（实现为站点级 `monitor_only`，站点 YAML 缺省开启） |
+| Cloudflare 集成 | `mgctl cf audit`（检查项见 [08 §2.10](08-upstream-and-cloudflare.md#210-mgctl-cf-audit)）；共存配置按套餐（[08 §2.7](08-upstream-and-cloudflare.md#27-与-cloudflare-自带功能共存)）：Free 关闭 Bot Fight Mode，Skip 规则只能跳过 `bic` / `securityLevel`；Pro 及以上可 Skip SBFM；用限速规则挡 `POST /__mg/` 洪泛时（Free 唯一的一条即用于此），Skip 规则不跳过 `http_ratelimit`；`/__mg/` 缓存 Bypass 规则放在最后；定时同步 Cloudflare IP 段（带 etag）；API Token 最小权限。实现：`cf audit` 21 项检查、`cf ips sync`（条数变化超过 30% 时拒绝） |
 
-**验收**
+**验收**（证据与责任人见 [规格 §18](impl/phase1-spec.md#18-验收映射)）
 
 - 自有站点经 Cloudflare 以 monitor 模式连续运行 ≥ 1 周。
-- 附加延迟 p99 < 5 ms（自有环境压测）。
-- Lab 用例：冒充爬虫 100% 识别；不执行 JS 的脚本客户端在 enforce 下拿不到凭证。
-- `mgctl cf audit` 全绿。
+- 附加延迟 p99 < 5 ms：以生产或自有 staging 的 `mg_edge_added_latency_seconds{kind="site"}` 为准，不做压测（I-31）。
+- Lab 用例：冒充爬虫 100% 识别（rDNS 方式的运营方按结论已定的请求计，热身请求为 `DECLARED_AGENT`，D-22）；不执行 JS 的脚本客户端在 enforce 下拿不到凭证。
+- `mgctl cf audit` 全绿（`manual` 项逐一 `--ack`）。
 - 真人浏览回归（手工 + 自有 E2E）无功能破坏。
+
+### Phase 1 实现进度
+
+实现契约是 [Phase 1 实现规格](impl/phase1-spec.md)（含集成者裁决 I-1..I-35，逐项偏离见其 §0.3），逐阶段的记录在 [phase1-status](impl/phase1-status.md)。截至 2026-09-28：
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| 规格 | 18 个工作包、全部跨组件契约、两轮评审 | 完成 |
+| 实现阶段 1 | 11 个并行工作包：`mg-core`、`mg-challenge`、`mg-intel`、`mg-edge-core`（4 个）、Go 策略编译器、`mgctl` 运维、Cloudflare 与情报同步、Web SDK 挑战页 | 完成 |
+| 实现阶段 2 | `mg-edge` 接线：骨架、决策、Challenge 端点、事件与指标；最终安全审查与本机端到端；审查后修复 I-29..I-32 | 完成 |
+| 实现阶段 3 | Validation Lab 验收场景与 `lab-e2e`、`direct_tls` 的 JA4 预研、设计文档勘误；集成裁决 I-33..I-35 | 完成 |
+| 所有者运行步骤 | 在真实 zone 上部署规则、monitor 周、浏览器回归、`cf audit` 全绿（[规格 §17](impl/phase1-spec.md#17-所有者运维手册代码之外)） | 未开始 |
+
+| 验收项 | 当前状态 |
+|---|---|
+| monitor 运行 ≥ 1 周 | 待所有者在真实 zone 上运行 |
+| 附加延迟 p99 < 5 ms | 指标已提供（`kind="site"`），待生产数据 |
+| 冒充爬虫 100% 识别；非 JS 客户端拿不到凭证 | `make lab-e2e` 本机通过：已定结果的冒充请求 13/13 为 `impersonator` 且被阻断，6 个真爬虫请求已验证；4 次挑战提交无一成功，受保护路由 0 个请求到达源站。CI 的 `lab-e2e` 作业已加入，待首次远端运行 |
+| `mgctl cf audit` 全绿 | 工具已实现，待在真实 zone 上运行 |
+| 真人浏览回归 | 待所有者执行 |
+| JA4 预研结论 | 完成（[ADR-0002 勘误](adr/0002-edge-pingora-boringssl.md#勘误2026-09-28ja4-预研)）：链路可行、每握手约 0.5 µs、`ja4_spike` 缺省关闭；不以原始 JA4 做 `bind.tfp` 硬绑定 |
 
 ## Phase 2：Web SDK 与自研交互式 Challenge（5–7 周）
 
@@ -176,7 +204,7 @@ docs/                         design docs + adr/
 ## 贯穿各阶段
 
 - 每个阶段结束做一次安全自审，更新 STRIDE 威胁模型。
-- 解析器持续模糊测试（`x-mg-cf-*` 等上游头、ClientHello、Challenge 提交、策略包）。
+- 解析器持续模糊测试（`x-mg-cf-*` 等上游头、ClientHello、Challenge 提交、策略包）。Phase 1 的做法：每个解析器都有固定种子、≥ 10,000 个输入的随机输入测试（断言返回错误而不 panic），随 `make check` 运行。
 - 新检测能力一律 shadow → dry-run → 灰度；`EDGE_TLS` 与交互评分先 shadow。
 - 所有测试流量只发往 Validation Lab 白名单内的自有目标（`localhost`、`*.test`、登记的自有 staging 主机）；白名单在工具配置与网络出口两层强制，白名单外的主机一律拒绝。
 - Pingora 升级单独进行：先在分支上适配 mg-edge 并跑完整回归，再改 pin。
@@ -222,6 +250,8 @@ docs/                         design docs + adr/
 | 站点是否有登录 | 无障碍替代方式（passkey 或邮件链接） | Phase 2 开始前 |
 | 站点是否有收入（广告、付费内容） | JA4+ 能否启用 | 启用 JA4+ 之前（不阻塞主线） |
 | Bot Fight Mode 当前是否开启 | Free 区需关闭，否则会在 `/__mg/*` 前插入不可控挑战 | Phase 1 monitor 上线前 |
+| 真实 zone 上的实测项：经 Tunnel 到达的 `CF-Connecting-IP`；访客自带的 `CF-Worker` 头是否被 Cloudflare 删除或覆盖；Cloudflare 是否把源站的 414 / 431 / 425 原样回传；`cf.tls_*` 字段在各套餐与 HTTP/3 下的可用性及 `ciphers_sha1` 的有效拼写；`bot_management` 接口在各套餐下的字段；挑战页经 Cloudflare 后的 `cf-cache-status` 是否为 `DYNAMIC` / `BYPASS` | 客户端 IP；`CF-Worker` 不被删除时访客只能让自己被 403；EDGE_TLS 缺失告警的噪声；`cf audit` 第 9、10、16 项的自动化程度；超长请求与早期数据的用户体验；缓存泄漏 | Phase 1 monitor 周内（[规格 §19](impl/phase1-spec.md#19-待实测与未决)；Valkey ACL 一项已在 9.1.2 上实测通过） |
+| 首次 `mgctl crawler sync` 前核对官方 IP 段 URL 与 UA 标识 | 源文件中的 URL 取自规格、未用工具重新抓取；失效的 URL 首次同步即失败 | 首次同步前 |
 
 ## 参考
 

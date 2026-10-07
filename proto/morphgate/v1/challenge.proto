@@ -15,8 +15,10 @@ option go_package = "morphgate/control-plane/gen/morphgate/v1;morphgatev1";
 // Only the Rust Edge seals and opens C; the SDK never parses it and signs
 // hash(C) instead. Issuing C writes no state: the nonce is consumed with SET NX
 // on submission, before any external provider call. Unknown `v` is rejected.
-// Sealing and opening are implemented in Phase 1; these messages only fix the
-// encoding (prost is length-delimited, so there is no concatenation ambiguity).
+// Sealing and opening are implemented in Phase 1 (crate mg-challenge; key
+// derivation, aad encoding and test vectors: docs/impl/phase1-spec.md §6);
+// these messages fix the encoding (prost is length-delimited, so there is no
+// concatenation ambiguity).
 
 // Outer envelope of C.
 message SealedChallenge {
@@ -42,6 +44,8 @@ message SealedChallengeClaims {
     optional bytes jkt = 3;   // Phase 2+: SDK session key thumbprint: hard
     optional bytes ctp = 4;   // cloudflare only: coarse TLS tuple hash: shadow only
     optional bytes tfp = 5;   // direct_tls only, after the JA4 spike: JA4 hash: hard
+    optional bytes ipa = 6;   // hash(ASN of the client IP at issuance): decides the soft ipp result
+                              // (prefix changed within the same ASN -> risk; ASN changed -> new C)
   }
 
   uint32 v = 1;                   // claims format version; unknown -> fail

@@ -32,13 +32,43 @@ jobs:
     name: Rust (fmt, clippy, test, wasm, edge smoke)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # Valkey for the state-layer and Edge tests (docs/impl/phase1-spec.md §16).
+    # No AUTH: FaultProxy::url() carries no credentials. Tests prefix keys
+    # with a random site id and never flush. Pinned by digest (the tag in
+    # the reference is informational); bump tag and digest together.
+    services:
+      valkey:
+        image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+        ports:
+          - 127.0.0.1:6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       # wasm-check skips when the target is missing; in CI that must fail instead.
       MG_REQUIRE_WASM: "1"
+      MG_TEST_VALKEY_URL: redis://127.0.0.1:6379/
+      # A missing Valkey fails the tests instead of skipping them.
+      MG_REQUIRE_VALKEY: "1"
+      # The debug workspace build (BoringSSL, aws-lc, every test binary) plus
+      # the release build ran the runner out of disk. Line tables keep
+      # backtraces useful at a fraction of the size of full debug info.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Preinstalled SDKs this job never uses; removing them frees well over
+      # 10 GB for the debug and release builds.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
 
       - uses: dtolnay/rust-toolchain@3920daf79df8fb8df1dbef6e64563e2901a73745 # branch 1.91 (installs 1.91.1)
         with:
@@ -83,8 +113,118 @@ jobs:
       - name: make wasm-check
         run: make wasm-check
 
+      # The rust job needs no Node: the Edge tests use edge/tests/fixtures/sdk/.
       - name: make edge-smoke
         run: make edge-smoke
+
+      # The lab-e2e job runs this binary instead of compiling BoringSSL and
+      # aws-lc a second time (docs/impl/phase1-spec.md §16).
+      - name: Build the mg-edge release binary
+        run: cargo build --release --locked -p mg-edge
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mg-edge
+          path: target/release/mg-edge
+          if-no-files-found: error
+          retention-days: 3
+
+  # Phase 1 acceptance (docs/impl/phase1-spec.md §15 WP-L1, §18): the
+  # Validation Lab scenarios against the rust job's mg-edge, on loopback only.
+  lab-e2e:
+    name: Validation Lab end to end (Phase 1 scenarios)
+    needs: rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Same pinned Valkey as the rust job; the Edge under test keeps its state
+    # there (keys carry the site id "lab"; nothing is flushed).
+    services:
+      valkey:
+        image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+        ports:
+          - 127.0.0.1:6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      MG_TEST_VALKEY_URL: redis://127.0.0.1:6379/
+      # A missing dependency fails the job instead of skipping the run.
+      MG_LAB_E2E_REQUIRE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # mgctl (keys, bundle) and mglab (scenarios, event checks).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache-dependency-path: "*/go.sum"
+
+      # The Edge serves a fresh build of the Web SDK (sdk/web).
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: sdk/web/package.json
+          cache: true
+          cache_dependency_path: sdk/web/pnpm-lock.yaml
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mg-edge
+          path: ${{ runner.temp }}/mg-edge
+
+      # Artifacts do not keep the executable bit. python3 (the throwaway
+      # origin) and curl come with the runner image.
+      - name: make lab-e2e
+        run: |
+          python3 --version
+          chmod +x "$RUNNER_TEMP/mg-edge/mg-edge"
+          MG_EDGE_BIN="$RUNNER_TEMP/mg-edge/mg-edge" make lab-e2e
+
+  msrv:
+    name: Rust MSRV (1.88, cargo check)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Same pinned action as the rust job; the toolchain input overrides the
+      # branch's default version. Workspace code that uses a 1.89+ API is also
+      # caught by clippy's incompatible_msrv lint in the rust job.
+      - uses: dtolnay/rust-toolchain@3920daf79df8fb8df1dbef6e64563e2901a73745 # branch 1.91, toolchain overridden
+        with:
+          toolchain: "1.88"
+
+      # boring-sys builds BoringSSL (cmake, clang, libclang, Go).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: BoringSSL build dependencies
+        run: |
+          if ! command -v cmake >/dev/null || ! command -v clang >/dev/null \
+             || ! ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+          fi
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: msrv
+
+      - name: cargo check on the MSRV
+        run: |
+          rustc --version
+          cargo check --workspace --all-targets --locked
 
   go:
     name: Go (vet, test, generated code)

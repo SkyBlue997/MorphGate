@@ -20,10 +20,10 @@ ifeq ($(origin OPENSSL_DIR),undefined)
 endif
 
 .PHONY: help proto rust-check wasm-check go-check web-check adapters-check compose-check \
-        docs-check check dev-up dev-down edge-run edge-smoke lab-egress-check
+        docs-check check dev-up dev-down edge-run edge-smoke lab-egress-check lab-e2e
 
 help: ## List targets
-	@awk 'BEGIN { FS = ":.*## " } /^[a-z][a-z-]*:.*## / { printf "  %-17s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@awk 'BEGIN { FS = ":.*## " } /^[a-z][a-z0-9-]*:.*## / { printf "  %-17s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 proto: ## Regenerate Go protobuf code into control-plane/gen (Rust codegen runs in build.rs)
 	scripts/gen-proto.sh
@@ -77,12 +77,20 @@ dev-up: ## Start the dev environment (Valkey, PostgreSQL, VictoriaMetrics/Logs, 
 dev-down: ## Stop the dev environment, including optional profiles (volumes are kept)
 	$(COMPOSE) --profile grafana --profile tunnel --profile lab down
 
-edge-run: ## Run mg-edge with the dev config
-	cargo run -p mg-edge -- --config $(EDGE_DEV_CONFIG)
+# The dev config's cred:// names are the shared test key files (test use only);
+# its file:// bundle root must be a readable directory (--check-config).
+edge-run: ## Run mg-edge with the dev config (test credentials from testdata/phase1/keys)
+	mkdir -p /tmp/morphgate-dev/publish/bundles /tmp/morphgate-dev/publish/artifacts
+	CREDENTIALS_DIRECTORY=$(CURDIR)/testdata/phase1/keys cargo run -p mg-edge -- --config $(EDGE_DEV_CONFIG)
 
-edge-smoke: ## Start a throwaway origin + mg-edge on loopback and assert healthz/proxy/metrics
+edge-smoke: ## Loopback end-to-end: throwaway origin + mg-edge (edge.toml v1, file bundle, local state)
 	scripts/edge-smoke.sh
 
 # Needs a running Docker daemon, so it is not part of `check`; CI runs it.
 lab-egress-check: ## Validation Lab: assert the allowlist holds at the tool and network-egress layers
 	scripts/lab-egress-check.sh
+
+# Not part of `check` (it builds and runs mg-edge, Valkey and an origin); CI
+# runs it in its own job with the rust job's mg-edge binary (MG_EDGE_BIN).
+lab-e2e: ## Validation Lab Phase 1 scenarios end to end on loopback (mg-edge, valkey-server, mglab)
+	scripts/lab-e2e.sh

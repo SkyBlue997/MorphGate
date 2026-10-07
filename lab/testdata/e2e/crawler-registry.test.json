@@ -1,0 +1,77 @@
+{
+  "v": 1,
+  "kind": "mg-crawler-registry",
+  "generated_at": "2026-09-28T00:00:00Z",
+  "test": true,
+  "operators": [
+    {
+      "id": "googlebot",
+      "name": "Googlebot",
+      "purpose": "search",
+      "ua_tokens": [
+        "Googlebot"
+      ],
+      "verify": {
+        "mode": "ip_ranges_or_rdns",
+        "rdns_suffixes": [
+          ".googlebot.com",
+          ".google.com"
+        ]
+      },
+      "cidrs": [
+        "198.51.100.0/25"
+      ],
+      "sources": [
+        {
+          "url": "https://developers.google.com/static/crawling/ipranges/common-crawlers.json",
+          "format": "prefixes_json",
+          "fetched_at": "2026-09-28T00:00:00Z",
+          "creation_time": "2026-09-27T00:00:00.000000",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "stale": false
+        }
+      ]
+    },
+    {
+      "id": "gptbot",
+      "name": "GPTBot",
+      "purpose": "ai_training",
+      "ua_tokens": [
+        "GPTBot"
+      ],
+      "verify": {
+        "mode": "ip_ranges",
+        "rdns_suffixes": []
+      },
+      "cidrs": [
+        "192.0.2.0/25"
+      ],
+      "sources": [
+        {
+          "url": "https://openai.com/gptbot.json",
+          "format": "prefixes_json",
+          "fetched_at": "2026-09-28T00:00:00Z",
+          "creation_time": "2026-09-27T00:00:00.000000",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "stale": false
+        }
+      ]
+    },
+    {
+      "id": "applebot",
+      "name": "Applebot",
+      "purpose": "search",
+      "ua_tokens": [
+        "Applebot"
+      ],
+      "verify": {
+        "mode": "rdns",
+        "rdns_suffixes": [
+          ".applebot.apple.com"
+        ]
+      },
+      "cidrs": [],
+      "sources": []
+    }
+  ]
+}

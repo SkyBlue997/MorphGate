@@ -1,0 +1,11 @@
+{
+  "success": false,
+  "errors": [
+    {
+      "code": 10003,
+      "message": "entrypoint not found"
+    }
+  ],
+  "messages": [],
+  "result": null
+}

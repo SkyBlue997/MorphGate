@@ -7,17 +7,20 @@ import (
 	"strings"
 )
 
-// Reference semantics of the policy extension functions. The Rust IR evaluator
-// (Phase 1) must match these exactly; keep them small and free of Go-specific
-// behaviour.
+// Reference semantics of the policy extension functions (spec §5.3). The Rust
+// IR evaluator must match these exactly; keep them small and free of
+// Go-specific behaviour.
 
 // ipIn reports whether ip is contained in any entry of list. Entries are CIDR
-// prefixes or single addresses. IPv4-mapped IPv6 addresses are compared as
-// IPv4. An unparsable ip is not contained in anything; an unparsable entry is
-// an error so that a broken named list is never silently ignored.
+// prefixes or single addresses. IPv4-mapped IPv6 addresses and IPv4-mapped
+// CIDRs (::ffff:a.b.c.d/n, n >= 96) are compared as IPv4. An ip that is not a
+// valid address (including one with an IPv6 zone) is not contained in
+// anything. Every entry is validated, even after a match: an unparsable entry
+// (or one with a zone) is an error so that a broken named list is never
+// silently ignored.
 func ipIn(ip string, list []string) (bool, error) {
 	addr, err := netip.ParseAddr(ip)
-	if err != nil {
+	if err != nil || addr.Zone() != "" {
 		return false, nil
 	}
 	addr = addr.Unmap()

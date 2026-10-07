@@ -1,0 +1,15 @@
+# want: has 5 wildcards, at most 4
+version: 1
+site: shop
+profile: direct_tls
+hosts: [shop.example.test, admin.example.test]
+allowed_listeners: [public-tls]
+token:
+  active_kid: shop-t-20260927
+environments:
+  - name: production
+    hosts: [shop.example.test, admin.example.test]
+    routes:
+      - name: wild
+        paths: ["/*/*/*/*/*"]
+        sensitivity: medium

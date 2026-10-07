@@ -33,7 +33,8 @@ export interface ResponseLike {
 
 export type MgJsonResult =
   | { kind: "mg_challenge"; type: ChallengeType; challenge: string; retry: boolean }
-  | { kind: "mg_challenge_failed"; challenge: string; retry: boolean; requestId?: string }
+  /** `challenge` is the fresh C, absent when the Edge attaches none (phase1-spec §10.3). */
+  | { kind: "mg_challenge_failed"; challenge?: string; retry: boolean; requestId?: string }
   | { kind: "mg_proof_required" }
   | { kind: "mg_blocked"; requestId?: string }
   | { kind: "agent_scope_denied"; requestId?: string }
@@ -105,6 +106,7 @@ export function parseMgJson(input: unknown): MgJsonResult {
     }
     case "mg_challenge_failed": {
       const challenge = body["challenge"];
+      if (challenge === undefined) return { kind: "mg_challenge_failed", retry, ...optionalRequestId(body) };
       if (!isSealedChallenge(challenge)) return { kind: "not_mg", reason: "bad_challenge" };
       return { kind: "mg_challenge_failed", challenge, retry, ...optionalRequestId(body) };
     }

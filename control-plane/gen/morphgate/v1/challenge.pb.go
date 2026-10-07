@@ -310,6 +310,7 @@ type SealedChallengeClaims_Bind struct {
 	Jkt           []byte                 `protobuf:"bytes,3,opt,name=jkt,proto3,oneof" json:"jkt,omitempty"` // Phase 2+: SDK session key thumbprint: hard
 	Ctp           []byte                 `protobuf:"bytes,4,opt,name=ctp,proto3,oneof" json:"ctp,omitempty"` // cloudflare only: coarse TLS tuple hash: shadow only
 	Tfp           []byte                 `protobuf:"bytes,5,opt,name=tfp,proto3,oneof" json:"tfp,omitempty"` // direct_tls only, after the JA4 spike: JA4 hash: hard
+	Ipa           []byte                 `protobuf:"bytes,6,opt,name=ipa,proto3,oneof" json:"ipa,omitempty"` // hash(ASN of the client IP at issuance): decides the soft ipp result
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -379,6 +380,13 @@ func (x *SealedChallengeClaims_Bind) GetTfp() []byte {
 	return nil
 }
 
+func (x *SealedChallengeClaims_Bind) GetIpa() []byte {
+	if x != nil {
+		return x.Ipa
+	}
+	return nil
+}
+
 var File_morphgate_v1_challenge_proto protoreflect.FileDescriptor
 
 const file_morphgate_v1_challenge_proto_rawDesc = "" +
@@ -388,7 +396,7 @@ const file_morphgate_v1_challenge_proto_rawDesc = "" +
 	"\x01v\x18\x01 \x01(\rR\x01v\x12\x10\n" +
 	"\x03kid\x18\x02 \x01(\tR\x03kid\x12\x16\n" +
 	"\x06xnonce\x18\x03 \x01(\fR\x06xnonce\x12\x0e\n" +
-	"\x02ct\x18\x04 \x01(\fR\x02ct\"\xb2\x05\n" +
+	"\x02ct\x18\x04 \x01(\fR\x02ct\"\xd1\x05\n" +
 	"\x15SealedChallengeClaims\x12\f\n" +
 	"\x01v\x18\x01 \x01(\rR\x01v\x12\x10\n" +
 	"\x03kid\x18\x02 \x01(\tR\x03kid\x12\x14\n" +
@@ -412,18 +420,20 @@ const file_morphgate_v1_challenge_proto_rawDesc = "" +
 	"\x03alg\x18\x01 \x01(\tR\x03alg\x12\x1e\n" +
 	"\n" +
 	"difficulty\x18\x02 \x01(\rR\n" +
-	"difficulty\x1a\xa1\x01\n" +
+	"difficulty\x1a\xc0\x01\n" +
 	"\x04Bind\x12\x15\n" +
 	"\x03uah\x18\x01 \x01(\fH\x00R\x03uah\x88\x01\x01\x12\x15\n" +
 	"\x03ipp\x18\x02 \x01(\fH\x01R\x03ipp\x88\x01\x01\x12\x15\n" +
 	"\x03jkt\x18\x03 \x01(\fH\x02R\x03jkt\x88\x01\x01\x12\x15\n" +
 	"\x03ctp\x18\x04 \x01(\fH\x03R\x03ctp\x88\x01\x01\x12\x15\n" +
-	"\x03tfp\x18\x05 \x01(\fH\x04R\x03tfp\x88\x01\x01B\x06\n" +
+	"\x03tfp\x18\x05 \x01(\fH\x04R\x03tfp\x88\x01\x01\x12\x15\n" +
+	"\x03ipa\x18\x06 \x01(\fH\x05R\x03ipa\x88\x01\x01B\x06\n" +
 	"\x04_uahB\x06\n" +
 	"\x04_ippB\x06\n" +
 	"\x04_jktB\x06\n" +
 	"\x04_ctpB\x06\n" +
-	"\x04_tfpB6Z4morphgate/control-plane/gen/morphgate/v1;morphgatev1b\x06proto3"
+	"\x04_tfpB\x06\n" +
+	"\x04_ipaB6Z4morphgate/control-plane/gen/morphgate/v1;morphgatev1b\x06proto3"
 
 var (
 	file_morphgate_v1_challenge_proto_rawDescOnce sync.Once

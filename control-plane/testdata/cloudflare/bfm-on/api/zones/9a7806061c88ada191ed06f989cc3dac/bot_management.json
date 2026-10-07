@@ -1,0 +1,10 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "fight_mode": true,
+    "enable_js": true,
+    "ai_bots_protection": "disabled"
+  }
+}

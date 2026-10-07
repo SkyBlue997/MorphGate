@@ -2,6 +2,8 @@
 
 本文是 `interactive` 类型的详细设计：按住验证、无障碍路径、密封 Challenge 格式、Provider 接口与适配（Turnstile、大陆验证码）、交互遥测与评分。通用的验证顺序、凭证与绑定、持有证明、Early-Data、缓存和响应格式以 [04](04-challenge-and-tokens.md) 为准；Cloudflare 侧配置见 [08](08-upstream-and-cloudflare.md)。v1 属于 Phase 2（`self_hold`、`pow_a11y`、`turnstile`），大陆 Provider 为 Phase 4 可选项（[07](07-roadmap.md)）。只覆盖 Web。
 
+Phase 1（2026-09-28 勘误）只交付 §4 的密封格式中 `invisible` / `pow` 用到的部分，以及 §12 的防重放与配额的对应子集；各节的"Phase 1"段落给出实际做法，细节以 [Phase 1 实现规格](impl/phase1-spec.md) 为准（D-xx 见规格 [§0.3](impl/phase1-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](impl/phase1-spec.md#集成者裁决2026-09-28优先于正文)）。规则或矩阵要求 `interactive` 时，Phase 1 按 `pow` 执行（D-08）。
+
 ## 1. 定位
 
 **结论**：交互式 Challenge 不是安全边界。谜题难度挡不住自动求解与人工代解，通过只是**封顶的人类证据**（[03](03-risk-scoring.md) §4.1）。它的价值只来自五项服务端机制：
@@ -144,40 +146,42 @@ ct = XChaCha20-Poly1305.seal(k_epoch[kid], xnonce, prost(SealedChallengeClaims),
 | 编码 | prost 编码的 protobuf 消息 `SealedChallengeClaims`：长度分隔、无歧义。封装与打开都在同一份 Rust 代码中，不需要跨实现规范化；`aad` 同样按长度分隔编码。决策记录见 [ADR-0005](adr/0005-token-and-sealed-challenge-format.md) |
 | AEAD | XChaCha20-Poly1305，192 bit 随机 `xnonce` |
 | SDK 侧 | SDK 不解析 C。提交签名（§4.4）与 PoW 的输入是固定顺序、长度前缀的字节串，SDK 与 Edge 用共享测试向量保证一致 |
-| 密钥 | `k_epoch` 与 Turnstile `cData` 的 `k_bind_epoch`（§8.2）由按站点根密钥 `K_seal_root` 以 HKDF 按日派生（info 不同），24 小时轮换，接受当前与上一个 epoch；派生方式见 [04 §4.1](04-challenge-and-tokens.md#41-密封-challenge-与验证顺序) |
+| 密钥 | `k_epoch` 与 Turnstile `cData` 的 `k_bind_epoch`（§8.2）由按站点根密钥 `K_seal_root` 以 HKDF 按日派生（info 不同），24 小时轮换；派生方式见 [04 §4.1](04-challenge-and-tokens.md#41-密封-challenge-与验证顺序)。Phase 1：根密钥 1–2 个，`roots[0]` 封装、全部用于打开（D-30）；接受窗口收紧为当前 epoch，日界后 125 s 内另接受上一个，日界前 5 s 内另接受下一个（窗口按 C 的最长寿命 120 s + 5 s 时钟偏差计，Phase 2 引入约 10 分钟的交互式 C 时随之放宽） |
 | 状态 | 下发时不写存储；只在提交时写一次性 nonce（§12.1） |
+| 长度与编码（Phase 1） | `len(C) ≤ 1024`；信封 `v = 1`、`kid = "e<epoch_no>"`、24 字节 `xnonce`；`aad = u16be(len) ‖ host ‖ u16be(len) ‖ type ‖ u16be(len) ‖ kid`，`host` 为小写、去端口与末尾点的请求主机名；`open` 只接受 `seal` 写出的规范编码（未知字段、重复字段、字段乱序、非最短 varint 一律拒绝，I-18），因为 PoW 前缀（以及 Phase 2 的签名）覆盖的是 C 的文本（[规格 §6.2](impl/phase1-spec.md#62-密封-c)） |
 
 ### 4.2 Claims
 
 | 字段 | 内容 | 校验 |
 |---|---|---|
 | `v` | 格式版本 | 未知版本 → 失败 |
-| `kid` | epoch 密钥 ID | 只接受当前与上一个 epoch |
-| `nonce` | 128 bit 随机 | 一次性（`SET NX`） |
+| `kid` | epoch 密钥 ID（Phase 1：`e<epoch_no>`） | 只接受 §4.1 的接受窗口内的 epoch |
+| `nonce` | 128 bit 随机 | 一次性（`SET NX`；Phase 1 在 Lua 脚本 `mg_nonce_issue` 中，§12.1） |
 | `site` | 站点 ID | 与请求 Host 所属站点一致 |
-| `route_class` | `[a-z0-9_-]{1,32}`，同时作为 Turnstile `action` | 与触发路由一致 |
-| `type` | `invisible` / `pow` / `interactive` | 与端点一致 |
+| `route_class` | `[a-z0-9_-]{1,32}`，同时作为 Turnstile `action` | 与触发路由一致。Phase 1 为选中路由的名称；重放存储不可用时用它判定 `fail_closed`（[04 §4.1](04-challenge-and-tokens.md#41-密封-challenge-与验证顺序)） |
+| `type` | `invisible` / `pow` / `interactive` | 与端点一致；Phase 1 与提交中声明的 `type` 一致（`type` 在 `aad` 中） |
 | `providers` | 仅 `interactive`：本次提供的 Provider（有序，首个为默认） | 提交的 `provider_id` 不在集合内 → 失败（防降级） |
 | `risk_band` | 挑战前风险分段 | 决定 PoW 难度与评分先验 |
-| `attempt_no` | 仅 `interactive`：第几次尝试 | 超过 M → 临时阻断 |
-| `iat` / `exp` | 签发 / 过期时间（服务端时钟） | §4.3 |
+| `attempt_no` | 仅 `interactive`：第几次尝试 | 超过 M → 临时阻断；非交互式恒为 0（Phase 1 失败后的升级改用风险段，D-27） |
+| `iat` / `exp` | 签发 / 过期时间（服务端时钟；Phase 1 字段为毫秒 `iat_ms` / `exp_ms`） | §4.3 |
 | `ui_seed` | 仅 `interactive`：按住时长、按钮偏移、`pow_salt` 的随机种子 | 服务端重算 |
-| `pow` | `{alg, difficulty}` | 服务端验证 |
-| `ret` | 同站返回路径的哈希 | 提交的 `ret` 须为相对路径、≤ 512 字节、哈希一致，防开放重定向 |
+| `pow` | `{alg, difficulty}`（Phase 1：`sha256-hashcash-v1`，`difficulty ≤ 32`） | 服务端验证 |
+| `ret` | 同站返回路径的哈希（16 字节） | 提交的 `ret` 须为相对路径、≤ 512 字节、不指向 `/__mg`、哈希一致，防开放重定向 |
 | `bind.uah` | `hash(UA 家族 + 主版本)` | 硬 |
-| `bind.ipp` | `hash(IP /24 或 /48)` | 软：同 ASN 不同前缀加风险；跨 ASN / 国家 → 新 C |
+| `bind.ipp` | `hash(IP /24 或 /48)`；Phase 1 必有（D-23） | 前缀相同 → 通过；不同时若 `bind.ipa` 已绑定且当前 ASN 相同 → 软结果（只加风险）；否则失败（`ic.bind_ipp`） |
+| `bind.ipa?` | Phase 1 新增：`hash(ASN)`，ASN 已知且不为 0 时绑定（D-05） | 只用于判定 `ipp` 的软 / 硬 |
 | `bind.jkt?` | Phase 2 起：客户端已有会话密钥时固定其指纹 | 硬；无则取提交中的 `jwk`，写入凭证 `cnf.jkt` |
 | `bind.ctp?` | 仅 `cloudflare`：粗粒度 TLS 元组哈希 | 仅 shadow 记录 |
-| `bind.tfp?` | 仅 `direct_tls`，JA4 预研成功后：JA4 哈希 | 硬 |
+| `bind.tfp?` | 仅 `direct_tls`：JA4 派生哈希（不用原始 JA4，见 [ADR-0002 勘误](adr/0002-edge-pingora-boringssl.md#bindtfp-的建议)） | 待定，先 shadow |
 
-绑定项的阶段与强度以 [04](04-challenge-and-tokens.md) §5 为准。非 GET 导航触发 Challenge 时，`ret` 取站点配置的回退路径（如表单页），不重放原请求体；XHR 由 SDK 在通过后重试原请求。
+绑定项的阶段与强度以 [04](04-challenge-and-tokens.md) §5 为准，每个绑定哈希 16 字节。非 GET 导航触发 Challenge 时，`ret` 取站点配置的回退路径（如表单页），不重放原请求体；XHR 由 SDK 在通过后重试原请求。Phase 1：GET / HEAD 的挑战（包括 JSON 挑战）取原始 `path[?query]`（校验失败或 > 512 字节时用 `fallback_ret`），其他方法用 `fallback_ret`；提交失败时若提交的 `ret` 与 C 中的哈希不符（原 `ret` 未知），新 C 用 `fallback_ret`。
 
 ### 4.3 有效期与续期
 
 | 对象 | 有效期 | 说明 |
 |---|---|---|
 | 交互式 C（所有交互 Provider，含 `pow_a11y`） | 约 10 分钟 | 静默续期，用户不必和时钟赛跑（2.2.1） |
-| invisible / pow 的 C | ≤ 120 s | [04](04-challenge-and-tokens.md) §4.1 |
+| invisible / pow 的 C | ≤ 120 s（Phase 1：配置包 `challenge.ttl_s`，10–120 s，缺省 120） | [04](04-challenge-and-tokens.md) §4.1 |
 | Turnstile token | 300 s，单次 | Cloudflare 规定 |
 | 腾讯 ticket | 5 分钟，单次 | 腾讯云规定 |
 | 阿里云验证参数 | 单次；初始化记录 20 分钟；V3 架构下行为验证到服务端验证间隔 > 90 s 返回 F019 | 阿里云规定 |
@@ -201,6 +205,8 @@ ct = XChaCha20-Poly1305.seal(k_epoch[kid], xnonce, prost(SealedChallengeClaims),
   "sig": "<ES256 over length-prefixed (H(c), p, H(pp), H(t), pow, H(ret), ts)>"
 }
 ```
+
+**Phase 1 的提交**（[规格 §10.3](impl/phase1-spec.md#103-post-mgc)）没有 Provider、交互遥测与会话密钥：`{"v":1,"type","c","pow":{"counters":[n]},"ret","ts","build","env","auto"}`，以表单字段 `mg`（导航提交，成功 303）或 `application/json`（fetch，成功 200）发送；JSON 为 UTF-8、嵌套 ≤ 16、对象键不得重复，顶层未知字段忽略；`env` / `auto` 按 SDK schema 解析，失败视为缺省。
 
 ## 5. 生命周期
 
@@ -568,6 +574,8 @@ api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资�
 
 每个 nonce 只接受一次提交；每次重试都是新 C，带新的 `ui_seed`、`pow_salt` 与按住时长。
 
+Phase 1：nonce 键为 `mg:n:{site}:{nonce_hex}`，由 Lua 脚本 `mg_nonce_issue` 以 `SET NX PX` 写入（TTL = `exp_ms − now_ms + 60 s`），同一脚本在 nonce 首次使用时计凭证签发配额；进程内重放集合同时写入，从不逐出未过期的 nonce（D-35、D-37）。
+
 ### 12.2 时序
 
 - 只信任服务端时钟；`client_ts` 只作特征。多台 Edge 需 NTP 同步，偏差应远小于 250 ms。
@@ -587,18 +595,22 @@ api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资�
 
 具体速率在 shadow 后按自有流量设定。通用限速、端点请求体限制与 Cloudflare 边缘泄压见 [04](04-challenge-and-tokens.md) §6.3、§9。
 
+Phase 1 只有 `/__mg/c` 的内置限速器（[04 §6.3](04-challenge-and-tokens.md#63-限速)）：`mg.c.submit`（按 `ipp`，缺省 30 次 / 60 s、burst 10）、`mg.c.fail`（`ip` 实体）与 `mg.c.fail.prefix`（`ipp`，4 倍）、`mg.clr.issue.ipp` 与 `mg.clr.issue.asn`。超限一律 `429`；凭证签发上限强制执行，而不是"信号 + 告警"（D-37）；没有指数退避，靠失败窗口内的配额（D-28）。
+
 ### 12.4 统一失败响应
 
 所有失败（绑定、重放、Provider 失败、评分）使用 [04](04-challenge-and-tokens.md) §9 的同一响应（`mg_challenge_failed` + 新 C + request_id；超过 M 次为 `429` + `Retry-After`），不暴露哪项检查失败，也不暴露阈值。具体原因只写入内部 reason code 与日志：`ic.c_invalid`、`ic.c_expired`、`ic.nonce_reused`、`ic.provider_not_offered`、`ic.bind_uah`、`ic.bind_jkt`、`ic.sig`、`ic.pow`、`ic.hold_short`、`ic.too_fast`、`ic.no_trusted_input`、`ic.attempts`、`ic.ts_hostname`、`ic.ts_action`、`ic.ts_cdata`、`ic.ts_time`、`ic.ts_dup`、`ic.provider_unavailable`、`ic.score_high`。相关指标与告警见 [06 §5](06-policy-console-observability.md#5-日志指标与告警)。
+
+Phase 1 的 reason code：`ic.no_client_ip`、`ic.too_early`、`ic.rate_limited`、`ic.issue_quota`、`ic.body`、`ic.c_invalid`、`ic.c_kid`、`ic.c_expired`、`ic.bind_uah`、`ic.bind_ipp`（软结果另记 `ic.bind_ipp_soft`）、`ic.pow`、`ic.ret`、`ic.automation_flag`、`ic.ua_mismatch`、`ic.nonce_reused`、`ic.replay_unavailable`、`ic.replay_unchecked`，只写入 `kind=feedback` 事件（[规格 §10.3](impl/phase1-spec.md#103-post-mgc)、[§13.3](impl/phase1-spec.md#133-kindfeedbackvl-main)）。频率类失败（限速、配额、IP 未知）是 `429`，不是统一失败响应。
 
 ### 12.5 降级
 
 | 故障 | 行为 |
 |---|---|
-| 重放存储不可用 | `critical` 路由 fail-closed（不签发凭证，返回"稍后再试"）；其余路由放行并标记、不下发交互式 Challenge；单 Edge 且启用进程内 LRU 时可继续（[01 §8](01-architecture.md#8-部署与高可用)） |
+| 重放存储不可用 | `critical` 路由 fail-closed（不签发凭证，返回"稍后再试"）；其余路由放行并标记、不下发交互式 Challenge（[01 §8](01-architecture.md#8-部署与高可用)）。Phase 1：C 所属路由 `fail_closed` → `429`（`ic.replay_unavailable`）；其余照常签发并记 `ic.replay_unchecked`，凭证带 `ruc`，`fail_closed` 路由不接受（I-30）；进程内重放集合只在单台 Edge 且 `local_replay_authoritative` 时作为结论（D-35） |
 | 外部 Provider 不可用 | §7.2 |
 | 控制面不可用 | 使用 last-known-good 配置（含 Provider 配置） |
-| Worker / WebCrypto 不可用 | 主线程 / 纯 JS PoW |
+| Worker / WebCrypto 不可用 | 主线程 / 纯 JS PoW。Phase 1：PoW 始终用纯 JS SHA-256，WebCrypto 只做启动自检，自检不一致时不启动挑战、显示重试链接（D-12）；Worker 不可用时主线程分片计算 |
 
 ## 13. 收割防护的边界
 

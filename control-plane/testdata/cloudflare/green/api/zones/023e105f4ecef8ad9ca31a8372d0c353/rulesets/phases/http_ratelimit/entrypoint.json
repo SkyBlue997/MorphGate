@@ -1,0 +1,34 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "rl0001",
+    "name": "zone",
+    "kind": "zone",
+    "version": "3",
+    "phase": "http_ratelimit",
+    "last_updated": "2026-09-20T08:00:00.000000Z",
+    "rules": [
+      {
+        "id": "r1",
+        "version": "1",
+        "ref": "mg_flood_mg_paths",
+        "description": "POST /__mg/ flood",
+        "action": "block",
+        "expression": "(starts_with(http.request.uri.path, \"/__mg/\") and http.request.method eq \"POST\")",
+        "ratelimit": {
+          "characteristics": [
+            "ip.src",
+            "cf.colo.id"
+          ],
+          "period": 60,
+          "requests_per_period": 120,
+          "mitigation_timeout": 60
+        },
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      }
+    ]
+  }
+}

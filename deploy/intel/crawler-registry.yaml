@@ -1,0 +1,88 @@
+# MorphGate crawler registry source (docs/impl/phase1-spec.md §12.3).
+#
+# The owner maintains this file; `mgctl crawler sync` fetches each operator's
+# official IP ranges from the URLs below, validates every CIDR (D-36) and
+# writes the `crawler-registry` artifact that site bundles reference:
+#
+#   mgctl crawler sync --registry deploy/intel/crawler-registry.yaml \
+#     --out <site dir>/intel/crawler-registry.json
+#
+# Run it daily. When an operator's list changes by more than 50%, or newly
+# covers more addresses than it covered before, the sync refuses to write;
+# check the change and rerun with --accept-change. If one operator's download
+# fails, its previous ranges are kept and marked stale.
+#
+# Operators are matched against the User-Agent in file order (case-insensitive
+# substrings of ua_tokens), so list more specific tokens first.
+#
+# Fields:
+#   id          [a-z0-9][a-z0-9_-]{0,31}, unique
+#   purpose     search | ai_training | ai_search | user_triggered | archive | other
+#   ua_tokens   1-8 tokens of 3-64 characters
+#   verify.mode ip_ranges         the request IP must be in the official ranges
+#               rdns              reverse + forward DNS against rdns_suffixes
+#               ip_ranges_or_rdns either; the ranges answer synchronously
+#   ip_ranges   https URLs; format prefixes_json ({"prefixes": [{"ipv4Prefix": ...}]})
+#               or cidr_text (one CIDR per line)
+#
+# URLs and UA tokens from docs/impl/phase1-spec.md §12.3 (every URL returned
+# 200 on 2026-09-27). Re-check them when an operator reports a failed download.
+version: 1
+operators:
+  - id: googlebot
+    name: Googlebot
+    purpose: search
+    ua_tokens: [Googlebot]
+    verify:
+      mode: ip_ranges_or_rdns
+      rdns_suffixes: [.googlebot.com, .google.com]
+      ip_ranges:
+        - url: https://developers.google.com/static/crawling/ipranges/common-crawlers.json
+          format: prefixes_json
+  - id: bingbot
+    name: Bingbot
+    purpose: search
+    ua_tokens: [bingbot]
+    verify:
+      mode: ip_ranges_or_rdns
+      rdns_suffixes: [.search.msn.com]
+      ip_ranges:
+        - url: https://www.bing.com/toolbox/bingbot.json
+          format: prefixes_json
+  - id: applebot
+    name: Applebot
+    purpose: search
+    ua_tokens: [Applebot]
+    verify:
+      mode: ip_ranges_or_rdns
+      rdns_suffixes: [.applebot.apple.com]
+      ip_ranges:
+        - url: https://search.developer.apple.com/applebot.json
+          format: prefixes_json
+  - id: gptbot
+    name: GPTBot
+    purpose: ai_training
+    ua_tokens: [GPTBot]
+    verify:
+      mode: ip_ranges
+      ip_ranges:
+        - url: https://openai.com/gptbot.json
+          format: prefixes_json
+  - id: oai-searchbot
+    name: OAI-SearchBot
+    purpose: ai_search
+    ua_tokens: [OAI-SearchBot]
+    verify:
+      mode: ip_ranges
+      ip_ranges:
+        - url: https://openai.com/searchbot.json
+          format: prefixes_json
+  - id: chatgpt-user
+    name: ChatGPT-User
+    purpose: user_triggered
+    ua_tokens: [ChatGPT-User]
+    verify:
+      mode: ip_ranges
+      ip_ranges:
+        - url: https://openai.com/chatgpt-user.json
+          format: prefixes_json
