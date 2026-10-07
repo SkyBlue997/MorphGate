@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 # No network I/O: DNS goes through the `DnsResolver` trait implemented by
 # mg-edge (docs/impl/phase1-spec.md §7). Artifacts are parsed from bytes.

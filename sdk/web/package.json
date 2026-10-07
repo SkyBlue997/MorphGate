@@ -4,7 +4,7 @@
   "private": true,
   "description": "MorphGate first-party Web SDK (Phase 1): challenge page client with Worker SHA-256 PoW, env/automation summaries, challenge page template.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "packageManager": "pnpm@10.23.0",
   "engines": {
     "node": ">=22"

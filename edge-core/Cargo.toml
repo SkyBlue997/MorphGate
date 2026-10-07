@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 # Pre-registered Phase 1 crate (docs/impl/phase1-spec.md §2). Stage-1 work
 # packages WP-C1..WP-C4 each own one module; mg-edge (stage 2) wires them into

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check relative Markdown links and #anchors the way GitHub renders them.
 
-Default scope: README.md, CLAUDE.md and docs/**/*.md at the repository root.
+Default scope: root project Markdown files and docs/**/*.md.
 Pass file or directory paths to check something else.
 
 For every inline link / image ``[text](target)``, reference definition
@@ -31,7 +31,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_FILES = ("README.md", "CLAUDE.md")
+DEFAULT_FILES = ("README.md", "CLAUDE.md", "SECURITY.md", "MAINTAINERS.md", "THIRD_PARTY_NOTICES.md")
 DEFAULT_DIRS = ("docs",)
 MARKDOWN_SUFFIXES = {".md", ".markdown"}
 
@@ -316,7 +316,7 @@ def expand(paths: list[str]) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("paths", nargs="*", help="Markdown files or directories (default: README.md, CLAUDE.md, docs/)")
+    parser.add_argument("paths", nargs="*", help="Markdown files or directories (default: root project Markdown files and docs/)")
     args = parser.parse_args(argv)
     try:
         files = expand(args.paths) if args.paths else default_files()
