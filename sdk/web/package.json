@@ -1,8 +1,7 @@
 {
-  "name": "@morphgate/web-sdk",
+  "name": "@ermiaodada/morphgate-web-sdk",
   "version": "0.1.0-phase1",
-  "private": true,
-  "description": "MorphGate first-party Web SDK (Phase 1): challenge page client with Worker SHA-256 PoW, env/automation summaries, challenge page template.",
+  "description": "First-party browser assets for MorphGate Phase 1: an owner-operated defensive bot-management platform.",
   "type": "module",
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.23.0",
@@ -14,7 +13,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "size": "node scripts/size-check.mjs",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run size"
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run size && pnpm run pack:check",
+    "pack:check": "node scripts/check-package.mjs",
+    "prepack": "npm run check"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
@@ -26,5 +27,31 @@
     "onlyBuiltDependencies": [
       "esbuild"
     ]
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SkyBlue997/MorphGate.git",
+    "directory": "sdk/web"
+  },
+  "homepage": "https://github.com/SkyBlue997/MorphGate/tree/master/sdk/web#readme",
+  "bugs": {
+    "url": "https://github.com/SkyBlue997/MorphGate/issues"
+  },
+  "files": [
+    "dist/sdk/",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "preview",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "keywords": [
+    "morphgate",
+    "bot-management",
+    "traffic-security",
+    "browser-sdk",
+    "proof-of-work"
+  ]
 }

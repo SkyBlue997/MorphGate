@@ -57,6 +57,18 @@ The Edge's deployable SDK directory is **`sdk/web/dist/sdk/`**, containing a con
 
 This preview uses the existing component versions: `mg-edge --version` reports `0.1.0`, while the SDK reports `0.1.0-phase1`. The repository release is identified by the `v0.1.0-preview.1` tag.
 
+## Install the browser assets from npm
+
+The matching SDK assets are distributed as `@ermiaodada/morphgate-web-sdk@0.1.0-phase1`, under the `preview` distribution tag. To obtain the built assets without a local TypeScript build, install the exact version in your deployment project:
+
+```sh
+npm install --save-exact @ermiaodada/morphgate-web-sdk@0.1.0-phase1
+```
+
+Use the complete `node_modules/@ermiaodada/morphgate-web-sdk/dist/sdk/` directory as the SDK directory, and retain the package's `LICENSE` and `NOTICE` when copying it to the Edge host. The [package guide](../sdk/web/README.md) covers installation and `sdk.dir`. This package supplies browser assets for the Phase 1 Edge; it has no Node.js import entry point and does not include the Edge server or deployment credentials.
+
+For the Lab command below, set `MG_LAB_SDK_DIR` to this installed directory instead of `sdk/web/dist/sdk` when validating the npm distribution.
+
 ## Validate on loopback
 
 First run the daemon/proxy smoke check using the binary you just built:
