@@ -8,6 +8,8 @@ MorphGate protects a single owner's websites with a Rust/Pingora reverse proxy, 
 
 **Status:** Phase 1 source preview. CI validates the implementation and loopback integration; real Cloudflare deployment acceptance is still pending. [Current status and evidence](docs/impl/phase1-status.md).
 
+Browser assets are available as [`@ermiaodada/morphgate-web-sdk`](https://www.npmjs.com/package/@ermiaodada/morphgate-web-sdk): see the [npm installation guide](sdk/web/README.md) for the pinned preview version and Edge deployment instructions.
+
 所有者自用的 Bot 防护平台（Bot Management），只保护所有者自己的几个网站：在已有 CDN（Cloudflare 优先）之后以反向代理方式接入网页流量，提供自动化流量识别、分级处置、自研交互式 Challenge、AI Agent 访问治理，以及配套的策略、日志、指标与审计能力。约束是精简、低成本、单人可开发与维护。
 
 ## 适用范围

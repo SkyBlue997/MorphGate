@@ -22,7 +22,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `proto/morphgate/v1/` | Shared protobuf contract. Rust: `proto/rust` (`mg-proto`, protox in build.rs). Go: generated into `control-plane/gen` and committed |
 | `control-plane/` | Go module: `cmd/mgctl`, `cmd/mg-control`, `internal/...` |
 | `lab/` | Go module: Validation Lab (`internal/guard` allowlist, `internal/replay`, `internal/events` for the acceptance checks, `cmd/mglab`; `testdata/scenarios` and `testdata/e2e` for `make lab-e2e`; `Dockerfile` for the isolated compose network) |
-| `sdk/web/` | TypeScript Web SDK (`@morphgate/web-sdk`, pnpm, esbuild, vitest) |
+| `sdk/web/` | TypeScript Web SDK assets (`@ermiaodada/morphgate-web-sdk`, pnpm, esbuild, vitest); npm packing checks the seven-file archive and an offline consumer installation |
 | `adapters/cloudflare/` | Transform Rule, Cache Rule, WAF Skip, Snippet and Worker templates for the owner's zone; its README is the owner's setup checklist |
 | `deploy/intel/` | Owner-maintained crawler registry source (`crawler-registry.yaml`), input to `mgctl crawler sync` |
 | `deploy/compose/` | Dev environment: Valkey, PostgreSQL, VictoriaMetrics, VictoriaLogs (`vl-main` 30d, `vl-short` 7d), mock origin; optional profiles `grafana`, `tunnel` (cloudflared) and `lab` (Validation Lab on an internal network) |
