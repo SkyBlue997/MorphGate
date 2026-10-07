@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "managed_request_headers": [
+      {
+        "id": "remove_visitor_ip_headers",
+        "enabled": false
+      }
+    ],
+    "managed_response_headers": []
+  }
+}

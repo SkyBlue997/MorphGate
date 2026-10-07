@@ -1,0 +1,20 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": [
+    {
+      "id": "023e105f4ecef8ad9ca31a8372d0c353",
+      "name": "example.com",
+      "status": "active",
+      "plan": {
+        "id": "b",
+        "name": "Business Website",
+        "legacy_id": "business"
+      },
+      "account": {
+        "id": "01a7362d577a6c3019a474fd6f485823"
+      }
+    }
+  ]
+}

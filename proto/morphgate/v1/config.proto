@@ -6,12 +6,21 @@ import "morphgate/v1/common.proto";
 
 option go_package = "morphgate/control-plane/gen/morphgate/v1;morphgatev1";
 
-// Signed configuration bundle that the Edge pulls from the control plane
-// (docs/02-data-flow.md §6). Key material is never included; only key ids.
+// Signed configuration bundle that the Edge pulls (docs/02-data-flow.md §6).
+// Key material is never included; only key ids. One SiteBundle per site.
+//
+// Phase 1 schema (docs/impl/phase1-spec.md §8): built from the owner's site
+// YAML by `mgctl bundle build`, signed by `mgctl bundle sign`, loaded by
+// mg-edge. Host-local settings (listener addresses, TLS files, the origin
+// address, credential paths) live in the Edge's edge.toml, never here.
+// Zero values mean "use the documented default" (spec §8.3) unless a comment
+// says otherwise.
 
 message UpstreamProfile {
   UpstreamProfileKind kind = 1;
-  // How the upstream is authenticated. Exactly the options relevant to `kind` are set.
+  // Phase 1 uses only `kind` and `expected_mask`: listener authentication is
+  // host-local (edge.toml [[listeners]]). Fields 2-7 are reserved for later
+  // profiles (Phase 4/5) and must be left empty by the Phase 1 builder.
   bool tunnel_loopback_only = 2;           // cloudflare via Tunnel: trust 127.0.0.1 / ::1 peer only
   string origin_pull_ca_ref = 3;           // AOP / origin mTLS client-certificate CA (key ref)
   string secret_header_name = 4;           // optional rotating shared-secret header
@@ -24,40 +33,51 @@ message UpstreamProfile {
 
 message Route {
   string id = 1;
-  string name = 2;               // e.g. "login"
-  repeated string hosts = 3;
-  string path_glob = 4;          // e.g. "/api/login"
-  repeated string methods = 5;
+  string name = 2;               // [a-z0-9_-]{1,32}; also the sealed route_class
+  repeated string hosts = 3;     // empty = every host of the environment
+  string path_glob = 4;          // deprecated in Phase 1: the builder writes `paths`; the Edge treats a
+                                 // non-empty path_glob as one more entry of `paths`
+  repeated string methods = 5;   // upper-case; empty = any method
   Channel channel = 6;
   RouteSensitivity sensitivity = 7;
-  bool fail_closed = 8;          // behaviour when dependencies are unavailable
+  bool fail_closed = 8;          // behaviour when dependencies are unavailable (spec §9.9)
+  repeated string paths = 9;     // glob patterns (policy glob syntax) matched against every path view (spec §9.4)
+  bool require_clearance = 10;   // CHALLENGE unless a valid clearance token is presented
+  bool redact_path = 11;         // events and access records log "/<route name>" instead of the path (tokenized URLs)
 }
 
 message CompiledRule {
   string id = 1;
   string phase = 2;              // identity | protocol | rate_limit | bot | custom | default
-  int32 priority = 3;
+  int32 priority = 3;            // higher runs first within a phase; ties by id (bytewise ascending)
   string expr_source = 4;        // CEL source, kept for audit and display
-  uint32 ir_version = 5;
-  bytes expr_ir = 6;             // restricted IR produced by the control-plane compiler
+  uint32 ir_version = 5;         // 1 in Phase 1
+  bytes expr_ir = 6;             // serialized morphgate.v1.PolicyExpr (policy_ir.proto)
   Action action = 7;
+  // Phase 1 keys: type (challenge: invisible | pow | interactive), label (tag: [a-z0-9_.-]{1,32}),
+  // limiter + retry_after_s (rate_limit). Unknown keys are rejected by the builder.
   map<string, string> params = 8;
   string mode = 9;               // enforce | dry_run | disabled
-  uint32 rollout_percent = 10;
-  int64 expires_at_ms = 11;
+  uint32 rollout_percent = 10;   // 0..100
+  int64 expires_at_ms = 11;      // 0 = never
   bool locked = 12;
 }
 
 message RateLimit {
-  string id = 1;
-  string route_id = 2;
-  repeated string key = 3;       // ip | ip_prefix | asn | session | device | account | api_key | agent | fp_cluster | route
-  string algorithm = 4;          // gcra | sliding_window | concurrency
-  uint32 rate = 5;
+  string id = 1;                 // [a-z0-9][a-z0-9_.-]{0,63}; "mg." prefix reserved for built-ins
+  string route_id = 2;           // deprecated in Phase 1: folded into route_ids
+  repeated string key = 3;       // Phase 1: ip | ip_prefix | asn | session | route (combination = tuple)
+  string algorithm = 4;          // gcra (only value in Phase 1)
+  uint32 rate = 5;               // requests per period
   uint32 period_s = 6;
-  uint32 burst = 7;
+  uint32 burst = 7;              // >= 1: requests allowed at one instant from a fresh state
   string on_exceed = 8;          // signal | challenge | rate_limit | block
-  string mode = 9;
+  string mode = 9;               // enforce | dry_run
+  repeated string route_ids = 10; // routes this limiter applies to; empty = every route of the environment
+  string scope = 11;             // global (Valkey GCRA, local fallback) | local (in-process only)
+  uint32 retry_after_s = 12;     // on_exceed = rate_limit: Retry-After; 0 = computed from GCRA
+  ChallengeType challenge_type = 13; // on_exceed = challenge
+  float signal_weight = 14;      // on_exceed = signal: log-odds contribution, 0 < w <= 2 (RATE family)
 }
 
 message ProviderConfig {
@@ -75,37 +95,123 @@ message ProviderConfig {
 
 message Environment {
   string name = 1;               // production | staging | test | dev
-  repeated Route routes = 2;
-  repeated CompiledRule rules = 3;
+  repeated Route routes = 2;     // first match wins; the builder appends a catch-all "default" route
+  repeated CompiledRule rules = 3; // sorted: phase order, then priority desc, then id asc
   repeated RateLimit rate_limits = 4;
   bool automation_allowlist_only = 5; // true for staging/test/dev
+  repeated string hosts = 6;     // hosts of this environment (a partition of SiteBundle.hosts)
 }
 
 message ArtifactRef {
-  string name = 1;               // e.g. "geolite2-asn", "cloudflare-ips", "crawler-registry"
-  string uri = 2;
-  string sha256 = 3;
-  string version = 4;
+  // Phase 1 names: geoip-asn | geoip-country | cloudflare-ips | crawler-registry |
+  // datacenter-asns | tor-exits (formats: spec §12).
+  string name = 1;
+  string uri = 2;                // "artifacts/<sha256>" relative to the bundle root
+  string sha256 = 3;             // lower-case hex of the file content
+  string version = 4;            // producer version / fetched_at, informational
+  uint64 size = 5;               // bytes
 }
 
 message SiteBundle {
   string site_id = 1;
-  uint64 version = 2;
+  uint64 version = 2;            // strictly increasing per site
   int64 created_at_ms = 3;
   UpstreamProfile upstream = 4;
   repeated Environment environments = 5;
-  repeated ProviderConfig providers = 6;
+  repeated ProviderConfig providers = 6; // interactive providers: Phase 2 (empty in Phase 1)
   repeated ArtifactRef artifacts = 7;
-  repeated string token_key_ids = 8;
-  bool monitor_only = 9;         // global monitor switch
+  repeated string token_key_ids = 8; // clearance key ids: [0] signs, all verify (material: edge credentials)
+  bool monitor_only = 9;         // global monitor switch: record decisions, enforce nothing
   // Optional activation delay for sensitive changes (docs/02 §6): the Edge
   // swaps to this bundle atomically at or after this time. 0 = immediately.
   int64 not_before_ms = 10;
+
+  uint32 schema_version = 11;    // 1; the Edge rejects bundles with a schema_version it does not know
+  repeated string hosts = 12;    // every hostname of the site: lower-case, no port, no trailing dot
+  repeated string allowed_listeners = 13; // edge.toml listener names that may serve this site
+  ChallengeConfig challenge = 14;
+  ClearanceConfig clearance = 15;
+  ScoringConfig scoring = 16;
+  CrawlerPolicy crawler_policy = 17;
+  EventConfig events = 18;
+  map<string, NamedList> lists = 19; // named lists for list("name") and ip_in(); name [a-z0-9][a-z0-9_.-]{0,63}
+  CloudflareSiteConfig cloudflare = 20; // set iff upstream.kind == CLOUDFLARE
+  OriginHeaderConfig origin_headers = 21;
+  bool share_ip_verdicts = 22;   // also read/write IP / prefix / ASN verdicts under site "all" (docs/01 §10)
+  string source_digest = 23;     // sha256 over the site YAML and policy files it was built from (audit)
+  bool case_insensitive_paths = 24; // route patterns and path views compared lower-cased (spec §9.4)
+}
+
+message ChallengeConfig {
+  message PowBits {
+    uint32 low = 1;
+    uint32 medium = 2;
+    uint32 high = 3;
+    uint32 very_high = 4;
+  }
+  uint32 ttl_s = 1;              // lifetime of invisible / pow C, <= 120
+  PowBits pow_bits = 2;          // SHA-256 hashcash difficulty (leading zero bits) per risk band
+  string fallback_ret = 3;       // return path for challenged non-GET navigations, e.g. "/"
+  uint32 max_failures = 4;       // failed submissions per ip entity per failure_window_s before 429 (x4 per ipp)
+  uint32 failure_window_s = 5;
+  uint32 submit_rate = 6;        // built-in limiter mg.c.submit (per ipp)
+  uint32 submit_period_s = 7;
+  uint32 submit_burst = 8;
+  uint32 issue_per_ipp = 9;      // clearance issuance quota (enforced: 429) per ipp ...
+  uint32 issue_per_asn = 10;     // ... and per ASN, per issue_period_s
+  uint32 issue_period_s = 11;
+}
+
+message ClearanceConfig {
+  uint32 ttl_invisible_s = 1;    // lvl invisible
+  uint32 ttl_pow_s = 2;          // lvl pow
+  uint32 session_max_s = 3;      // reuse the previous token's sub while now - sst <= session_max_s (spec §6.5)
+  bool ctp_shadow = 4;           // compute and record bind.ctp (cloudflare only, never enforced)
+}
+
+message ScoringConfig {
+  float theta_c = 1;             // confidence threshold of the default matrix
+  float kappa = 2;               // 0 = profile default (direct_tls 1.0, cloudflare 0.9)
+  map<string, float> z0 = 3;     // route sensitivity (low | medium | high | critical) -> prior log-odds
+  map<string, string> family_modes = 4; // SignalFamily wire name -> active | shadow | off
+  map<string, float> weights = 5; // detector signal id -> w_s override
+  float h_min = 6;               // floor of the summed human (negative) evidence
+  string ruleset_version = 7;    // logged as RiskAssessment.ruleset_version
+}
+
+message CrawlerPolicy {
+  map<string, string> purposes = 1; // purpose -> allow | block (verified crawlers only)
+  string default_action = 2;     // for purposes not listed: allow | block
+}
+
+message EventConfig {
+  float allow_sample_rate = 1;   // sampling of ALLOW / TAG / LOG decisions on low / medium routes (0..1)
+  bool access_log = 2;           // one kind=access record per request (docs/02 §9)
+  bool stream = 3;               // XADD a compact summary to mg:ev
+}
+
+message NamedList {
+  repeated string entries = 1;   // <= 10000 entries
+}
+
+message CloudflareSiteConfig {
+  string zone = 1;               // the owner's zone name, e.g. example.com
+  bool location_headers = 2;     // trust cf-ipcountry / cf-region / cf-region-code / cf-timezone
+  bool tier1 = 3;                // parse Tier 1 x-mg-cf-* (still requires the x-mg-cf-t1 marker)
+  repeated string owner_zones = 4; // zones whose Workers may send subrequests (CF-Worker)
+  bool pseudo_ipv4_overwrite = 5; // read the client IP from CF-Connecting-IPv6
+}
+
+message OriginHeaderConfig {
+  bool scores = 1;               // MG-Bot-Score, MG-Bot-Class, MG-Verified
+  bool reasons = 2;              // MG-Reasons (default off)
+  bool session = 3;              // MG-Session
 }
 
 // Detached signature over the serialized SiteBundle bytes.
+//   ed25519_signature = Ed25519-Sign(owner key `key_id`, "mg-bundle-v1" || 0x00 || bundle)
 message SignedBundle {
   bytes bundle = 1;              // serialized SiteBundle
-  string key_id = 2;
+  string key_id = 2;             // owner signing key id (kid)
   bytes ed25519_signature = 3;
 }

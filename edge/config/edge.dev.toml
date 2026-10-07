@@ -1,17 +1,63 @@
-# mg-edge development configuration (`make edge-run`).
+# mg-edge development configuration, edge.toml v1 (`make edge-run`).
 #
 # Topology in dev and in the recommended deployment:
 #   Cloudflare -> cloudflared (same host) -> mg-edge 127.0.0.1:8080 -> origin
 # The mock origin from deploy/compose listens on 127.0.0.1:8081.
-# Phase 0 accepts loopback `listen` addresses only (no TLS listener yet).
+#
+# `make edge-run` sets CREDENTIALS_DIRECTORY to testdata/phase1/keys, so the
+# cred:// names below are the shared test key files (test use only). Relative
+# plain paths are relative to this file. Try it:
+#   curl -H 'Host: localhost' -H 'CF-Connecting-IP: 198.51.100.7' http://127.0.0.1:8080/
+#
+# Until a bundle is published under bundle_root (make edge-run creates the
+# directory; --check-config requires it to be readable) the site is in
+# bootstrap-open mode: everything is forwarded and recorded (the poll loop
+# logs a fetch failure every bundle_poll_seconds). Publish one with
+#   mgctl bundle publish --dest /tmp/morphgate-dev/publish ...
+# (site "blog", hosts ["localhost", "127.0.0.1"], listener "cf-tunnel").
 
-site_id          = "dev"
-listen           = "127.0.0.1:8080"
-origin           = "127.0.0.1:8081"
-upstream_profile = "cloudflare"       # "cloudflare" | "direct_tls"
-metrics_listen   = "127.0.0.1:9901"   # Prometheus text format, scraped by VictoriaMetrics
+config_version = 1
+edge_id        = "dev"
+metrics_listen = "127.0.0.1:9901"         # Prometheus text format, scraped by VictoriaMetrics
+state_dir      = "../../target/mg-edge-dev"
 
 [server]
 threads                           = 2
-grace_period_seconds              = 1   # quick restarts in dev; production default is 10
+grace_period_seconds              = 1     # quick restarts in dev; production default is 10
 graceful_shutdown_timeout_seconds = 1
+
+[trust]
+owner_keys = ["../../testdata/phase1/keys/owner-test.pub"]
+
+[[listeners]]
+name    = "cf-tunnel"
+bind    = "127.0.0.1:8080"
+profile = "cloudflare"
+
+[[sites]]
+id          = "blog"
+hosts       = ["localhost", "127.0.0.1"]
+listeners   = ["cf-tunnel"]
+origin      = "127.0.0.1:8081"
+bundle_root = "file:///tmp/morphgate-dev/publish/"
+bundle_poll_seconds = 10
+bootstrap   = "open"
+token_keys  = "cred://token.keys.json"
+seal_root   = "cred://seal.root.json"
+
+[pseudo]
+key = "cred://pseudo.key.json"
+
+[valkey]
+# The compose Valkey needs a password; to use it, set mode = "valkey",
+# url = "redis://default@127.0.0.1:6379/0" and password = "<absolute path of a
+# 0600 file with VALKEY_PASSWORD>".
+mode = "local"
+
+[events]
+# vl_main  = "http://127.0.0.1:9428"      # deploy/compose vl-main
+# vl_short = "http://127.0.0.1:9429"      # deploy/compose vl-short
+# file     = "/tmp/morphgate-dev/events.jsonl"
+
+[sdk]
+dir = "../tests/fixtures/sdk"             # or a copy of sdk/web/dist/sdk/

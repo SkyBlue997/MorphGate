@@ -13,6 +13,7 @@ const FILES: &[&str] = &[
     "morphgate/v1/decision.proto",
     "morphgate/v1/config.proto",
     "morphgate/v1/challenge.proto",
+    "morphgate/v1/policy_ir.proto",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

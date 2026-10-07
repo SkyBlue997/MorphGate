@@ -1,0 +1,45 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "cache0001",
+    "name": "zone",
+    "kind": "zone",
+    "version": "3",
+    "phase": "http_request_cache_settings",
+    "last_updated": "2026-09-20T08:00:00.000000Z",
+    "rules": [
+      {
+        "id": "k1",
+        "version": "1",
+        "ref": "static-assets",
+        "description": "cache static files for a day",
+        "expression": "http.request.uri.path.extension in {\"js\" \"css\" \"png\" \"woff2\"}",
+        "action": "set_cache_settings",
+        "action_parameters": {
+          "cache": true,
+          "edge_ttl": {
+            "mode": "override_origin",
+            "default": 86400
+          }
+        },
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      },
+      {
+        "id": "k2",
+        "version": "1",
+        "ref": "mg_bypass_mg_paths",
+        "description": "MorphGate: bypass cache for /__mg/* except content-hashed SDK builds under /__mg/s/. Must be the LAST cache rule (last matching rule wins).",
+        "expression": "starts_with(http.request.uri.path, \"/__mg/\") and not starts_with(http.request.uri.path, \"/__mg/s/\")",
+        "action": "set_cache_settings",
+        "action_parameters": {
+          "cache": false
+        },
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      }
+    ]
+  }
+}

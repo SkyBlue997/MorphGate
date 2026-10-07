@@ -1,0 +1,67 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "cust0005",
+    "name": "zone",
+    "kind": "zone",
+    "version": "3",
+    "phase": "http_request_firewall_custom",
+    "last_updated": "2026-09-20T08:00:00.000000Z",
+    "rules": [
+      {
+        "id": "c1",
+        "version": "1",
+        "ref": "mg_skip_mg_paths",
+        "description": "MorphGate: /__mg/* skips SBFM, Browser Integrity Check and Security Level. Does NOT skip http_ratelimit, so a rate limiting rule against POST /__mg/ floods keeps working.",
+        "expression": "starts_with(http.request.uri.path, \"/__mg/\")",
+        "action": "skip",
+        "action_parameters": {
+          "phases": [
+            "http_request_sbfm"
+          ],
+          "products": [
+            "bic",
+            "securityLevel"
+          ]
+        },
+        "logging": {
+          "enabled": true
+        },
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      },
+      {
+        "id": "c3",
+        "version": "1",
+        "ref": "login-challenge",
+        "description": "",
+        "expression": "starts_with(http.request.uri.path, \"/account/login\")",
+        "action": "managed_challenge",
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      },
+      {
+        "id": "c4",
+        "version": "1",
+        "ref": "wp-challenge",
+        "description": "excludes MorphGate's paths and routes, as docs/08 §2.7 advises",
+        "expression": "http.request.uri.path contains \"/wp-\" and not starts_with(http.request.uri.path, \"/__mg/\") and not starts_with(http.request.uri.path, \"/account/login\")",
+        "action": "managed_challenge",
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      },
+      {
+        "id": "c5",
+        "version": "1",
+        "ref": "other-hosts-challenge",
+        "description": "the negation covers a conjunction, so /__mg/ on other hosts is challenged",
+        "expression": "not (http.host eq \"example.com\" and starts_with(http.request.uri.path, \"/__mg/\"))",
+        "action": "js_challenge",
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      }
+    ]
+  }
+}

@@ -1,8 +1,8 @@
 {
   "name": "@morphgate/web-sdk",
-  "version": "0.0.0",
+  "version": "0.1.0-phase1",
   "private": true,
-  "description": "MorphGate first-party Web SDK (Phase 0 skeleton): env/automation summaries, quantizers, session-key crypto, response classification.",
+  "description": "MorphGate first-party Web SDK (Phase 1): challenge page client with Worker SHA-256 PoW, env/automation summaries, challenge page template.",
   "type": "module",
   "license": "UNLICENSED",
   "packageManager": "pnpm@10.23.0",
@@ -10,7 +10,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --format=iife --minify --target=es2020 --legal-comments=none --outfile=dist/mg.js",
+    "build": "esbuild src/index.ts --bundle --format=iife --minify --target=es2020 --legal-comments=none --outfile=dist/mg.js && node scripts/build-dist.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "size": "node scripts/size-check.mjs",

@@ -1,0 +1,50 @@
+# Validation Lab end-to-end site (scripts/lab-e2e.sh; docs/impl/phase1-spec.md
+# §15 WP-L1, §18). The script builds, signs and publishes it with throwaway
+# keys (low age work factor, --insecure-test-key) and runs mg-edge in front
+# of a loopback origin. Test use only: every host is *.test, every address is
+# loopback or a documentation range.
+version: 1
+site: lab
+profile: cloudflare
+hosts: [site.lab.test]
+allowed_listeners: [cf-tunnel]
+monitor_only: false                 # enforce: the scenarios check what the Edge answers
+
+cloudflare:
+  zone: lab.test
+  location_headers: false
+  owner_zones: [lab.test]           # CF-Worker from any other zone gets 403 (D-23)
+  origin_mode: tunnel
+
+token:
+  active_kid: lab-t-20260927        # scripts/lab-e2e.sh: mgctl site keys gen --date 20260927
+
+challenge:
+  # Room for repeated runs against a shared Valkey (MG_TEST_VALKEY_URL): one
+  # run submits a handful of forged C per client address.
+  max_failures: 20
+  failure_window_s: 60
+  submit: {rate: 120, period_s: 60, burst: 20}
+
+crawlers:
+  default_action: allow             # verified crawlers of every purpose pass
+
+# Every decision is written (no sampling), so the event assertions of
+# scripts/lab-e2e.sh see every request.
+events: {allow_sample_rate: 1.0, access_log: true, stream: true}
+origin_headers: {scores: true, reasons: true, session: true}
+
+artifacts:
+  crawler_registry: crawler-registry.test.json   # test: true, documentation ranges
+
+environments:
+  - name: production
+    hosts: [site.lab.test]
+    routes:
+      # critical: require_clearance and fail_closed (phase1-nonjs-clearance).
+      - name: members
+        paths: ["/lab/members", "/lab/members/**"]
+        sensitivity: critical
+      # Everything else (phase1-impersonator) is the appended default route
+      # (/**, low): an rDNS warm-up request that is still pending is not
+      # challenged just for the route.

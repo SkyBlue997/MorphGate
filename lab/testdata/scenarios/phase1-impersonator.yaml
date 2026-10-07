@@ -1,0 +1,213 @@
+# Phase 1 acceptance (docs/impl/phase1-spec.md §15 WP-L1, §18, D-18, D-22):
+# requests that claim to be a known crawler but come from outside its
+# official ranges, or fail forward-confirmed reverse DNS, are identified as
+# impersonators: 100 % of the requests whose verification has settled. Genuine
+# crawlers from the registry's ranges, or with a matching rDNS record, pass.
+#
+# Run by scripts/lab-e2e.sh against lab/testdata/e2e/site.yaml (enforce) and
+# its test registry and static DNS table (lab/testdata/e2e/, documentation
+# ranges only):
+#
+#   GPTBot     ip_ranges          192.0.2.0/25
+#   Googlebot  ip_ranges_or_rdns  198.51.100.0/25, .googlebot.com / .google.com
+#   Applebot   rdns               .applebot.apple.com
+#
+#   mglab replay -map-host site.lab.test=127.0.0.1 -base http://site.lab.test:<edge port> \
+#     -var run=<id> lab/testdata/scenarios/phase1-impersonator.yaml
+#   mglab events impersonator -site lab -impersonators /lab/impersonator/<id>/ \
+#     -crawlers /lab/crawler/<id>/ -want-settled 13 -want-verified 6 <events.jsonl>
+#
+# An ip_ranges operator is decided on the first request. An operator that
+# needs rDNS answers its first request per address while the lookup runs
+# ("pending", DECLARED_AGENT, never VERIFIED_CRAWLER, D-22): the "warmup"
+# requests go to the low default route and are forwarded. After delay_ms the
+# lookups have settled and every later request is decided. The scenario needs
+# a fresh Edge (empty rDNS cache), as scripts/lab-e2e.sh starts one.
+#
+# CF-Connecting-IP stands in for cloudflared on the Edge's loopback listener.
+name: phase1-impersonator
+description: Fake Googlebot, GPTBot and Applebot requests are blocked as impersonators once verification settles; genuine crawlers pass.
+vars:
+  run: manual   # path segment that ties the events to one run
+
+requests:
+  # --- ip_ranges operator: decided on the first request (D-18) -------------
+  - name: fake GPTBot 1 (outside ranges)
+    method: GET
+    path: /lab/impersonator/${run}/gptbot/1
+    headers: &gptbot-fake
+      CF-Connecting-IP: 192.0.2.200
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)
+      Accept: text/html,application/xhtml+xml,*/*;q=0.8
+    expect_status: 403
+    expect_body_contains: Access denied
+    expect_header_absent: [MG-Challenge]
+  - name: fake GPTBot 2 (JSON)
+    method: GET
+    path: /lab/impersonator/${run}/gptbot/2
+    headers:
+      <<: *gptbot-fake
+      Accept: application/json
+    expect_status: 403
+    expect_body_contains: '"error":"mg_blocked"'
+  - name: fake GPTBot 3 (HEAD)
+    method: HEAD
+    path: /lab/impersonator/${run}/gptbot/3
+    headers: *gptbot-fake
+    expect_status: 403
+  # The crawler token after byte 512 of a padded User-Agent still counts
+  # (the claim is matched on the whole header, spec §0 input-size rule).
+  - name: fake GPTBot, padded User-Agent
+    method: GET
+    path: /lab/impersonator/${run}/gptbot-padded/1
+    headers:
+      <<: *gptbot-fake
+      CF-Connecting-IP: 192.0.2.201
+      User-Agent: Mozilla/5.0 (xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)
+    expect_status: 403
+
+  # --- rDNS operators: one warm-up per address (pending, forwarded) -------
+  - name: fake Googlebot, look-alike PTR, warm-up
+    method: GET
+    path: /lab/impersonator/${run}/googlebot-lookalike/warmup
+    headers: &googlebot-lookalike
+      CF-Connecting-IP: 203.0.113.30          # PTR crawl.evilgooglebot.com (I-22: no match)
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)
+      Accept: text/html,application/xhtml+xml,*/*;q=0.8
+    expect_status: 200
+  - name: fake Googlebot, no PTR, warm-up
+    method: GET
+    path: /lab/impersonator/${run}/googlebot-noptr/warmup
+    headers: &googlebot-noptr
+      <<: *googlebot-lookalike
+      CF-Connecting-IP: 203.0.113.31          # no PTR record
+    expect_status: 200
+  - name: fake Googlebot, IPv6, warm-up
+    method: GET
+    path: /lab/impersonator/${run}/googlebot-ipv6/warmup
+    headers: &googlebot-ipv6
+      <<: *googlebot-lookalike
+      CF-Connecting-IP: 2001:db8:bad::31      # no PTR record
+    expect_status: 200
+  - name: fake Applebot, forward mismatch, warm-up
+    method: GET
+    path: /lab/impersonator/${run}/applebot-forward/warmup
+    headers: &applebot-forward
+      CF-Connecting-IP: 203.0.113.32          # PTR in .applebot.apple.com, A record elsewhere
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15 (Applebot/0.1; +http://www.apple.com/go/applebot)
+      Accept: text/html,application/xhtml+xml,*/*;q=0.8
+    expect_status: 200
+  - name: fake Applebot, foreign PTR, warm-up
+    method: GET
+    path: /lab/impersonator/${run}/applebot-foreign/warmup
+    headers: &applebot-foreign
+      <<: *applebot-forward
+      CF-Connecting-IP: 203.0.113.33          # PTR host.lab.test
+    expect_status: 200
+  - name: real Googlebot via rDNS, warm-up
+    method: GET
+    path: /lab/crawler/${run}/googlebot-rdns/warmup
+    headers: &googlebot-rdns
+      <<: *googlebot-lookalike
+      CF-Connecting-IP: 198.51.100.200        # outside the ranges, forward-confirmed PTR
+    expect_status: 200
+  - name: real Applebot via rDNS, warm-up
+    method: GET
+    path: /lab/crawler/${run}/applebot-rdns/warmup
+    headers: &applebot-rdns
+      <<: *applebot-forward
+      CF-Connecting-IP: 203.0.113.20          # forward-confirmed PTR
+    expect_status: 200
+
+  # --- after the lookups: every impersonator request is blocked ------------
+  - name: fake Googlebot, look-alike PTR 1
+    method: GET
+    path: /lab/impersonator/${run}/googlebot-lookalike/1
+    headers: *googlebot-lookalike
+    delay_ms: 1500
+    expect_status: 403
+    expect_body_contains: Access denied
+  - name: fake Googlebot, look-alike PTR 2
+    method: GET
+    path: /lab/impersonator/${run}/googlebot-lookalike/2
+    headers: *googlebot-lookalike
+    expect_status: 403
+  - name: fake Googlebot, no PTR 1
+    method: GET
+    path: /lab/impersonator/${run}/googlebot-noptr/1
+    headers: *googlebot-noptr
+    expect_status: 403
+  - name: fake Googlebot, no PTR, upper-case token
+    method: GET
+    path: /lab/impersonator/${run}/googlebot-noptr/2
+    headers:
+      <<: *googlebot-noptr
+      User-Agent: Mozilla/5.0 (compatible; GOOGLEBOT/2.1)
+    expect_status: 403
+  - name: fake Googlebot, IPv6 1
+    method: GET
+    path: /lab/impersonator/${run}/googlebot-ipv6/1
+    headers: *googlebot-ipv6
+    expect_status: 403
+  - name: fake Applebot, forward mismatch 1
+    method: GET
+    path: /lab/impersonator/${run}/applebot-forward/1
+    headers: *applebot-forward
+    expect_status: 403
+  - name: fake Applebot, forward mismatch 2 (JSON)
+    method: GET
+    path: /lab/impersonator/${run}/applebot-forward/2
+    headers:
+      <<: *applebot-forward
+      Accept: application/json
+    expect_status: 403
+    expect_body_contains: '"error":"mg_blocked"'
+  - name: fake Applebot, foreign PTR 1
+    method: GET
+    path: /lab/impersonator/${run}/applebot-foreign/1
+    headers: *applebot-foreign
+    expect_status: 403
+  - name: fake Applebot, foreign PTR 2
+    method: GET
+    path: /lab/impersonator/${run}/applebot-foreign/2
+    headers: *applebot-foreign
+    expect_status: 403
+
+  # --- genuine crawlers pass ----------------------------------------------
+  - name: real GPTBot 1 (in ranges)
+    method: GET
+    path: /lab/crawler/${run}/gptbot/1
+    headers: &gptbot-real
+      <<: *gptbot-fake
+      CF-Connecting-IP: 192.0.2.10
+    expect_status: 200
+  - name: real GPTBot 2 (in ranges)
+    method: GET
+    path: /lab/crawler/${run}/gptbot/2
+    headers: *gptbot-real
+    expect_status: 200
+  - name: real Googlebot (in ranges)
+    method: GET
+    path: /lab/crawler/${run}/googlebot-ranges/1
+    headers:
+      <<: *googlebot-lookalike
+      CF-Connecting-IP: 198.51.100.10
+    expect_status: 200
+  - name: real Googlebot via rDNS
+    method: GET
+    path: /lab/crawler/${run}/googlebot-rdns/1
+    headers: *googlebot-rdns
+    expect_status: 200
+  - name: real Applebot via rDNS 1
+    method: GET
+    path: /lab/crawler/${run}/applebot-rdns/1
+    headers: *applebot-rdns
+    expect_status: 200
+  - name: real Applebot via rDNS 2
+    method: GET
+    path: /lab/crawler/${run}/applebot-rdns/2
+    headers: *applebot-rdns
+    expect_status: 200

@@ -1,7 +1,7 @@
 # ADR-0004：源站保护采用 Cloudflare Tunnel，AOP（自有 CA）为备选
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：同机密钥头、凭证与 CA 保管）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：同机密钥头、凭证与 CA 保管）；2026-09-28 勘误：Phase 1 实现口径（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-23、I-4，见文末"勘误"）
 - 相关：[08 上游接入与 Cloudflare 集成](../08-upstream-and-cloudflare.md#2-cloudflare-前置cloudflare-profile)、[10 威胁模型](../10-threat-model.md)、[ADR-0003](0003-upstream-profile-cdn-first.md)、[ADR-0007](0007-lean-deployment.md)
 
 ## 背景
@@ -42,6 +42,19 @@
 - Pro 及以上若启用 Super Bot Fight Mode，"Definitely Automated" 需保持 Allow，否则隧道连接可能以 `websocket: bad handshake` 失败。
 - 每台主机的 cloudflared 凭证仅 root 可读，cloudflared 以非特权用户运行；主机失陷即轮换凭证。
 - 采用 AOP 时需要管理自有 CA：CA 私钥离线保存（不放在 Edge 或大脑 VM），Edge 只持有 CA 证书，轮换时短期同时信任新旧 CA；证书续期有 Cloudflare 的 30 / 14 天提醒，vmalert 按 `mg_aop_cert_expiry_seconds` < 30 天告警（[06](../06-policy-console-observability.md)）。
+
+## 勘误（2026-09-28，Phase 1 实现）
+
+结论不变。Phase 1 按下表实现（细节见规格 [§9.2](../impl/phase1-spec.md#92-监听器与上游认证)、[§9.3.2](../impl/phase1-spec.md#932-客户端-ip-未知d-23)、[§14.3](../impl/phase1-spec.md#143-mgctl-cf-auditwp-g3)、[§14.4](../impl/phase1-spec.md#144-mgctl-cf-ips-syncwp-g3)）：
+
+| 项 | Phase 1 |
+|---|---|
+| Tunnel | `loopback` 监听器对非回环对端返回 403（`non_loopback_peer`）。上游密钥头由监听器的 `upstream_keys` 开启；回环监听器服务的站点源站也在回环地址、却没有配置时，`mg-edge --check-config` 警告。Cloudflare 侧的密钥头是单独一条 Transform Rule（`mg_upstream_key_v1`），与信号规则分开轮换 |
+| AOP | `origin_mtls` 监听器：BoringSSL 要求并校验客户端证书，`client_ca` 为所有者自有 CA；`cloudflare_ip_filter = true` 时按各站点 `cloudflare-ips` 工件的并集在 TLS 之前丢弃连接（尚无工件时放行） |
+| `CF-Worker` | 外部 zone 与非法值一律 403，计 `mg_cf_foreign_worker_total`（原文"丢弃并告警"），不进入决策（D-23）；配置包生效前用 `edge.toml` 的 `bootstrap_owner_zones`，未配置时任何 `CF-Worker` 都视为外部（I-4） |
+| IP 段同步 | Phase 1 没有控制面服务：所有者在工作站每日运行 `mgctl cf ips sync`（校验形状、条数变化超过 30% 拒绝），工件随签名配置包下发到 Edge；云安全组由所有者手工维护 |
+| `mgctl cf audit` | 第 1 项读取 tunnel 状态（`cfd_tunnel`）或 AOP 设置，第 3 项检查 AOP 证书剩余 ≥ 30 天（原文的 `mg_aop_cert_expiry_seconds` 指标在 Phase 1 不存在）；由所有者定时运行 |
+| 待实测 | 经 Tunnel 到达的 `CF-Connecting-IP`：monitor 周首日确认 `mg_cf_connecting_ip_missing_total` 为 0（规格 [§19](../impl/phase1-spec.md#19-待实测与未决)） |
 
 ## 参考
 

@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "kind": "mg-site-token-keys",
+  "site": "blog",
+  "keys": [
+    {
+      "kid": "blog-t-20260927",
+      "key": "ICEiIyQlJicoKSorLC0uLw",
+      "created_at": "2026-09-27T10:00:00Z"
+    }
+  ]
+}

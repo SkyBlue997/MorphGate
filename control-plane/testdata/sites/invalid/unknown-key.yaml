@@ -1,0 +1,12 @@
+# want: site: unknown key "polices"
+version: 1
+site: shop
+profile: direct_tls
+hosts: [shop.example.test, admin.example.test]
+allowed_listeners: [public-tls]
+token:
+  active_kid: shop-t-20260927
+polices: [p.yaml]
+environments:
+  - name: production
+    hosts: [shop.example.test, admin.example.test]

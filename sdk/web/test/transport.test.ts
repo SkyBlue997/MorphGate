@@ -6,6 +6,7 @@ import {
   parseMgJson,
   UPSTREAM_CHALLENGE,
 } from "../src/transport";
+import { XorShift32 } from "./xorshift";
 
 const SEALED = "v1.AbC_-dEf.123~xyz";
 
@@ -67,7 +68,18 @@ describe("parseMgJson", () => {
     expect(
       parseMgJson({ error: "mg_challenge", type: "pow", challenge: "a".repeat(MAX_SEALED_CHALLENGE_LENGTH + 1) }).kind,
     ).toBe("not_mg");
-    expect(parseMgJson({ error: "mg_challenge_failed", retry: true }).kind).toBe("not_mg");
+    expect(parseMgJson({ error: "mg_challenge_failed", retry: true, challenge: "has space" })).toEqual({
+      kind: "not_mg",
+      reason: "bad_challenge",
+    });
+  });
+
+  it("parses a failure body without a fresh challenge (phase1-spec §10.3 omits it when there is no new C)", () => {
+    expect(parseMgJson({ error: "mg_challenge_failed", retry: true, request_id: "r1" })).toEqual({
+      kind: "mg_challenge_failed",
+      retry: true,
+      requestId: "r1",
+    });
   });
 
   it("defaults retry to false unless it is literally true", () => {
@@ -111,5 +123,25 @@ describe("classifyResponse", () => {
       kind: "rate_limited",
     });
     expect(classifyResponse(response(425))).toEqual({ kind: "too_early" });
+  });
+});
+
+describe("random input never throws (phase1-spec §2.4)", () => {
+  it("parseMgJson over 10,000 xorshift bodies", () => {
+    const rng = new XorShift32(0x7a45);
+    const errors = ["mg_challenge", "mg_challenge_failed", "mg_blocked", "mg_proof_required", "agent_scope_denied", "other"];
+    for (let i = 0; i < 10_000; i++) {
+      const shaped = {
+        error: rng.pick(errors),
+        type: rng.pick(["pow", "invisible", "interactive", rng.string(8), 7, null]),
+        challenge: rng.pick([SEALED, rng.string(40), undefined, 42, null]),
+        retry: rng.pick([true, false, "true", undefined]),
+        request_id: rng.pick([rng.string(20), "r1", undefined, {}]),
+      };
+      const input: unknown = rng.pick([shaped, JSON.stringify(shaped), rng.string(64), rng.string(8), null, [], 3]);
+      const result = parseMgJson(input);
+      expect(typeof result.kind).toBe("string");
+      if (result.kind === "mg_challenge_failed" && result.challenge !== undefined) expect(result.challenge.length).toBeGreaterThan(0);
+    }
   });
 });

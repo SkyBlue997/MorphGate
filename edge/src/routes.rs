@@ -1,10 +1,12 @@
 //! Paths the Edge answers itself.
 //!
-//! `/__mg/*` is the Edge's reserved namespace (health, and from Phase 1/2 the
-//! SDK, challenge and token endpoints). Requests under it never reach the
-//! origin. Every Edge-generated response carries `Cache-Control: no-store,
-//! private` so that no CDN in front (Cloudflare's Origin Cache Control is
-//! always on) can store it (docs/08).
+//! `/__mg/*` is the Edge's reserved namespace (health, the SDK files and the
+//! challenge submission in Phase 1; the token endpoints in Phase 2). Requests
+//! under it never reach the origin; they are answered after the site is
+//! resolved (§9.4 step 4) and before route matching (§10.1). The endpoints
+//! are served only under their exact raw paths; every other spelling of the
+//! namespace is reserved (404). The responses themselves are built in
+//! [`crate::enforce`] and [`crate::mg_endpoints`].
 //!
 //! Cloudflare matches its rules against a *normalized* path but forwards the
 //! raw one, and the `/__mg/` rules in `adapters/cloudflare` skip bot checks,
@@ -14,22 +16,28 @@
 //! is answered by the Edge and never reaches the origin without Cloudflare's
 //! protections.
 
-use pingora::http::{Method, ResponseHeader};
-use std::borrow::Cow;
-
-/// Reserved path prefix.
-pub const EDGE_PREFIX: &str = "/__mg";
+/// Reserved path prefix (defined in `mg_core::paths`, shared with mg-challenge).
+pub use mg_core::paths::EDGE_PREFIX;
+/// Path views used for the namespace test; they live in `mg_core::paths` so
+/// that the Edge and mg-challenge's return-path check share one implementation.
+pub use mg_core::paths::{cloudflare_view, rfc3986_view};
 /// Liveness endpoint.
 pub const HEALTHZ_PATH: &str = "/__mg/healthz";
-/// Cache policy for everything the Edge answers itself.
-pub const NO_STORE: &str = "no-store, private";
+/// Challenge submission endpoint (§10.3).
+pub const SUBMIT_PATH: &str = "/__mg/c";
+/// Prefix of the SDK files (§10.4): `/__mg/s/<file>`.
+pub const SDK_PREFIX: &str = "/__mg/s/";
 
 /// Who answers a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RouteKind {
     /// `GET /__mg/healthz`.
     Healthz,
-    /// Any other path under `/__mg`: reserved, answered 404 for now.
+    /// `/__mg/s/<file>`: an SDK file (§10.4).
+    SdkFile,
+    /// `POST /__mg/c`: a challenge submission (§10.3).
+    Submit,
+    /// Any other path under `/__mg`: reserved, answered 404.
     EdgeReserved,
     /// Everything else: proxied to the origin.
     #[default]
@@ -41,7 +49,7 @@ impl RouteKind {
     pub const fn metric_label(self) -> &'static str {
         match self {
             Self::Healthz => "healthz",
-            Self::EdgeReserved => "edge",
+            Self::SdkFile | Self::Submit | Self::EdgeReserved => "edge",
             Self::Origin => "origin",
         }
     }
@@ -49,153 +57,24 @@ impl RouteKind {
 
 /// Classifies a request path (without query string).
 ///
-/// Only the exact raw path `/__mg/healthz` is the health check. A path is in
-/// the reserved namespace if its raw form, its RFC 3986 form or its Cloudflare
-/// form (see [`rfc3986_view`], [`cloudflare_view`]) is `/__mg` or starts with
-/// `/__mg/`.
+/// Only the exact raw paths are endpoints: `/__mg/healthz`, `/__mg/c` and
+/// `/__mg/s/<file>` (the file name is checked against the SDK manifest by
+/// [`crate::mg_endpoints::sdk_file`]). A path is in the reserved namespace if
+/// its raw form, its RFC 3986 form or its Cloudflare form (see
+/// [`rfc3986_view`], [`cloudflare_view`]) is `/__mg` or starts with `/__mg/`
+/// ([`mg_core::paths::is_reserved`]).
 pub fn classify(path: &str) -> RouteKind {
     if path == HEALTHZ_PATH {
-        return RouteKind::Healthz;
-    }
-    let in_namespace = |p: &str| {
-        p.strip_prefix(EDGE_PREFIX)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-    };
-    if in_namespace(path)
-        || in_namespace(&rfc3986_view(path))
-        || in_namespace(&cloudflare_view(path))
-    {
+        RouteKind::Healthz
+    } else if path == SUBMIT_PATH {
+        RouteKind::Submit
+    } else if path.starts_with(SDK_PREFIX) {
+        RouteKind::SdkFile
+    } else if mg_core::paths::is_reserved(path) {
         RouteKind::EdgeReserved
     } else {
         RouteKind::Origin
     }
-}
-
-/// The path as Cloudflare's "RFC 3986" URL normalization sees it: percent-encoded
-/// unreserved characters decoded, then dot segments removed.
-pub fn rfc3986_view(path: &str) -> Cow<'_, str> {
-    if !path.contains(['%', '.']) {
-        return Cow::Borrowed(path);
-    }
-    Cow::Owned(remove_dot_segments(&decode_unreserved(path)))
-}
-
-/// The path as Cloudflare's default ("Cloudflare") URL normalization sees it:
-/// unreserved characters decoded, `\` turned into `/`, runs of `/` merged,
-/// then dot segments removed.
-pub fn cloudflare_view(path: &str) -> Cow<'_, str> {
-    if !path.contains(['%', '.', '\\']) && !path.contains("//") {
-        return Cow::Borrowed(path);
-    }
-    let decoded = decode_unreserved(path).replace('\\', "/");
-    let mut merged = String::with_capacity(decoded.len());
-    for c in decoded.chars() {
-        if !(c == '/' && merged.ends_with('/')) {
-            merged.push(c);
-        }
-    }
-    Cow::Owned(remove_dot_segments(&merged))
-}
-
-/// Decodes `%XX` escapes of RFC 3986 unreserved characters
-/// (`A-Z a-z 0-9 - . _ ~`) and upper-cases the hex digits of all other escapes.
-fn decode_unreserved(path: &str) -> String {
-    let bytes = path.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let escape = (bytes[i] == b'%')
-            .then(|| bytes.get(i + 1..i + 3))
-            .flatten()
-            .and_then(|hex| std::str::from_utf8(hex).ok())
-            .and_then(|hex| u8::from_str_radix(hex, 16).ok().map(|b| (b, hex)));
-        match escape {
-            Some((b, _)) if b.is_ascii_alphanumeric() || b"-._~".contains(&b) => out.push(b),
-            Some((_, hex)) => {
-                out.push(b'%');
-                out.extend(hex.to_ascii_uppercase().bytes());
-            }
-            None => {
-                out.push(bytes[i]);
-                i += 1;
-                continue;
-            }
-        }
-        i += 3;
-    }
-    // Only ASCII bytes were decoded, so valid UTF-8 input stays valid.
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// RFC 3986 §5.2.4 `remove_dot_segments` for absolute paths; other inputs
-/// (`*`, empty) are returned unchanged.
-fn remove_dot_segments(path: &str) -> String {
-    let Some(rest) = path.strip_prefix('/') else {
-        return path.to_string();
-    };
-    let mut out: Vec<&str> = Vec::new();
-    let mut trailing_slash = false;
-    for segment in rest.split('/') {
-        trailing_slash = matches!(segment, "." | "..");
-        match segment {
-            "." => {}
-            ".." => {
-                out.pop();
-            }
-            s => out.push(s),
-        }
-    }
-    let mut result = format!("/{}", out.join("/"));
-    if trailing_slash && !result.ends_with('/') {
-        result.push('/');
-    }
-    result
-}
-
-/// A small, fixed response produced by the Edge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LocalResponse {
-    pub status: u16,
-    pub body: &'static str,
-    /// `Allow` header value for 405 responses.
-    pub allow: Option<&'static str>,
-}
-
-/// The Edge's own answer for `kind`, or `None` if the origin should answer.
-pub fn local_response(kind: RouteKind, method: &Method) -> Option<LocalResponse> {
-    match kind {
-        RouteKind::Origin => None,
-        RouteKind::Healthz if method == Method::GET || method == Method::HEAD => {
-            Some(LocalResponse {
-                status: 200,
-                body: "ok",
-                allow: None,
-            })
-        }
-        RouteKind::Healthz => Some(LocalResponse {
-            status: 405,
-            body: "method not allowed",
-            allow: Some("GET, HEAD"),
-        }),
-        RouteKind::EdgeReserved => Some(LocalResponse {
-            status: 404,
-            body: "not found",
-            allow: None,
-        }),
-    }
-}
-
-/// Response header for a [`LocalResponse`].
-pub fn response_header(resp: &LocalResponse) -> pingora::Result<ResponseHeader> {
-    let mut h = ResponseHeader::build(resp.status, Some(5))?;
-    h.insert_header("Content-Type", "text/plain; charset=utf-8")?;
-    h.insert_header("Content-Length", resp.body.len())?;
-    h.insert_header("Cache-Control", NO_STORE)?;
-    h.insert_header("X-Content-Type-Options", "nosniff")?;
-    if let Some(allow) = resp.allow {
-        h.insert_header("Allow", allow)?;
-    }
-    Ok(h)
 }
 
 #[cfg(test)]
@@ -208,7 +87,16 @@ mod tests {
         assert_eq!(classify("/__mg"), RouteKind::EdgeReserved);
         assert_eq!(classify("/__mg/"), RouteKind::EdgeReserved);
         assert_eq!(classify("/__mg/healthz/extra"), RouteKind::EdgeReserved);
-        assert_eq!(classify("/__mg/c"), RouteKind::EdgeReserved);
+        assert_eq!(classify("/__mg/c"), RouteKind::Submit);
+        assert_eq!(classify("/__mg/c/renew"), RouteKind::EdgeReserved);
+        assert_eq!(classify("/__mg/r"), RouteKind::EdgeReserved);
+        assert_eq!(classify("/__mg/t"), RouteKind::EdgeReserved);
+        assert_eq!(
+            classify("/__mg/s/mg.0123456789abcdef.js"),
+            RouteKind::SdkFile
+        );
+        assert_eq!(classify("/__mg/s/"), RouteKind::SdkFile);
+        assert_eq!(classify("/__mg/s"), RouteKind::EdgeReserved);
         assert_eq!(classify("/"), RouteKind::Origin);
         assert_eq!(classify("/__mgx"), RouteKind::Origin);
         assert_eq!(classify("/blog/__mg/healthz"), RouteKind::Origin);
@@ -241,6 +129,10 @@ mod tests {
             "/a//../__mg/x", // "/__mg/x" after Cloudflare's slash merging
             "/__mg//../x",   // "/__mg/x" under plain RFC 3986 dot removal
             "/__mg/%2e%2e",
+            "/__mg/c/",
+            "/__mg/%63",
+            "//__mg/s/mg.js",
+            "/%5F%5Fmg/s/mg.js",
         ] {
             assert_eq!(classify(path), RouteKind::EdgeReserved, "{path}");
         }
@@ -273,38 +165,5 @@ mod tests {
         assert_eq!(cloudflare_view("/.."), "/");
         assert_eq!(rfc3986_view("/%zz/%4"), "/%zz/%4");
         assert_eq!(rfc3986_view("/caf%C3%A9"), "/caf%C3%A9");
-    }
-
-    #[test]
-    fn healthz_answers_get_and_head_only() {
-        let ok = local_response(RouteKind::Healthz, &Method::GET).unwrap();
-        assert_eq!((ok.status, ok.body), (200, "ok"));
-        assert_eq!(local_response(RouteKind::Healthz, &Method::HEAD), Some(ok));
-        let post = local_response(RouteKind::Healthz, &Method::POST).unwrap();
-        assert_eq!((post.status, post.allow), (405, Some("GET, HEAD")));
-        assert_eq!(
-            local_response(RouteKind::EdgeReserved, &Method::GET).map(|r| r.status),
-            Some(404)
-        );
-        assert_eq!(local_response(RouteKind::Origin, &Method::GET), None);
-    }
-
-    #[test]
-    fn local_responses_are_never_cacheable() {
-        for (kind, method) in [
-            (RouteKind::Healthz, Method::GET),
-            (RouteKind::Healthz, Method::DELETE),
-            (RouteKind::EdgeReserved, Method::GET),
-        ] {
-            let resp = local_response(kind, &method).unwrap();
-            let h = response_header(&resp).unwrap();
-            assert_eq!(h.status.as_u16(), resp.status);
-            assert_eq!(h.headers["cache-control"], NO_STORE);
-            assert_eq!(
-                h.headers["content-length"],
-                resp.body.len().to_string().as_str()
-            );
-            assert_eq!(h.headers["x-content-type-options"], "nosniff");
-        }
     }
 }

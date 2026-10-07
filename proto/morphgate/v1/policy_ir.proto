@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package morphgate.v1;
+
+option go_package = "morphgate/control-plane/gen/morphgate/v1;morphgatev1";
+
+// Restricted policy IR (ADR-0006, docs/06 §2; normative semantics in
+// docs/impl/phase1-spec.md §5).
+//
+// Produced only by the Go policy compiler (control-plane/internal/policy) from
+// a cel-go *checked* AST; evaluated only by the mg-core IR evaluator. A
+// CompiledRule carries it as `expr_ir` = serialized PolicyExpr, with
+// CompiledRule.ir_version == PolicyExpr.ir_version == 1.
+//
+// Every Expr evaluates to a value (bool, int, double, string, list, map),
+// UNKNOWN (it read a MISSING field) or ERROR. A rule matches only when its
+// root evaluates to bool true; UNKNOWN means "no match, log missing_input",
+// ERROR means "no match, log eval_error". The encoding holds no expression
+// ids, source positions or types, so the bytes are a pure function of the
+// checked expression (the Go compiler marshals deterministically; the
+// conformance fixtures in testdata/policy-ir pin the bytes).
+//
+// Anything CEL can express but this file cannot (arithmetic, macros /
+// comprehensions, regex, conversions, timestamps, bytes, uint, null, map
+// literals, list indexing, bool ordering) is rejected by the compiler.
+
+message PolicyExpr {
+  uint32 ir_version = 1;       // 1
+  Expr root = 2;               // must evaluate to bool
+  repeated string fields = 3;  // sorted unique field paths the expression reads or has()-tests (informational)
+  // Static worst-case evaluation steps of `root` under the Activation size
+  // caps (spec §5.3 "step bound"). Computed by the compiler and recomputed by
+  // the Edge at load time; the two must be equal and <= 100000, otherwise the
+  // rule is rejected. Makes the runtime step limit unreachable.
+  uint64 max_steps = 4;
+}
+
+message Expr {
+  oneof kind {
+    Literal literal = 1;
+    // Read a schema field by its dotted CEL path, e.g. "net.ip", "risk.score",
+    // "req.headers" (map), "rate" (map), "labels" (list). UNKNOWN when the
+    // path lies under a MISSING path of the request.
+    string field = 2;
+    // has(<path>): false iff the path lies under a MISSING path; true for
+    // PRESENT and ABSENT fields. Never UNKNOWN or ERROR. Only schema struct
+    // fields (depth >= 2), never map keys.
+    string has = 3;
+    ListLiteral list = 4;      // [e0, e1, ...]
+    Unary not = 5;             // !x (bool)
+    Nary and = 6;              // x && y && ... (>= 2 args, bool)
+    Nary or = 7;               // x || y || ... (>= 2 args, bool)
+    Cond cond = 8;             // c ? a : b
+    Compare compare = 9;       // ==, !=, <, <=, >, >= on same-typed scalars
+    Binary in_list = 10;       // lhs in rhs, rhs a list
+    Binary in_map = 11;        // lhs in rhs, rhs a map with string keys (key presence)
+    Binary index_map = 12;     // lhs[rhs], lhs a map, rhs a string; absent key -> ERROR
+    Unary size = 13;           // size(string | list | map); strings count Unicode code points
+    StringCall string_call = 14;
+    Binary ip_in = 15;         // ip_in(lhs string, rhs list(string))
+    string named_list = 16;    // list("<name>"): a named list of the site bundle
+    Glob glob = 17;            // glob(subject, "<literal pattern>")
+  }
+}
+
+message Literal {
+  oneof value {
+    bool bool_value = 1;
+    int64 int_value = 2;
+    double double_value = 3;
+    string string_value = 4;
+  }
+}
+
+message ListLiteral {
+  repeated Expr elements = 1;
+}
+
+message Unary {
+  Expr arg = 1;
+}
+
+message Binary {
+  Expr lhs = 1;
+  Expr rhs = 2;
+}
+
+message Nary {
+  repeated Expr args = 1;
+}
+
+message Cond {
+  Expr cond = 1;
+  Expr then_expr = 2;
+  Expr else_expr = 3;
+}
+
+enum CompareOp {
+  COMPARE_OP_UNSPECIFIED = 0;
+  COMPARE_OP_EQ = 1;
+  COMPARE_OP_NE = 2;
+  COMPARE_OP_LT = 3;
+  COMPARE_OP_LE = 4;
+  COMPARE_OP_GT = 5;
+  COMPARE_OP_GE = 6;
+}
+
+message Compare {
+  CompareOp op = 1;
+  Expr lhs = 2;
+  Expr rhs = 3;
+}
+
+enum StringFunction {
+  STRING_FUNCTION_UNSPECIFIED = 0;
+  STRING_FUNCTION_STARTS_WITH = 1;  // target.startsWith(arg)
+  STRING_FUNCTION_ENDS_WITH = 2;    // target.endsWith(arg)
+  STRING_FUNCTION_CONTAINS = 3;     // target.contains(arg)
+}
+
+message StringCall {
+  StringFunction function = 1;
+  Expr target = 2;
+  Expr arg = 3;
+}
+
+message Glob {
+  Expr subject = 1;
+  string pattern = 2;  // non-empty literal; "*" (no '/'), "**" (any), "?" (one non-'/' char)
+}

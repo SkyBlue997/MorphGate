@@ -1,0 +1,111 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "late0005",
+    "name": "zone",
+    "kind": "zone",
+    "version": "3",
+    "phase": "http_request_late_transform",
+    "last_updated": "2026-09-20T08:00:00.000000Z",
+    "rules": [
+      {
+        "id": "a1",
+        "version": "1",
+        "ref": "mg_signals_v1",
+        "description": "MorphGate Tier 0 x-mg-cf-* signals (all plans). Verify cf.tls_ciphers_sha1 vs cf.tls_client_ciphers_sha1 spelling on this zone, see README.",
+        "expression": "true",
+        "action": "rewrite",
+        "action_parameters": {
+          "headers": {
+            "x-mg-cf-tls-version": {
+              "operation": "set",
+              "expression": "cf.tls_version"
+            },
+            "x-mg-cf-tls-cipher": {
+              "operation": "set",
+              "expression": "cf.tls_cipher"
+            },
+            "x-mg-cf-tls-ciphers-sha1": {
+              "operation": "set",
+              "expression": "cf.tls_ciphers_sha1"
+            },
+            "x-mg-cf-tls-ext-sha1": {
+              "operation": "set",
+              "expression": "cf.tls_client_extensions_sha1"
+            },
+            "x-mg-cf-tls-hello-len": {
+              "operation": "set",
+              "expression": "to_string(cf.tls_client_hello_length)"
+            },
+            "x-mg-cf-tls-random": {
+              "operation": "set",
+              "expression": "cf.tls_client_random"
+            },
+            "x-mg-cf-http-version": {
+              "operation": "set",
+              "expression": "http.request.version"
+            },
+            "x-mg-cf-rtt": {
+              "operation": "set",
+              "expression": "to_string(cf.timings.client_tcp_rtt_msec)"
+            },
+            "x-mg-cf-quic-rtt": {
+              "operation": "set",
+              "expression": "to_string(cf.timings.client_quic_rtt_msec)"
+            },
+            "x-mg-cf-asn": {
+              "operation": "set",
+              "expression": "to_string(ip.src.asnum)"
+            },
+            "x-mg-cf-vbot": {
+              "operation": "set",
+              "expression": "to_string(cf.client.bot)"
+            },
+            "x-mg-cf-vbot-cat": {
+              "operation": "set",
+              "expression": "cf.verified_bot_category"
+            },
+            "x-mg-cf-hdr-names": {
+              "operation": "set",
+              "expression": "join(http.request.headers.names, \",\")"
+            },
+            "x-mg-cf-priority": {
+              "operation": "remove"
+            },
+            "x-mg-cf-accept-encoding": {
+              "operation": "remove"
+            },
+            "x-mg-cf-as-org": {
+              "operation": "remove"
+            },
+            "x-mg-cf-t1": {
+              "operation": "remove"
+            }
+          }
+        },
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      },
+      {
+        "id": "a2",
+        "version": "1",
+        "ref": "mg_upstream_key_v1",
+        "description": "MorphGate: static x-mg-upstream-key for the Edge's upstream key check. The value is a secret: set it in the dashboard or API only, rotate with mgctl keys gen-upstream --rotate (the Edge accepts the current and the previous value).",
+        "expression": "true",
+        "action": "rewrite",
+        "action_parameters": {
+          "headers": {
+            "x-mg-upstream-key": {
+              "operation": "set",
+              "value": "REPLACE-ME with values[0] from mgctl keys gen-upstream"
+            }
+          }
+        },
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      }
+    ]
+  }
+}

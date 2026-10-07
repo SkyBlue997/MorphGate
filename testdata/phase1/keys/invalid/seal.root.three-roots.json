@@ -1,0 +1,22 @@
+{
+  "v": 1,
+  "kind": "mg-site-seal-root",
+  "site": "blog",
+  "roots": [
+    {
+      "root_id": "blog-r-20261027",
+      "key": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "created_at": "2026-10-27T10:00:00Z"
+    },
+    {
+      "root_id": "blog-r-20260927",
+      "key": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "created_at": "2026-09-27T10:00:00Z"
+    },
+    {
+      "root_id": "blog-r-20260901",
+      "key": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "created_at": "2026-09-27T10:00:00Z"
+    }
+  ]
+}

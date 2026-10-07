@@ -1,0 +1,11 @@
+{
+  "success": false,
+  "errors": [
+    {
+      "code": 9109,
+      "message": "Unauthorized to access requested resource"
+    }
+  ],
+  "messages": [],
+  "result": null
+}

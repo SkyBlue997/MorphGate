@@ -1,0 +1,10 @@
+{"v": 1,
+ "ptr": {"198.51.100.200": ["crawl-198-51-100-200.googlebot.com."],
+         "203.0.113.20": ["crawl-203-0-113-20.applebot.apple.com."],
+         "203.0.113.30": ["crawl.evilgooglebot.com."],
+         "203.0.113.32": ["crawl-203-0-113-32.applebot.apple.com."],
+         "203.0.113.33": ["host.lab.test."]},
+ "a": {"crawl-198-51-100-200.googlebot.com": ["198.51.100.200"],
+       "crawl-203-0-113-20.applebot.apple.com": ["203.0.113.20"],
+       "crawl.evilgooglebot.com": ["203.0.113.30"],
+       "crawl-203-0-113-32.applebot.apple.com": ["203.0.113.99"]}}

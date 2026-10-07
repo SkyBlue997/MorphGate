@@ -1,0 +1,34 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "cust0002",
+    "name": "zone",
+    "kind": "zone",
+    "version": "3",
+    "phase": "http_request_firewall_custom",
+    "last_updated": "2026-09-20T08:00:00.000000Z",
+    "rules": [
+      {
+        "id": "f2",
+        "version": "1",
+        "ref": "mg_skip_mg_paths",
+        "description": "MorphGate: /__mg/* skips SBFM, Browser Integrity Check and Security Level. Does NOT skip http_ratelimit, so a rate limiting rule against POST /__mg/ floods keeps working.",
+        "expression": "starts_with(http.request.uri.path, \"/__mg/\")",
+        "action": "skip",
+        "action_parameters": {
+          "products": [
+            "bic",
+            "securityLevel"
+          ]
+        },
+        "logging": {
+          "enabled": true
+        },
+        "enabled": true,
+        "last_updated": "2026-09-20T08:00:00.000000Z"
+      }
+    ]
+  }
+}

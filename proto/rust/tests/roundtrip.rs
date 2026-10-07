@@ -62,6 +62,10 @@ fn decision_event() -> v1::DecisionEvent {
                 }),
                 crawler: Some(v1::identity::Crawler {
                     cf_vbot: Some(false),
+                    claimed: true,
+                    operator: "google".into(),
+                    verification: "pending".into(),
+                    outside_ranges: true,
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -116,6 +120,22 @@ fn decision_event() -> v1::DecisionEvent {
         edge_id: "edge-a".into(),
         bundle_version: 7,
         monitor_only: true,
+        hits: vec![
+            v1::RuleHit {
+                rule_id: "login-require-proof".into(),
+                outcome: "missing_input".into(),
+                mode: "enforce".into(),
+                action: v1::Action::Challenge as i32,
+                fields: vec!["identity.proof.valid".into()],
+            },
+            v1::RuleHit {
+                rule_id: "ratelimit.login-per-ip".into(),
+                outcome: "matched".into(),
+                mode: "dry_run".into(),
+                action: v1::Action::RateLimit as i32,
+                fields: vec![],
+            },
+        ],
     }
 }
 
@@ -135,6 +155,12 @@ fn decision_event_round_trip() {
     // proto3 `optional`: an explicit false survives and differs from "not forwarded".
     let crawler = ctx.identity.unwrap().crawler.unwrap();
     assert_eq!(crawler.cf_vbot, Some(false));
+    assert_eq!(
+        (crawler.verification.as_str(), crawler.outside_ranges),
+        ("pending", true)
+    );
+    assert_eq!(back.hits.len(), 2);
+    assert_eq!(back.hits[1].action(), v1::Action::RateLimit);
     let unset = v1::identity::Crawler::default();
     assert_ne!(unset.encode_to_vec(), crawler.encode_to_vec());
 }
@@ -178,11 +204,13 @@ fn signed_bundle_round_trip() {
                 id: "login".into(),
                 name: "login".into(),
                 hosts: vec!["blog.example.com".into()],
-                path_glob: "/login".into(),
+                paths: vec!["/login".into(), "/api/login".into()],
                 methods: vec!["POST".into()],
                 channel: v1::Channel::Web as i32,
                 sensitivity: v1::RouteSensitivity::Critical as i32,
                 fail_closed: true,
+                require_clearance: true,
+                ..Default::default()
             }],
             rules: vec![v1::CompiledRule {
                 id: "r1".into(),
@@ -462,6 +490,9 @@ fn full_core_event() -> mg_core::DecisionEvent {
                 verified: true,
                 cf_vbot: Some(true),
                 cf_vbot_cat: Some("Search Engine Crawler".into()),
+                verification: Some(CrawlerVerification::Verified),
+                method: Some(CrawlerMethod::Rdns),
+                outside_ranges: true,
             },
         },
         session_id: Some("s".into()),
@@ -503,12 +534,20 @@ fn full_core_event() -> mg_core::DecisionEvent {
             retry_after_s: Some(30),
             rule_id: Some("login-high-risk".into()),
             dry_run: true,
+            tags: vec!["old_tls".into()],
         },
         latency_us: 180,
         sample_rate: 0.5,
         edge_id: "edge-a".into(),
         bundle_version: 7,
         monitor_only: true,
+        hits: vec![RuleHit {
+            rule_id: "login-high-risk".into(),
+            outcome: HitOutcome::Matched,
+            mode: mg_core::policy::RuleMode::DryRun,
+            action: Action::Challenge,
+            fields: vec!["phase1.interactive_as_pow".into()],
+        }],
     }
 }
 
@@ -521,6 +560,72 @@ fn core_event_json_uses_proto_field_names() {
     let sparse = mg_core::DecisionEvent::from_json_line(r#"{"ctx":{"request_id":"r"}}"#).unwrap();
     let sparse = serde_json::to_value(sparse).unwrap();
     assert_json_matches_proto("morphgate.v1.DecisionEvent", &sparse, false, "event");
+}
+
+/// Spec §3.4: the native vocabularies of the new decision fields are exactly
+/// the strings the proto comments list.
+#[test]
+fn decision_vocabularies_match_proto_comments() {
+    use mg_core::policy::RuleMode;
+    use mg_core::{CrawlerMethod, CrawlerVerification, HitOutcome};
+    let names = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        CrawlerVerification::ALL
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>(),
+        names(&["none", "pending", "verified", "failed", "unverifiable"])
+    );
+    assert_eq!(
+        CrawlerMethod::ALL
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>(),
+        names(&["ip_range", "rdns"])
+    );
+    assert_eq!(
+        HitOutcome::ALL
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>(),
+        names(&["matched", "missing_input", "eval_error"])
+    );
+    assert_eq!(
+        RuleMode::ALL
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>(),
+        names(&["enforce", "dry_run"])
+    );
+    assert_eq!(mg_core::BindResult::SoftMismatch.as_str(), "soft_mismatch");
+    // A native hit maps field for field onto the proto message.
+    let hit = mg_core::RuleHit {
+        rule_id: "r".into(),
+        outcome: HitOutcome::EvalError,
+        mode: RuleMode::Enforce,
+        action: mg_core::Action::Block,
+        fields: vec!["no_such_key".into()],
+    };
+    let mg_core::RuleHit {
+        rule_id,
+        outcome,
+        mode,
+        action,
+        fields,
+    } = hit.clone();
+    let wire = v1::RuleHit {
+        rule_id,
+        outcome: outcome.to_string(),
+        mode: mode.to_string(),
+        action: action.to_proto(),
+        fields,
+    };
+    let back = v1::RuleHit::decode(wire.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(back, wire);
+    let json = serde_json::to_value(&hit).unwrap();
+    assert_json_matches_proto("morphgate.v1.RuleHit", &json, true, "hit");
+    assert_eq!(json["outcome"], back.outcome.as_str());
+    assert_eq!(json["mode"], back.mode.as_str());
 }
 
 #[test]
@@ -572,6 +677,7 @@ fn claims_to_proto(c: &mg_core::SealedChallengeClaims) -> v1::SealedChallengeCla
         jkt,
         ctp,
         tfp,
+        ipa,
     } = bind;
     v1::SealedChallengeClaims {
         v: *v,
@@ -597,6 +703,7 @@ fn claims_to_proto(c: &mg_core::SealedChallengeClaims) -> v1::SealedChallengeCla
             jkt: jkt.clone(),
             ctp: ctp.clone(),
             tfp: tfp.clone(),
+            ipa: ipa.clone(),
         }),
     }
 }
@@ -631,6 +738,7 @@ fn claims_from_proto(p: v1::SealedChallengeClaims) -> Option<mg_core::SealedChal
             jkt: bind.jkt,
             ctp: bind.ctp,
             tfp: bind.tfp,
+            ipa: bind.ipa,
         },
     })
 }
@@ -666,6 +774,7 @@ fn sealed_challenge_claims_round_trip_with_binding_presence() {
             jkt: Some(vec![]), // bound to an (empty) value: must stay distinguishable
             ctp: Some(vec![4; 32]),
             tfp: None,
+            ipa: Some(vec![5; 16]),
         },
     };
     assert_eq!(claims.check(1_790_000_000_500), Ok(()));
@@ -700,6 +809,6 @@ fn sealed_challenge_envelope_round_trip() {
     assert_eq!(proto_fields("morphgate.v1.SealedChallengeClaims").len(), 15);
     assert_eq!(
         proto_fields("morphgate.v1.SealedChallengeClaims.Bind").len(),
-        5
+        6
     );
 }

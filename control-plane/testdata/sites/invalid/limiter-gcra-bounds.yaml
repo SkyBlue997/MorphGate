@@ -1,0 +1,17 @@
+# want: interval x burst <= 7 days
+version: 1
+site: shop
+profile: direct_tls
+hosts: [shop.example.test, admin.example.test]
+allowed_listeners: [public-tls]
+token:
+  active_kid: shop-t-20260927
+environments:
+  - name: production
+    hosts: [shop.example.test, admin.example.test]
+    rate_limits:
+      - id: daily
+        key: [ip]
+        rate: 1/24h
+        burst: 100
+        on_exceed: {action: block}

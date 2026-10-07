@@ -1,0 +1,23 @@
+# want: limiter id "login-per-ip" is already used by environments[production]; limiter ids are unique across the site
+version: 1
+site: shop
+profile: direct_tls
+hosts: [shop.example.test, staging.example.test]
+allowed_listeners: [public-tls]
+token:
+  active_kid: shop-t-20260927
+environments:
+  - name: production
+    hosts: [shop.example.test]
+    rate_limits:
+      - id: login-per-ip
+        key: [ip]
+        rate: 20/1m
+        on_exceed: {action: rate_limit}
+  - name: staging
+    hosts: [staging.example.test]
+    rate_limits:
+      - id: login-per-ip
+        key: [ip]
+        rate: 200/1m
+        on_exceed: {action: rate_limit}

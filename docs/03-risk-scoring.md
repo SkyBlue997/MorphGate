@@ -2,6 +2,8 @@
 
 **结论**：身份判定在评分之前。每个信号都带可用性状态（`PRESENT` / `ABSENT` / `MISSING`，本文 §3.1 为唯一定义），状态由站点配置的 `UpstreamProfile` 决定（见 [08](08-upstream-and-cloudflare.md)）。上游本来就不提供的信号不算任何方向的证据。同族信号的贡献有上限，人类证据也有上限。新增的信号族先跑 shadow，用所有者自己的流量校准后再启用。
 
+本文是评分与处置的设计口径；Phase 1 已落地的部分标为"Phase 1"（2026-09-28 勘误）。Phase 1 的检测器清单、初始权重与默认处置矩阵的规范实现见 [规格 §5.5](impl/phase1-spec.md#55-默认处置矩阵wp-r1) 与 [§5.7](impl/phase1-spec.md#57-phase-1-检测器与评分-v1wp-r1)，初始值都可以在站点 YAML 的 `scoring` 中覆盖。
+
 ## 1. 判定分层
 
 ```
@@ -24,10 +26,10 @@ Ingress 由 Edge 的适配层负责：认证上游、删除不可信的上游头
 | 类别 | 判定依据 | 默认处理方向 |
 |---|---|---|
 | `AUTHORIZED_AGENT` | 注册 Agent 签名有效，且请求落在授权范围内 | 按授权范围放行，独立限额，全量审计 |
-| `VERIFIED_CRAWLER` | 公开爬虫身份经自有验证（官方 IP 段 / rDNS / Web Bot Auth）通过；上游的 verified-bot 标记只作佐证（§3.9） | 按站点爬虫策略（见 [05](05-ai-agent-policy.md)） |
+| `VERIFIED_CRAWLER` | 公开爬虫身份经自有验证（官方 IP 段 / rDNS / Web Bot Auth）通过；上游的 verified-bot 标记只作佐证（§3.9） | 按站点爬虫策略（见 [05](05-ai-agent-policy.md)）；对 `require_clearance` 路由的写方法不放行（§5.1） |
 | `API_PARTNER` | API Key / mTLS 认证的服务端调用方。mTLS 只在 `direct_tls` 监听器上可用（Cloudflare 之后 TLS 终止在 Cloudflare）；API 防护按需、未排期（[07](07-roadmap.md)） | 按合作方配额 |
 | `SIGNED_AGENT` | Web Bot Auth 签名有效、运营方可识别，但未被本站授权 | 仅公开内容 + 限额；测试环境拒绝 |
-| `DECLARED_AGENT` | 自我声明为 Bot / Agent，但未注册或无法验证 | 仅公开内容 + 更低限额；测试环境拒绝 |
+| `DECLARED_AGENT` | 自我声明为 Bot / Agent，但未注册或无法验证（Phase 1 含 rDNS 结论未出的 `pending` 爬虫与客户端 IP 未知时的爬虫声明；加 label `declared_bot`） | 仅公开内容 + 更低限额；测试环境拒绝 |
 | `IMPERSONATOR` | 声称是已知爬虫 / Agent，但自有验证失败（上游标记不能推翻这一结论） | 阻断 |
 | `SCANNER` | 扫描探测特征（敏感路径、载荷、404 比例） | 阻断并告警 |
 | `AUTOMATION_LIKELY` | 无身份，评分高 | 挑战或阻断 |
@@ -35,6 +37,8 @@ Ingress 由 Edge 的适配层负责：认证上游、删除不可信的上游头
 | `UNKNOWN` | 证据不足 | 按路由敏感度决定是否挑战以收集证据 |
 
 类别之外可附加标签，例如 `delegated`：在用户真实浏览器中代用户操作的 Agent（见 [05 §2](05-ai-agent-policy.md#2-分类)），可与 `HUMAN_LIKELY`、`AUTOMATION_LIKELY`、`SIGNED_AGENT` 同时出现。
+
+**Phase 1 的分类推导**（按顺序取第一个成立的）：爬虫验证 `verified` → `VERIFIED_CRAWLER`；`failed` → `IMPERSONATOR`；labels 含 `scanner` → `SCANNER`；爬虫 `pending` / `unverifiable` 或 UA 自我声明为 bot → `DECLARED_AGENT`；score ≥ 60 → `AUTOMATION_LIKELY`；score < 30 且置信度 ≥ θ_c → `HUMAN_LIKELY`；否则 `UNKNOWN`。`AUTHORIZED_AGENT`、`API_PARTNER`、`SIGNED_AGENT` 在 Phase 1 不会出现（Agent 身份在 Phase 3）。客户端 IP 未知时另加 label `client_ip_unknown`。
 
 ## 3. 信号体系
 
@@ -53,6 +57,7 @@ Ingress 由 Edge 的适配层负责：认证上游、删除不可信的上游头
 - 每个信号记录来源 `source`（`self` / `cloudflare` / `cloudfront` / `gcp_alb` / `esa` / `envoy` / `openresty` / `sdk`）和 `authenticated`，写入 DecisionEvent，供漂移分析使用。例：`tls.ja4 {value, source, authenticated}`。
 - 与上游信号同名的客户端头：Tier 0 由 Transform Rule 的 Set 覆盖（值为空即删除）；同一条规则还删除 Tier 1 头名，客户端伪造的值不会留存（[08 §2.3](08-upstream-and-cloudflare.md#23-信号转发-tier-0request-header-transform-rule)、§2.4；Worker 与 Transform Rule 的执行顺序需实测）。
 - 策略（CEL）读取 `MISSING` 字段时结果为"未知"、规则按不匹配处理，见 [06 §2](06-policy-console-observability.md#2-策略语言)。
+- Phase 1：每个检测器对每个请求至多输出一个信号；不在 profile 期望集合内的检测器输出 `MISSING`；事件只记录非零的 `PRESENT`、`ABSENT` 与"期望却缺失"的 `MISSING` 信号。Phase 1 有 18 个检测器，分属 NETWORK、TLS、EDGE_TLS、HTTP、RATE、IDENTITY、EXTERNAL 七族；CLIENT、BEHAVIOR、REPUTATION 族没有检测器（清单见 [规格 §5.7](impl/phase1-spec.md#57-phase-1-检测器与评分-v1wp-r1)）。
 
 **Phase 1 两种 profile 的逐信号可用性**（本表为规范；族级概括见 [01 §7](01-architecture.md#7-信号可用性矩阵)，头映射与待实测项见 [08 §2](08-upstream-and-cloudflare.md#2-cloudflare-前置cloudflare-profile)，其他 profile 见 [08 §3](08-upstream-and-cloudflare.md#3-其他-cdn-与云负载均衡)）。"不适用""未规划""MISSING"都不在 E(p) 内。
 
@@ -73,6 +78,8 @@ Ingress 由 Edge 的适配层负责：认证上游、删除不可信的上游头
 | 上游 bot verdict（EXTERNAL 族） | 不适用 | `x-mg-cf-vbot` / `x-mg-cf-vbot-cat` | 同左 |
 | 每连接键 `client_conn_key` | Edge 下游连接 | `hash(x-mg-cf-tls-random)`（回源连接被多个访客复用，§3.8） | 同左 |
 | SDK 信号（CLIENT 族） | 全部 | 全部 | 全部 |
+
+Phase 1 实现与上表的差异：`direct_tls` 的 JA4 只是预研（`ja4_spike` 监听器只写入决定事件，[ADR-0002 勘误](adr/0002-edge-pingora-boringssl.md#勘误2026-09-28ja4-预研)），策略与评分中恒为 MISSING（D-07），TLS 族只有 `tls.version`；CLIENT、BEHAVIOR 族没有检测器（SDK 遥测在 Phase 2），挑战页的环境摘要只用于 `/__mg/c` 的两项硬检查；不计算 `client_conn_key`（每连接特征随近线在 Phase 2）；Tier 1 的 `x-mg-cf-as-org` 只记录。各 profile 的期望族集合（`expected_mask`）见 [ADR-0003 勘误](adr/0003-upstream-profile-cdn-first.md#勘误2026-09-28phase-1-实现)。
 
 ### 3.2 网络层（NETWORK）
 
@@ -122,6 +129,8 @@ Ingress 由 Edge 的适配层负责：认证上游、删除不可信的上游头
 3. 区分度：各主要浏览器家族的元组集合重叠较小，足以支撑一致性判断。
 4. 误伤：shadow 对比显示，启用后可能为人的会话进入中 / 高分段的比例，增量不超过 §9 的门槛。
 
+Phase 1 的 EDGE_TLS 只有一个检测器：声明现代浏览器却使用 SSLv3 / TLS 1.0 / 1.1（`edge_tls.proto_mismatch`），族模式缺省 shadow，只进 `shadow_score`。
+
 扩展哈希单独评估，证明稳定之前不能用于高权重信号或硬绑定。凭证绑定 `bind.ctp` 使用同一个粗粒度元组（不含扩展哈希），仅 `cloudflare` profile、仅 shadow；满足上面第 2 条（≥ 99%）后才可转为软绑定（见 [04 §5](04-challenge-and-tokens.md)）。
 
 ### 3.5 HTTP 层（HTTP）
@@ -161,9 +170,9 @@ Ingress 由 Edge 的适配层负责：认证上游、删除不可信的上游头
 ### 3.8 限速、连接与身份（RATE / IDENTITY）
 
 - 限速器利用率本身就是信号（接近阈值即加分），不只是硬性拦截条件。
-- **每连接特征**（每连接请求数、每连接出现的 UA 数 / 会话数）统一以 `client_conn_key` 为键（定义见 [02 §2.3](02-data-flow.md#23-要点)）：`direct_tls` 取 Edge 的下游连接；`cloudflare` 下回源连接（含 Tunnel 中 cloudflared 到 Edge 的连接）被多个访客复用，**不得以下游连接作为任何状态的键**，改取 `hash(x-mg-cf-tls-random)`，只在内存与近线短期使用，不写入 DecisionEvent。该值由客户端生成，只能用于计数类特征，不能用于授权或绑定；没有值时（HTTP/3、会话恢复下是否有值需实测）这些特征为 `MISSING`。
+- **每连接特征**（每连接请求数、每连接出现的 UA 数 / 会话数）统一以 `client_conn_key` 为键（定义见 [02 §2.3](02-data-flow.md#23-要点)）：`direct_tls` 取 Edge 的下游连接；`cloudflare` 下回源连接（含 Tunnel 中 cloudflared 到 Edge 的连接）被多个访客复用，**不得以下游连接作为任何状态的键**，改取 `hash(x-mg-cf-tls-random)`，只在内存与近线短期使用，不写入 DecisionEvent。该值由客户端生成，只能用于计数类特征，不能用于授权或绑定；没有值时（HTTP/3、会话恢复下是否有值需实测）这些特征为 `MISSING`。Phase 1 不计算 `client_conn_key`，每连接特征从 Phase 2 近线开始。
 - 凭证状态：缺失 / 过期 / 无效 / 重放；持有证明是否有效。绑定按阶段（详见 [04 §5](04-challenge-and-tokens.md)）：Phase 1 为 `uah`（硬）+ `ipp`（软）；Phase 2 起加 `cnf.jkt`（硬，SDK 会话密钥）；`tfp`（硬）仅 `direct_tls`，JA4 预研成功后启用；`ctp` 仅 `cloudflare`、仅 shadow，达标后才可转为软绑定（§3.4）。
-- Agent 签名；爬虫验证（官方 IP 段 + 异步 rDNS）。
+- Agent 签名；爬虫验证（官方 IP 段 + 异步 rDNS）。Phase 1：验证失败 → +1.0（且 score 下限 90，§4.2）；rDNS 结论未出（`pending`）而 IP 不在该运营方已发布的段内 → +0.5，这样 rDNS 队列被挤满时冒充者也不是零风险（D-18）。
 - 凭证和 Challenge 通过带来的负向贡献有上限，见 §4.1。
 
 ### 3.9 上游 verdict（EXTERNAL）
@@ -187,20 +196,20 @@ Ingress 由 Edge 的适配层负责：认证上游、删除不可信的上游头
 
 ```
 z        = z0(route) + Σ_{f∈active} clip( Σ_{s∈f} λ_src(s) · w_s · c_s · v_s , L_f , U_f )
-                     + Σ_e β_e · clip(logit(R_e / 100))
+                     + Σ_e β_e · min(4, max(0, logit(R_e / 100)))
 z_shadow = z + Σ_{f∈shadow} clip( ... )        (logged in DecisionEvent, never enforced)
 score    = round(100 · sigmoid(z))
 ```
 
 | 符号 | 含义 |
 |---|---|
-| `z0(route)` | 路由先验，取 `logit(该路由历史自动化占比)`。登录、注册、短信接口的先验高于静态页；"受攻击模式"下额外 +Δ |
+| `z0(route)` | 路由先验，取 `logit(该路由历史自动化占比)`。登录、注册、短信接口的先验高于静态页；"受攻击模式"下额外 +Δ。Phase 1 按路由敏感度取初始值：low −2.197、medium −1.735、high −1.386、critical −1.099（即 10%、15%、20%、25%） |
 | `w_s` | 信号权重（近似对数似然比）。初期人工设定，积累标签后用逻辑回归拟合 |
 | `λ_src(s)` | 来源系数：Edge 自己计算的为 1.0，CDN / 网关转发的为 0.8（初始值） |
 | `c_s`, `v_s` | 信号的置信度与取值。`MISSING` / `ABSENT` 时 `v_s = 0` |
 | `[L_f, U_f]` | 族区间，防止同族内高度相关的信号重复计分。默认为 `[-C_f, +C_f]`，初始值见下表 |
 | `active` / `shadow` | 族的运行模式。shadow 族照常计算，只写入 `z_shadow` 用于对比，不影响处置 |
-| `R_e`, `β_e` | 未过期的实体 verdict 及其权重（session 0.6、device 0.5、account 0.5、fp-cluster 0.4、ip 0.3、prefix 0.2） |
+| `R_e`, `β_e` | 未过期的实体 verdict 及其权重（session 0.6、device 0.5、account 0.5、fp-cluster 0.4、ip 0.3、prefix 0.2、asn 0.2）。verdict **只能抬高风险**：`logit` 取非负部分并封顶 4.0（`R_e = 100` 视为 4），低风险 verdict 不能抵消其他证据（D-10，10 VK-02）；每种实体只取风险最高的一条。Phase 1 只读 ip、prefix、asn、session 四种，由所有者手工写入 |
 
 **族区间**（初始值，用所有者的 shadow 数据校准）
 
@@ -221,8 +230,7 @@ score    = round(100 · sigmoid(z))
 
 | 证据（有效凭证的 `lvl`） | 负向贡献上限（初始值） | 说明 |
 |---|---|---|
-| `pow` | −0.3 | PoW 是成本杠杆，不是识别手段 |
-| `invisible` | −0.5 | 执行了 JS、完成了轻量 PoW，环境信号已采集 |
+| `invisible`、`pow` | −0.4 | 两者都只证明执行了 JS 并付出了 PoW 成本（`invisible` 固定最低难度），人类证据相同；级别只决定凭证能满足哪种挑战要求（§5.1）。原稿里两种级别的难度相同、证据权重却不同（−0.5 / −0.3），互相矛盾，Phase 1 统一为 −0.4（D-27） |
 | `interactive`（`self_hold`） | −0.8 | 封顶的人类证据 |
 | `interactive_a11y`（`pow_a11y`） | −0.8 | 与 `interactive` 相同，无障碍用户不因路径不同而承担更高风险分；以更短 TTL（15 分钟 vs 30 分钟）与更严配额补偿（见 [04 §5](04-challenge-and-tokens.md)） |
 | `interactive_ext:{provider}`（如 `turnstile`） | −0.8 | 同 `interactive`，第三方 Provider 的通过不高于自研 |
@@ -243,6 +251,7 @@ confidence = κ(p) · Σ_{f∈F(r)} A_f · cov_f  /  Σ_{f∈F(r)} A_f ,   F(r) 
 - `MISSING` 的信号（不在 E(p) 中，或在 E(p) 中但上游头未到达 / 来源无法确认）不进入 S(r)，分子分母都不计入。因此 Cloudflare 后面的正常浏览器不会因上游原因被判为"低置信度 → 挑战"；配置问题由告警暴露（§3.1）。
 - `ABSENT` 的信号计入分母、不计入分子。首个请求、没有 SDK、没有凭证时，置信度低，这一点与原设计相同。
 - `κ(p)` 表示该上游下可得信息的上限（初始值：`direct_tls` 1.0，`cloudflare` 0.9）。它用统一的方式体现 `MISSING` 带来的信息损失：同一 profile 下所有请求的 κ 都相同，所以不会让个别请求显得可疑。§5 中的置信度阈值按 profile 分别校准。
+- Phase 1 的初始值：`A_f` 为 NETWORK 1.0、TLS 1.5、HTTP 1.0、RATE 0.5、IDENTITY 1.5，shadow 族与 EXTERNAL 不计入置信度；`a_s` 全部 1.0；`top_reasons` 取贡献绝对值最大的 5 个 reason code（正向优先）。
 
 ### 4.2 硬规则（在评分之外）
 
@@ -252,11 +261,14 @@ confidence = κ(p) · Σ_{f∈F(r)} A_f · cov_f  /  Σ_{f∈F(r)} A_f ,   F(r) 
 | 注册 Agent 签名有效 | 分类为 `AUTHORIZED_AGENT`，改用授权范围检查和 Agent 专属限额，不走通用人机评分 |
 | Agent 签名有效但超出授权范围 | 默认阻断 + 告警 |
 | 声称是已知爬虫，但自有验证失败 | 判为 `IMPERSONATOR`，score 下限 90 |
-| 凭证重放、密钥绑定不符 | score 下限 90，吊销该凭证 |
+| 凭证重放、密钥绑定不符 | score 下限 90，吊销该凭证。Phase 1 没有凭证重放检测（jti 在 Phase 2）与吊销（Phase 3）：绑定硬失败（`binding_mismatch`）给 IDENTITY +0.3，并由矩阵重新挑战（`matrix.clearance.binding`） |
 | 实体带 `scanner` 标签 | score 下限 85 |
-| `/__mg/*` 状态变更端点收到 `Early-Data: 1` | 返回 425；首选关闭 0-RTT，其他请求按可重放处理（见 [04 §4.3](04-challenge-and-tokens.md#43-early-data0-rtt)） |
+| `/__mg/*` 状态变更端点收到 `Early-Data: 1` | 返回 425；首选关闭 0-RTT，其他请求按可重放处理（见 [04 §4.3](04-challenge-and-tokens.md#43-early-data0-rtt)）。Phase 1：任何 `Early-Data` 头都算；早期数据从不签发凭证、不消费 nonce；`critical` 路由上本应转发的决定改为 425（[02 §3](02-data-flow.md#3-challengesdk-遥测与凭证刷新)） |
 | 上游信号头来自未认证的连接 | 在 Ingress 删除，按 `MISSING` 处理，不进入评分 |
 | 上游 verdict（EXTERNAL） | 不触发任何硬规则 |
+| 协议输入超限（Phase 1，D-26） | enforce：414 / 431 / 400，不进入评分；monitor 与 bootstrap-open：跳过求值、原样转发，事件记 `hard.oversize_skipped`（I-2；[02 §2.4](02-data-flow.md#24-路由匹配与输入上限phase-1)） |
+| 外部 zone 的 `CF-Worker`（Phase 1，D-23） | 403，不进入评分 |
+| 客户端 IP 未知（Phase 1，D-23） | 继续评分，但从不比 IP 已知时更宽松：CHALLENGE 改为 429（不签发 C），`fail_closed` 路由 429（[02 §2.1](02-data-flow.md#21-第-0-步上游认证与客户端-ip)） |
 
 ### 4.3 会话风险
 
@@ -282,10 +294,10 @@ R_session(t) = max( r_t , R_session(t_prev) · exp(-(t - t_prev) / τ) ),   τ �
 
 | 分段 | 分数 | 普通路由 | `critical` 路由（登录 / 注册 / 支付 / 短信） |
 |---|---|---|---|
-| 低 | 0–29 | ALLOW | ALLOW（仍要求有效凭证 + 持有证明） |
+| 低 | 0–29 | ALLOW | ALLOW（仍要求有效凭证 + 持有证明；Phase 1：`require_clearance` 路由要求有效凭证，`critical` 路由缺省开启；持有证明从 Phase 2 起） |
 | 中 | 30–59 | ALLOW + TAG；置信度 < θ_c 时无感 Challenge | 无感 Challenge |
-| 高 | 60–84 | 无感 Challenge，失败则升级为交互式；收紧限速 | 交互式 Challenge 或阻断 |
-| 极高 | 85–100 | BLOCK（仅 `direct_tls` 下可选 TARPIT） | BLOCK |
+| 高 | 60–84 | 无感 Challenge，失败则升级为交互式；收紧限速（Phase 1：失败后附的新 C 为 `pow`，风险段升一级，D-27） | 交互式 Challenge 或阻断（Phase 1 的交互式按该请求风险段的 `pow` 执行，D-08） |
+| 极高 | 85–100 | BLOCK（仅 `direct_tls` 下可选 TARPIT；Phase 1 不实现 TARPIT） | BLOCK |
 
 **规则**：
 
@@ -295,7 +307,21 @@ R_session(t) = max( r_t , R_session(t_prev) · exp(-(t - t_prev) / τ) ),   τ �
 4. Challenge 和阻断响应使用 403 / 429（不用 200），并带 `Cache-Control: no-store, private`，防止在 Cloudflare 前置时被缓存（见 [08](08-upstream-and-cloudflare.md)）。
 5. 交互式 Challenge 的 Provider 由 Decision Core 选择，客户端不能选：默认为 `self_hold`；无障碍路径为 `pow_a11y`；`turnstile` 可选，大陆访客永远不会被分配 Turnstile（见 [09](09-interactive-challenge.md)）。
 6. 上游挑战（响应带 `cf-mitigated: challenge`）不算 MorphGate 的 Challenge 失败，不累计失败次数，也不加分。
-7. 所有动作都支持 `dry_run`（只记录"本应执行的动作"），另有全局 monitor 开关。
+7. 所有动作都支持 `dry_run`（只记录"本应执行的动作"），另有全局 monitor 开关（Phase 1 为站点级 `monitor_only`，见 [01 §8](01-architecture.md#8-部署与高可用)）。
+
+**Phase 1 矩阵的前置条件与抑制**（按顺序，先成立者决定；规范实现见 [规格 §5.5](impl/phase1-spec.md#55-默认处置矩阵wp-r1)）
+
+| 条件 | 结果 | `rule_id` |
+|---|---|---|
+| `VERIFIED_CRAWLER` | 爬虫策略对该用途为 block → BLOCK；方法为 GET / HEAD，或路由不要求凭证 → ALLOW；否则继续往下：已验证爬虫不能对 `require_clearance` 路由的写方法越过挑战（D-36） | `matrix.crawler.block` / `matrix.crawler.allow` |
+| `IMPERSONATOR` / `SCANNER` | BLOCK | `matrix.class.impersonator` / `matrix.class.scanner` |
+| 极高分段 | BLOCK | `matrix.very_high` |
+| 路由 `require_clearance` 且没有有效凭证 | CHALLENGE：高分段 `pow`，否则 `invisible` | `matrix.clearance.required` |
+| 凭证 `binding_mismatch` | CHALLENGE `invisible` | `matrix.clearance.binding` |
+| 上表分段 | 见上表（中分段 critical 与高分段普通路由为 `invisible`，高分段 critical 为交互式 → `pow`） | `matrix.low` / `matrix.medium` / `matrix.medium.low_confidence` / `matrix.critical.medium` / `matrix.high` / `matrix.critical.high` |
+| 要下发的是 CHALLENGE，而请求已有级别不低于它的有效凭证 | 改为 TAG，否则高分的真人每个请求都会被重复挑战（D-20） | `matrix.satisfied` |
+
+策略规则在矩阵之前执行（[06 §1](06-policy-console-observability.md#1-策略模型)），终止型规则的决定优先于矩阵；矩阵产生的 TAG 不带标签。
 
 ### 5.2 处置动作
 
@@ -304,8 +330,8 @@ R_session(t) = max( r_t , R_session(t_prev) · exp(-(t - t_prev) / τ) ),   τ �
 | `ALLOW` / `LOG` | 放行 / 放行并全量记录 |
 | `TAG` | 放行，向源站附加分数与分类，由业务自行决策 |
 | `RATE_LIMIT` | 429 + `Retry-After` |
-| `CHALLENGE` | 无感 / PoW / 交互式（自研按住验证、`pow_a11y`、可选 Turnstile；见 [09](09-interactive-challenge.md)）/ 设备证明（移动，后期）；见 [04](04-challenge-and-tokens.md) |
-| `TARPIT` | 延迟响应，拖慢确定性高的自动化，不消耗源站资源。不作为默认动作，只在 `direct_tls` 下可选。`cloudflare` profile 下不用：延迟受回源读超时 125 s 限制（超时返回 524），且占用多个访客共享的回源连接（见 [08 §2.5](08-upstream-and-cloudflare.md#25-在-cloudflare-之后失真的信号)），改用 `RATE_LIMIT` / `BLOCK` |
+| `CHALLENGE` | 无感 / PoW / 交互式（自研按住验证、`pow_a11y`、可选 Turnstile；见 [09](09-interactive-challenge.md)）/ 设备证明（移动，后期）；见 [04](04-challenge-and-tokens.md)。Phase 1 只有 `invisible` 与 `pow` |
+| `TARPIT` | 延迟响应，拖慢确定性高的自动化，不消耗源站资源。不作为默认动作，只在 `direct_tls` 下可选（Phase 1 不实现：配置包构建时对 `tarpit` 报错，D-09）。`cloudflare` profile 下不用：延迟受回源读超时 125 s 限制（超时返回 524），且占用多个访客共享的回源连接（见 [08 §2.5](08-upstream-and-cloudflare.md#25-在-cloudflare-之后失真的信号)），改用 `RATE_LIMIT` / `BLOCK` |
 | `BLOCK` | 403 通用页面 |
 
 ## 6. 会话与行为序列分析
@@ -356,7 +382,7 @@ R_session(t) = max( r_t , R_session(t_prev) · exp(-(t - t_prev) / τ) ),   τ �
 | 检测率 | 在固定误报率（≤ 0.1%）下的召回率 |
 | 人类摩擦率 | 可能为人的会话被 Challenge 的比例 < 1%；交互式 < 0.1% |
 | 误报申诉率 | 持续下降，每条复盘 |
-| 附加延迟 | p50 < 1ms，p99 < 5ms |
+| 附加延迟 | p50 < 1ms，p99 < 5ms（按 `mg_edge_added_latency_seconds{kind="site"}` 统计，不含源站连接与 `/__mg/*` 请求，I-31；[06 §5](06-policy-console-observability.md#5-日志指标与告警)） |
 | 业务指标 | 登录失败率、虚假注册量、受保护接口抓取量、短信费用 |
 
 **上线流程**：shadow ≥ 7 天 → 与现网对比（摩擦率增量、检测增益都达到门槛）→ 灰度 5% → 25% → 100%。自动回滚的触发条件：Challenge 率突增、4xx 突增、转化率下降超过阈值。

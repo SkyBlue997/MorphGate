@@ -127,12 +127,45 @@ describe("waf-skip.mg.no-flood-limit.json", () => {
   });
 });
 
+// Optional static upstream key (spec §9.2, §17): a separate rule, so the
+// secret never sits in the signals rule and can be rotated on its own.
+describe("transform-rule.upstream-key.json", () => {
+  const rule = assertRulesetShape(readJson("transform-rule.upstream-key.json"), "http_request_late_transform");
+  const headers = rule.action_parameters.headers;
+
+  it("sets only x-mg-upstream-key, from a static value, on every host", () => {
+    assert.equal(rule.action, "rewrite");
+    assert.match(rule.ref, /^mg_upstream_key_v\d+$/);
+    assert.deepEqual(Object.keys(headers), ["x-mg-upstream-key"]);
+    const op = headers["x-mg-upstream-key"];
+    assert.equal(op.operation, "set");
+    assert.equal(op.expression, undefined, "a static value, not an expression");
+    assert.equal(typeof op.value, "string");
+    assert.equal(rule.expression, "true", "a host without the header would be refused by the Edge");
+  });
+
+  it("ships a placeholder that can never be mistaken for a key", () => {
+    const { value } = headers["x-mg-upstream-key"];
+    // mgctl cf audit (check 6) fails while this prefix is deployed.
+    assert.ok(value.startsWith("REPLACE-ME"), value);
+    // Real keys are 32 random bytes as 43 base64url characters (spec §12.7).
+    assert.doesNotMatch(value, /^[A-Za-z0-9_-]{43}$/);
+  });
+
+  it("keeps the secret out of the Tier 0 signals rule", () => {
+    const signals = readJson("transform-rule.request-headers.json").rules[0];
+    assert.ok(!("x-mg-upstream-key" in signals.action_parameters.headers));
+    assert.notEqual(rule.ref, signals.ref);
+  });
+});
+
 describe("template inventory", () => {
   it("tests every Rulesets template in this directory", () => {
     const files = readdirSync(root).filter((f) => f.endsWith(".json")).sort();
     assert.deepEqual(files, [
       "cache-rule.bypass-mg.json",
       "transform-rule.request-headers.json",
+      "transform-rule.upstream-key.json",
       "waf-skip.mg.json",
       "waf-skip.mg.no-flood-limit.json",
     ]);

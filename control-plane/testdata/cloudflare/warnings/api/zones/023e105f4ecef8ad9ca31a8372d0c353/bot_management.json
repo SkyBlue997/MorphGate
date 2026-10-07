@@ -1,0 +1,10 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "fight_mode": false,
+    "sbfm_definitely_automated": "allow",
+    "ai_bots_protection": "only_on_ad_pages"
+  }
+}

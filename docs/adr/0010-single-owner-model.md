@@ -1,7 +1,7 @@
 # ADR-0010：单一所有者模型与个人版密钥保管
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：密钥保管、跨站点共享、访问记录归档）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：密钥保管、跨站点共享、访问记录归档）；2026-09-28 勘误：Phase 1 的密钥保管与审计（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-06、I-27，见文末"勘误"）
 - 相关：[01 整体架构](../01-architecture.md)、[05 AI Agent 策略](../05-ai-agent-policy.md)、[06 策略引擎、后台与审计](../06-policy-console-observability.md)、[10 威胁模型](../10-threat-model.md)、[ADR-0009](0009-ja4-only-licensing.md)
 
 ## 背景
@@ -44,3 +44,15 @@
 - 单账号被攻破的影响面更大：以 passkey、重新认证、生效延迟与审计锚点降低风险；配置签名私钥不在 Edge 上，签名主机（工作站 / 大脑 VM）失陷时按 `kid` 轮换。
 - 若将来要保护他人站点，需要新 ADR：重新引入租户隔离，并复核许可（ADR-0009）与合规范围。
 - 05 的测试授权工单与 06 的角色、发布流程按本 ADR 调整为单人流程。
+
+## 勘误（2026-09-28，Phase 1 实现）
+
+结论不变。Phase 1 的实际做法（细节见规格 [§12.6–§12.8](../impl/phase1-spec.md#126-所有者签名密钥)、[§17](../impl/phase1-spec.md#17-所有者运维手册代码之外)）：
+
+| 项 | Phase 1 |
+|---|---|
+| 工作站上的密钥（决策 5） | 不只配置签名私钥：站点凭证密钥、封装根密钥、假名化密钥与上游密钥头值都以 age（scrypt 口令，工作因子缺省 18）加密文件保存，工作站上不留明文；`mgctl keys export` 把明文经管道直接交给 Edge 主机上的 `systemd-creds encrypt`，systemd 单元用 `LoadCredentialEncrypted=` 交付 |
+| 新增密钥 | 所有者级假名化密钥 `K_pseudo`：Valkey 键与 `mg:ev` 中标识个人的部分用它做 HMAC，跨站共享的 verdict 键因此与站点无关（D-06）；上游密钥头值（1–2 个，[ADR-0004](0004-origin-protection-tunnel-aop.md)） |
+| 配置签名密钥 | `kid` 由所有者命名（如 `owner-2026`，只允许小写字母、数字与 `._-`）；Edge 的 `[trust] owner_keys` 可同时列两把公钥，轮换顺序为"先加新公钥 → 用新密钥发布 → 所有 Edge 生效后删旧公钥" |
+| 审计（决策 6） | Phase 1 为 mgctl 的本地 JSON Lines 哈希链（`mgctl audit verify` 校验）；写命令在任何写入或出站请求之前先确认日志可追加，否则不执行并返回 3（I-27）；每日锚点签名与对象存储随 mg-control 在 Phase 3 |
+| 生效延迟（决策 4） | 站点 YAML 的 `not_before` 提供可选的延迟生效；Phase 1 的"重新认证 + 确认"对应 mgctl 的口令与 `bundle publish --confirm <site>` |
