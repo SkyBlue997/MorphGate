@@ -20,7 +20,7 @@ ifeq ($(origin OPENSSL_DIR),undefined)
 endif
 
 .PHONY: help proto rust-check wasm-check go-check web-check adapters-check compose-check \
-        docs-check check dev-up dev-down edge-run edge-smoke lab-egress-check lab-e2e
+        docs-check check dev-up dev-down edge-run edge-smoke lab-egress-check lab-e2e audit
 
 help: ## List targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z][a-z0-9-]*:.*## / { printf "  %-17s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -94,3 +94,15 @@ lab-egress-check: ## Validation Lab: assert the allowlist holds at the tool and 
 # runs it in its own job with the rust job's mg-edge binary (MG_EDGE_BIN).
 lab-e2e: ## Validation Lab Phase 1 scenarios end to end on loopback (mg-edge, valkey-server, mglab)
 	scripts/lab-e2e.sh
+
+# Versions match .github/workflows/audit.yml. Needs the network (RustSec
+# advisory database, vuln.go.dev, the npm registry), so it is not part of
+# `check`; CI runs it on every pull request and weekly.
+CARGO_DENY_VERSION := 0.20.2
+GOVULNCHECK_VERSION := v1.8.0
+audit: ## Dependency audit: cargo-deny (deny.toml), govulncheck, pnpm audit
+	@command -v cargo-deny >/dev/null || { echo "audit: install cargo-deny: cargo install cargo-deny --version $(CARGO_DENY_VERSION) --locked"; exit 1; }
+	cargo deny --locked check --hide-inclusion-graph
+	cd control-plane && go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+	cd lab && go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+	pnpm -C sdk/web audit

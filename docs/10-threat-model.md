@@ -298,7 +298,7 @@ Phase 1–2 没有 Console，用 mgctl 与 vmui（或可选 Grafana）；Console
 
 | 编号 | 类别 | 威胁 | 影响 | 缓解（设计依据） | 状态 |
 |---|---|---|---|---|---|
-| SC-01 | T | 依赖投毒（crates.io、Go 模块代理、npm） | 恶意代码进入 Edge 或 SDK | 提交锁文件（`Cargo.lock`、`go.sum`、`pnpm-lock.yaml`），CI 使用 `--frozen-lockfile`；Pingora 固定 `=0.9.0`；依赖最小化；引入 cargo-deny / cargo-audit、govulncheck、依赖审计 | Phase 0 实现（锁文件、`--frozen-lockfile`、CI 检查 Pingora 固定为 `=0.9.0`）；漏洞扫描待定（Phase 1 未引入） |
+| SC-01 | T | 依赖投毒（crates.io、Go 模块代理、npm） | 恶意代码进入 Edge 或 SDK | 提交锁文件（`Cargo.lock`、`go.sum`、`pnpm-lock.yaml`），CI 使用 `--frozen-lockfile`；Pingora 固定 `=0.9.0`；依赖最小化；引入 cargo-deny / cargo-audit、govulncheck、依赖审计 | Phase 0 实现（锁文件、`--frozen-lockfile`、CI 检查 Pingora 固定为 `=0.9.0`）；Phase 1 之后：漏洞与许可证扫描已引入（`.github/workflows/audit.yml`，每个 PR 与每周运行；`make audit`）：cargo-deny（`deny.toml`：RustSec 公告与已撤回版本失败、只允许宽松许可证、只允许 crates.io 来源）、两个 Go 模块的 govulncheck、Web SDK 的 `pnpm audit` |
 | SC-02 | T | CI 流水线被篡改或第三方 Action 被劫持 | 构建产物被植入代码 | workflow 顶层 `permissions: contents: read`；checkout 使用 `persist-credentials: false`；PR 流水线（`pull_request`）不使用任何密钥；所有 Action 固定到 commit SHA（注释标出对应版本）；CI 下载的 protoc 发布包校验 SHA-256。Phase 1：CI 的 Valkey 服务容器按镜像 digest 固定 | Phase 0 实现 |
 | SC-03 | I | 密钥进入 CI 日志或仓库 | 生产密钥泄露 | CI 不持有任何生产密钥；Turnstile 只用官方测试 sitekey / secret（[09](09-interactive-challenge.md)） | 设计已覆盖 |
 | SC-04 | T | 生成代码与 `.proto` 不一致（生成代码被手改） | 数据契约在 Rust 与 Go 之间漂移 | Rust 在 `build.rs` 中生成；Go 生成代码由 `make proto` 产生并提交，CI 用同一版本的 protoc 重新生成并 `git diff --exit-code` | Phase 0 实现 |
