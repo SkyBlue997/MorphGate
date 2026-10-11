@@ -29,7 +29,8 @@ Go 模块 `morphgate/control-plane`：`mgctl`（所有者工作站上的运维 C
 | `mgctl keys gen --kid <kid> --out-dir <dir> [--insecure-test-key]` | 所有者 Ed25519 签名密钥：`<kid>.key.age`（0600）与 `<kid>.pub`（0644） | `keys.gen` |
 | `mgctl keys gen-pseudo --out <file.json.age> [--insecure-test-key]` | 假名化密钥 `K_pseudo`（Valkey 键中标识个人部分的 HMAC 密钥） | `keys.gen_pseudo` |
 | `mgctl keys gen-upstream --out <file.json.age> [--rotate] [--insecure-test-key]` | 上游密钥头值；`--rotate` 把新值放前、保留 2 个；`values[0]` 打印到 stdout，用于 Cloudflare 的 `set x-mg-upstream-key` 规则 | `keys.gen_upstream` |
-| `mgctl keys export --in <file.json.age> [--out <file> \| -]` | 解密站点 / 假名化 / 上游密钥文件；缺省写 stdout（管道到 `systemd-creds encrypt`），`--out` 写新的 0600 明文文件；所有者签名密钥不可导出 | `keys.export` |
+| `mgctl keys gen-origin --out <file.json.age> [--rotate] [--insecure-test-key]` | Edge → 源站认证密钥（`mg-origin-keys`，裁决 I-38）；`--rotate` 同上；不打印密钥，文件经 `keys export` 先给源站（接受全部值）、再给 Edge 的 `origin_keys` 凭证（用 `values[0]` 签名） | `keys.gen_origin` |
+| `mgctl keys export --in <file.json.age> [--out <file> \| -]` | 解密站点 / 假名化 / 上游 / 源站密钥文件；缺省写 stdout（管道到 `systemd-creds encrypt`），`--out` 写新的 0600 明文文件；所有者签名密钥不可导出 | `keys.export` |
 | `mgctl site keys gen --site <id> --out-dir <dir> [--date YYYYMMDD]` | `token.keys.json.age` 与 `seal.root.json.age` | `site_keys.gen` |
 | `mgctl site keys rotate-token --site <id> --file <token.keys.json.age> [--date YYYYMMDD]` | 新 token key 放前，至多保留 3 个；打印新 kid | `site_keys.rotate_token` |
 | `mgctl site keys rotate-seal --site <id> --file <seal.root.json.age> --step add\|promote\|retire [--date YYYYMMDD]` | 封装根密钥三步轮换：`add` 新根放第二位，`promote` 交换，`retire` 删除第二个 | `site_keys.rotate_seal` |
@@ -67,6 +68,7 @@ export MGCTL_PASSPHRASE_FILE=...            # 或在终端输入口令
 mgctl keys gen --kid owner-2026 --out-dir ~/mg/keys
 mgctl keys gen-pseudo --out ~/mg/keys/pseudo.key.json.age
 mgctl keys gen-upstream --out ~/mg/keys/upstream-keys.json.age
+mgctl keys gen-origin --out ~/mg/keys/origin-keys.json.age     # 可选：源站校验 MG-Origin-Auth 时
 mgctl site keys gen --site blog --out-dir ~/mg/blog
 mgctl bundle build --site-config ~/mg/blog/site.yaml --out-dir ~/mg/out
 mgctl bundle sign --in ~/mg/out/blog.sitebundle.pb --key ~/mg/keys/owner-2026.key.age --out ~/mg/out/blog.bundle

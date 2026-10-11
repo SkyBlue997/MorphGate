@@ -13,6 +13,7 @@
 //! | [`bundle`] | WP-C2 | signed bundle fetch (file / HTTP(S), ETag), Ed25519 verification, LKG store, artifact cache |
 //! | [`state`] | WP-C3 | Valkey client (pipelines, `mg_gcra`, `mg_nonce_issue`), circuit breaker, local mode |
 //! | [`events`] | WP-C4 | bounded event queues, VictoriaLogs `jsonline` batches, file sink, `mg:ev` entries |
+//! | [`origin_auth`] | I-38 | `MG-Origin-Auth`: Edge → origin HMAC signing and the reference check |
 //!
 //! The `testkit` feature adds shared test helpers (a signed-bundle builder and
 //! HTTP test server, a Valkey fixture with a fault-injecting proxy, a fake
@@ -20,6 +21,7 @@
 
 pub mod bundle;
 pub mod events;
+pub mod origin_auth;
 pub mod request;
 pub mod state;
 pub mod upstream;

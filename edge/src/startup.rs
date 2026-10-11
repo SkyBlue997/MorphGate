@@ -3,8 +3,8 @@
 //! forks, and everything `mg-edge --check-config` checks.
 //!
 //! * key files and credentials: owner public keys, `pseudo.key.json`,
-//!   `upstream-keys.json`, each site's `token.keys.json` and
-//!   `seal.root.json`, the Valkey password, the bundle client's CA /
+//!   `upstream-keys.json`, each site's `token.keys.json`, `seal.root.json`
+//!   and optional `origin-keys.json`, the Valkey password, the bundle client's CA /
 //!   certificate / key, the TLS listeners' certificates and keys;
 //! * the SDK directory (manifest, hashes, template contract);
 //! * each site's LKG bundle: verified and converted exactly like a
@@ -18,7 +18,7 @@
 use crate::config::{
     DnsResolverConfig, EdgeConfig, ListenerAuth, ListenerConfig, ListenerProfile, ValkeyMode,
 };
-use crate::creds::{CredResolver, PseudoKey, UpstreamKeys, read_public, read_secret};
+use crate::creds::{CredResolver, OriginKeys, PseudoKey, UpstreamKeys, read_public, read_secret};
 use crate::dns::ResolverSetup;
 use crate::listener::ListenerRuntime;
 use crate::sdk::SdkDir;
@@ -181,7 +181,22 @@ impl Startup {
                 .map_err(|e| format!("site {}: token_keys: {e}", s.id))?;
             check_token_file(token_file.bytes(), &s.id)
                 .map_err(|e| format!("site {}: token_keys {}: {e}", s.id, s.token_keys))?;
-            let keys = SiteKeys { seal, token_file };
+            let origin = match &s.origin_keys {
+                None => None,
+                Some(r) => {
+                    let file = read_secret(resolver, r, &mut warn)
+                        .map_err(|e| format!("site {}: origin_keys: {e}", s.id))?;
+                    Some(
+                        OriginKeys::parse(file.bytes())
+                            .map_err(|e| format!("site {}: origin_keys {r}: {e}", s.id))?,
+                    )
+                }
+            };
+            let keys = SiteKeys {
+                seal,
+                token_file,
+                origin,
+            };
 
             let (initial, current) = load_lkg(&settings, &keys, &state_dir, &owner_keys, &mut warn);
             if let (Some(vb), false) = (&current, s.bootstrap_owner_zones.is_empty()) {

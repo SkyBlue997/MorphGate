@@ -51,6 +51,7 @@
 | I-35 | 阶段 3 集成，接受为 Phase 1 的已知限制（Phase 2 复审）：(a) 选中路由之前就应答或不求值转发的请求（外部 Worker 403、监听器 403、站点不可用 503、monitor / bootstrap 下原样转发的超限请求）不做 `redact_path` 改写（10 R-12；bootstrap 与 `lkg_invalid` 时根本没有路由表）；(b) Pingora 关闭信号之后才完成的请求，其事件计为 `mg_event_dropped_total{sink="buffer"}` 丢弃（02 §2.3、10 EVT-03） | §9.11、D-31 |
 | I-36 | 2026-10-11，Phase 1 之后的增补（真实站点 monitor 期的反馈）：路由可设 `mode: monitor \| enforce`，缺省继承站点的 `monitor_only`（配置包 `Route.mode`，枚举 `RouteMode`：`INHERIT = 0`、`MONITOR = 1`、`ENFORCE = 2`；未知值使配置包无效）。它只改变 §9.9 执行层是否只记录：有效 monitor 时决定照常记入事件，`dry_run = true`、决定事件的 `monitor_only = true`，按 ALLOW 转发。§9.4 第 6 步一个请求经不同路径视图命中多条路由时，取其中**最严**的模式（`enforce` > 继承 > `monitor`）再按站点开关解析：换一种路径写法只会更严，不会降级为只记录。选中路由之前的处理（§9.3.1 协议拒绝、外部 Worker、监听器、站点不可用、bootstrap）仍只看站点级 `monitor_only`；例外是超限请求：站点 monitor 而配置包中有任一 `mode: enforce` 路由时，超限请求按 enforce 拒绝（它们跳过路由匹配，否则可以不经求值到达 enforce 路由）。`mgctl bundle verify` 列出覆盖的路由，`bundle.sign` 的审计 `diff` 记 `route_modes`。用途：整站 monitor 时先让一条测试路由 enforce，或在 enforce 站点上把新路由先放在 monitor | §3.2、§8.2、§8.3、§9.4、§9.9、I-2 |
 | I-37 | 2026-10-11，Phase 1 之后的增补（真实站点 monitor 期的反馈）：路由可设 `never_challenge: true`（配置包 `Route.never_challenge`，缺省 false）。用于挑战页会破坏的客户端，例如 `sendBeacon` 上报、只接受 JSON 的接口：这类路由上 §9.9 的 CHALLENGE 决定（规则、评分或限速器 `on_exceed: challenge` 给出的）只记录，`dry_run = true`，按 ALLOW 转发；BLOCK、RATE_LIMIT 照常执行，`fail_closed` 路由客户端 IP 未知时的 429 也不变。只允许用在 `low` / `medium` 且不 `require_clearance` 的路由上：构建器报错，Edge 转换时配置包无效。§9.4 第 6 步取所有命中路由的"与"：任一命中路由不带该标志就照常挑战，所以换一种路径写法只会更严；末尾 `/` 切换后的候选也算，精确路径要同时列出 `/x` 与 `/x/`。限速器 `on_exceed: challenge` 显式列出这样的路由时构建器报错（改用 `rate_limit` 或 `block`），不列 `routes`（覆盖全部路由）时只给警告。`mgctl bundle verify` 列出这些路由，`bundle.sign` 的审计 `diff` 记 `never_challenge` | §3.2、§8.2、§8.3、§9.4、§9.9 |
+| I-38 | 2026-10-11，Phase 1 之后的增补（真实站点反馈）：Edge → 源站认证头。`[[sites]]` 可设 `origin_keys`（凭证，§12.7 `mg-origin-keys`，与 `mg-upstream-keys` 同样的 1–2 个值，新的在前；`mgctl keys gen-origin [--rotate]` 生成）。设了它，Edge 转发给源站的每个请求最后都加上 `MG-Origin-Auth: v1;t=<unix 秒>;sig=<无填充 base64url>`，`sig = HMAC-SHA256(values[0] 解码后的 32 字节, msg)`；`msg` 依次为 `mg-origin-auth-v1`、`t`、方法、转发时的 origin-form 请求目标（路径加查询串）各一行，再按 `mg-client-ip`、`mg-request-id`、`mg-bot-score`、`mg-bot-class`、`mg-verified`、`mg-session`、`mg-tags`、`mg-reasons` 的顺序，对实际写入的头各写一行 `<名>:<值>`；每行以 `\n` 结尾。源站接受文件中的任一值、`t` 与本机时钟相差不超过 60 秒，校验通过前不信任任何 `MG-*` 头；参考实现 `adapters/origin/verify-origin-auth.mjs`，向量 `kat.json` `origin_auth`。客户端自带的 `MG-Origin-Auth` 与其他 `MG-*` 头一样在转发前删除。密钥只在 edge.toml：与 `upstream_keys` 一样是部署属性，配置包不引用它，也不会因它失效；文件格式错误时 `--check-config` 失败。不提供静态密钥头：静态值一旦进了源站日志就能被重放，HMAC 只多一次哈希。轮换时先更新源站（接受新旧两个值），再更新 Edge。用途：同一主机或同一容器网络里能连到源站的其他进程无法冒充 Edge 伪造 `MG-Client-IP` 等头 | §8.1、§9.9、§12.0、§12.7 |
 
 ## 0. 范围、决定与已落地文件
 
@@ -1307,6 +1308,7 @@ bundle_poll_seconds = 10                   # 2..300
 bootstrap = "open"                         # open | closed: behaviour before this site ever had a bundle (D-21)
 token_keys = "cred://mg-blog-token-keys"   # token.keys.json (§12.7)
 seal_root = "cred://mg-blog-seal-root"     # seal.root.json (§12.7)
+# origin_keys = "cred://mg-blog-origin-keys"  # optional: origin-keys.json (§12.7); signs MG-Origin-Auth (I-38)
 
 [bundle_client]                            # optional; used for https bundle_root
 # ca_file = "/etc/morphgate/brain-ca.pem"
@@ -1360,7 +1362,7 @@ dir = "/opt/morphgate/sdk"                 # required: manifest.json + files (§
 | `bundle_root` | 以 `/` 结尾；`file://` 目录可读；`http://` 的主机必须是回环、RFC 1918、ULA 或 100.64.0.0/10 地址（与 `metrics_listen` 同规则），否则只接受 `https://` |
 | LKG | `state_dir/bundles/<site>.bundle` 存在时，按 §9.10 完整校验（验签、解码、边界、`hosts`、监听器 profile）；任一站点的 LKG 存在但无法使用 → **失败**（退出码 1，指出站点与原因）；LKG 引用的工件不在缓存 → 警告 |
 | 凭证引用 | 形如 `cred://<name>`（`name` 为 `[A-Za-z0-9_.-]{1,64}`）解析为 `$CREDENTIALS_DIRECTORY/<name>`；也接受绝对路径。`CREDENTIALS_DIRECTORY` 未设置时使用 `cred://` 是错误。非 credential 路径的密钥文件若对组或其他用户可读，打印警告 |
-| 密钥文件 | 解析 `token_keys`、`seal_root`、`pseudo.key`、`upstream_keys`（格式 §12.7，未知字段报错），`site` 字段必须与站点 id 一致 |
+| 密钥文件 | 解析 `token_keys`、`seal_root`、`pseudo.key`、`upstream_keys`、`origin_keys`（格式 §12.7，未知字段报错），`site` 字段必须与站点 id 一致 |
 | SDK | `sdk/manifest.json` 存在、schema 有效、列出的文件存在且 SHA-256 一致；挑战页模板占位符完整（§11.2） |
 
 `deploy/systemd/edge.toml.example`、`edge/config/edge.dev.toml`、`scripts/edge-smoke.sh`、`edge/tests/shipped_configs.rs` 由 WP-E1a 同步更新；systemd 单元增加 `LoadCredential=`（或 `LoadCredentialEncrypted=`）示例行与 `StateDirectory=morphgate` 的使用说明，并把 `ExecReload=` 的第一行改为 `mg-edge --check-config`（检查失败时不向运行中的进程发 `SIGQUIT`，旧进程继续服务）。
@@ -1860,7 +1862,7 @@ return out
 
 | 最终动作 | Edge 行为 |
 |---|---|
-| ALLOW / TAG / LOG | 转发源站。`upstream_request_filter`：`Host` 设为 §9.4 的规范化主机名；删除 §9.3 的逐跳头与头族；写入 `MG-Client-IP`（客户端 IP，未知时为字面量 `unknown`）、`MG-Request-Id`；`origin_headers.scores` 时 `MG-Bot-Score`（0–100）、`MG-Bot-Class`（小写 wire 名）、`MG-Verified`（已验证爬虫：`crawler:<operator>`）；`origin_headers.session` 且有会话时 `MG-Session`；TAG 时 `MG-Tags: a,b`；`origin_headers.reasons` 时 `MG-Reasons`（`top_reasons` 逗号分隔）。`X-Forwarded-For` 改写为单值客户端 IP（未知时删除）；`X-Forwarded-Proto`：`cloudflare` 取 `cf-visitor` 的 scheme，`direct_tls` 为 `https`。认证通过的 `cloudflare` 请求原样转发 `CF-IPCountry`（仅 `location_headers`）、`Cf-Ray`、`CF-Visitor`，以及**客户端 IP 已知时**的 `CF-Connecting-IP`（未知或非法时不转发）。`response_filter` 删除源站响应中的 `MG-*` 与 `MG_*` 头 |
+| ALLOW / TAG / LOG | 转发源站。`upstream_request_filter`：`Host` 设为 §9.4 的规范化主机名；删除 §9.3 的逐跳头与头族；写入 `MG-Client-IP`（客户端 IP，未知时为字面量 `unknown`）、`MG-Request-Id`；`origin_headers.scores` 时 `MG-Bot-Score`（0–100）、`MG-Bot-Class`（小写 wire 名）、`MG-Verified`（已验证爬虫：`crawler:<operator>`）；`origin_headers.session` 且有会话时 `MG-Session`；TAG 时 `MG-Tags: a,b`；`origin_headers.reasons` 时 `MG-Reasons`（`top_reasons` 逗号分隔）。`X-Forwarded-For` 改写为单值客户端 IP（未知时删除）；`X-Forwarded-Proto`：`cloudflare` 取 `cf-visitor` 的 scheme，`direct_tls` 为 `https`。认证通过的 `cloudflare` 请求原样转发 `CF-IPCountry`（仅 `location_headers`）、`Cf-Ray`、`CF-Visitor`，以及**客户端 IP 已知时**的 `CF-Connecting-IP`（未知或非法时不转发）。站点设了 `origin_keys` 时最后加上 `MG-Origin-Auth`（I-38）。`response_filter` 删除源站响应中的 `MG-*` 与 `MG_*` 头 |
 | CHALLENGE | 客户端 IP 未知 → 429 + `Retry-After: 5`，不签发 C（D-23），事件中的决定保持引擎的（I-33）。`cloudflare` 且访客 scheme 为 http、方法为 GET / HEAD → 308 到 `https://<host><path>[?query]`，计 `mg_https_redirect_total{site}`（D-32；其他方法照常挑战）。否则 403：导航请求（`sec-fetch-mode: navigate`，或没有该头且 `accept` 含 `text/html`）返回挑战页（§10.2），其余返回 JSON。C 按 §6.2 签发、难度按 §6.3；`ret`：GET / HEAD 导航为原始 `path[?query]`（校验失败或 > 512 字节时用 `fallback_ret`），其他方法为 `fallback_ret`。计 `mg_challenge_total{type, provider="none", result="issued"}` |
 | RATE_LIMIT | 429 + `Retry-After`；导航请求返回简短 HTML（中英文"请求过多"+ request_id），否则 `{"error":"mg_rate_limited","retry_after":N,"request_id":"…"}` |
 | BLOCK | 403；导航请求返回通用阻断页（只含 request_id 与"如有疑问请联系站点所有者"），否则 `{"error":"mg_blocked","request_id":"…"}` |
@@ -2233,7 +2235,11 @@ Edge 读取的是下面的明文 JSON（systemd credential 或 0600 文件）；
 {"v": 1, "kind": "mg-upstream-keys", "values": ["<43-char b64url>", "<previous value>"], "created_at": "2026-09-27T10:00:00Z"}
 ```
 
-`token.keys.json` 新的在前，1–3 个，kid 唯一；`kid` **必须**为 `<site>-t-<YYYYMMDD>`（同日重复时加 `-2` 等后缀，I-14）。`seal.root.json` 的 `roots` 1–2 个（D-30），`roots[0]` 封装；`root_id` **必须**为 `<site>-r-<YYYYMMDD>`（同样的后缀规则），且唯一。`mg-upstream-keys` 1–2 个值，`values[0]` 写入 Cloudflare Tier 0 规则的静态值。所有字段必填（`created_at` 为 RFC 3339），未知字段拒绝。有效与无效样例：`testdata/phase1/keys/`。
+```json
+{"v": 1, "kind": "mg-origin-keys", "values": ["<43-char b64url>", "<previous value>"], "created_at": "2026-10-11T10:00:00Z"}
+```
+
+`token.keys.json` 新的在前，1–3 个，kid 唯一；`kid` **必须**为 `<site>-t-<YYYYMMDD>`（同日重复时加 `-2` 等后缀，I-14）。`seal.root.json` 的 `roots` 1–2 个（D-30），`roots[0]` 封装；`root_id` **必须**为 `<site>-r-<YYYYMMDD>`（同样的后缀规则），且唯一。`mg-upstream-keys` 1–2 个值，`values[0]` 写入 Cloudflare Tier 0 规则的静态值。`mg-origin-keys`（I-38）格式相同，`values[0]` 在 Edge 上签 `MG-Origin-Auth`，源站持有同一文件、接受每个值。所有字段必填（`created_at` 为 RFC 3339），未知字段拒绝。有效与无效样例：`testdata/phase1/keys/`。
 
 ### 12.8 审计日志
 

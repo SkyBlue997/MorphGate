@@ -24,6 +24,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `lab/` | Go module: Validation Lab (`internal/guard` allowlist, `internal/replay`, `internal/events` for the acceptance checks, `cmd/mglab`; `testdata/scenarios` and `testdata/e2e` for `make lab-e2e`; `Dockerfile` for the isolated compose network) |
 | `sdk/web/` | TypeScript Web SDK assets (`@ermiaodada/morphgate-web-sdk`, pnpm, esbuild, vitest); npm packing checks the seven-file archive and an offline consumer installation |
 | `adapters/cloudflare/` | Transform Rule, Cache Rule, WAF Skip, Snippet and Worker templates for the owner's zone; its README is the owner's setup checklist |
+| `adapters/origin/` | Reference `MG-Origin-Auth` check (Node, `node:crypto` only) that the owner's origin copies to verify Edge → origin requests (spec I-38) |
 | `deploy/intel/` | Owner-maintained crawler registry source (`crawler-registry.yaml`), input to `mgctl crawler sync` |
 | `deploy/compose/` | Dev environment: Valkey, PostgreSQL, VictoriaMetrics, VictoriaLogs (`vl-main` 30d, `vl-short` 7d), mock origin; optional profiles `grafana`, `tunnel` (cloudflared) and `lab` (Validation Lab on an internal network) |
 | `deploy/systemd/` | `mg-edge.service` (Pingora graceful upgrade via `systemctl reload`) and `edge.toml.example`, kept in sync by `edge/tests/shipped_configs.rs` |
@@ -38,7 +39,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `make rust-check` | `cargo fmt --check`, `clippy -D warnings`, `cargo test` for the workspace. Valkey-backed tests use `MG_TEST_VALKEY_URL`, else start a throwaway `valkey-server` from `PATH`, else skip; `MG_REQUIRE_VALKEY=1` (set in CI) turns a skip into a failure. Use the shared `target/` only |
 | `make wasm-check` | `cargo check -p mg-core --target wasm32-unknown-unknown`; skipped locally when the target is not installed (Homebrew rustc), always run in CI |
 | `make go-check` / `make web-check` | `go vet` + `go test` in `control-plane` and `lab`; Web SDK install + `check` script |
-| `make adapters-check` | Cloudflare adapter templates: `node --test` suite + Worker typecheck |
+| `make adapters-check` | Cloudflare adapter templates and the origin's `MG-Origin-Auth` reference check: `node --test` suites + Worker typecheck |
 | `make proto` | Regenerate Go protobuf code (commit the result; CI fails on drift) |
 | `make compose-check` / `make docs-check` | Validate the compose file; check relative links and anchors in root project Markdown files and docs/ |
 | `make dev-up` / `make dev-down` | Start / stop the dev environment (`COMPOSE_PROFILES=grafana,tunnel,lab` for the optional services) |

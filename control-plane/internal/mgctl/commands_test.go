@@ -247,6 +247,39 @@ func TestPseudoKeyAndVerdictKey(t *testing.T) {
 	e.expect(cli.ExitFailed, "already exists", "keys", "gen-pseudo", "--out", e.path("pseudo.key.json.age"), "--insecure-test-key")
 }
 
+// I-38: origin keys rotate like upstream keys, print no key material, and
+// export as a file the Edge and the origin both read.
+func TestOriginKeys(t *testing.T) {
+	e := newTestEnv(t)
+	out := e.must("keys", "gen-origin", "--out", e.path("origin.json.age"), "--insecure-test-key")
+	if !strings.Contains(out, "origin first") {
+		t.Errorf("stdout %q", out)
+	}
+	var f struct {
+		Kind   string
+		Values []string
+	}
+	json.Unmarshal(e.export(e.path("origin.json.age")), &f)
+	if f.Kind != "mg-origin-keys" || len(f.Values) != 1 || strings.Contains(out, f.Values[0]) {
+		t.Fatalf("file %+v, stdout %q", f, out)
+	}
+	first := f.Values[0]
+	e.expect(cli.ExitFailed, "already exists", "keys", "gen-origin", "--out", e.path("origin.json.age"), "--insecure-test-key")
+	e.must("keys", "gen-origin", "--out", e.path("origin.json.age"), "--rotate", "--insecure-test-key")
+	json.Unmarshal(e.export(e.path("origin.json.age")), &f)
+	if len(f.Values) != 2 || f.Values[1] != first {
+		t.Errorf("after rotation %v", f.Values)
+	}
+	for _, r := range e.records() {
+		if bytes.Contains(r.Diff, []byte(first)) {
+			t.Errorf("audit record %s contains a key", r.Action)
+		}
+	}
+	// An upstream key file is not rotated as origin keys.
+	e.must("keys", "gen-upstream", "--out", e.path("up.json.age"), "--insecure-test-key")
+	e.expect(cli.ExitFailed, "mg-origin-keys", "keys", "gen-origin", "--out", e.path("up.json.age"), "--rotate", "--insecure-test-key")
+}
+
 func TestUpstreamKeys(t *testing.T) {
 	e := newTestEnv(t)
 	out := e.must("keys", "gen-upstream", "--out", e.path("up.json.age"), "--insecure-test-key")

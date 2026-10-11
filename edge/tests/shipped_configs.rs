@@ -38,6 +38,7 @@ fn credential_names(cfg: &EdgeConfig) -> BTreeSet<String> {
     for s in &cfg.sites {
         refs.push(&s.token_keys);
         refs.push(&s.seal_root);
+        refs.extend(s.origin_keys.iter());
     }
     refs.into_iter()
         .filter_map(|r| match r {
@@ -76,6 +77,7 @@ impl Sandbox {
             ("mg-blog-token-keys", "token.keys.json"),
             ("mg-blog-seal-root", "seal.root.json"),
             ("mg-pseudo-key", "pseudo.key.json"),
+            ("mg-blog-origin-keys", "origin-keys.json"),
         ] {
             std::fs::copy(repo("testdata/phase1/keys").join(src), creds.join(name)).unwrap();
         }
@@ -256,6 +258,40 @@ fn systemd_command_lines_are_accepted() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+/// The commented `origin_keys` lines (I-38) of the example and the unit
+/// work together once uncommented.
+#[test]
+fn optional_origin_keys_lines_match_when_enabled() {
+    let unit = std::fs::read_to_string(repo(UNIT)).unwrap();
+    let example = std::fs::read_to_string(repo(EXAMPLE)).unwrap();
+    let unit_on = unit.replace(
+        "# LoadCredentialEncrypted=mg-blog-origin-keys:",
+        "LoadCredentialEncrypted=mg-blog-origin-keys:",
+    );
+    let example_on = example.replace("# origin_keys = ", "origin_keys = ");
+    assert_ne!(unit_on, unit);
+    assert_ne!(example_on, example);
+    let sandbox = Sandbox::new(&example_on);
+    let cfg = EdgeConfig::load(&sandbox.config).unwrap();
+    assert!(cfg.sites[0].origin_keys.is_some());
+    let loaded: BTreeSet<String> = unit_values(&unit_on, "LoadCredentialEncrypted")
+        .iter()
+        .map(|v| v.split(':').next().unwrap().to_owned())
+        .collect();
+    assert_eq!(credential_names(&cfg), loaded);
+    let out = Command::new(EDGE_BIN)
+        .args(["--check-config", "--config"])
+        .arg(&sandbox.config)
+        .env("CREDENTIALS_DIRECTORY", &sandbox.creds)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]

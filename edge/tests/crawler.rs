@@ -256,6 +256,7 @@ fn verifier_survives_reloads_with_the_same_registry() {
     let keys = SiteKeys {
         seal: mg_challenge::SealKeys::from_key_file(&seal, "blog").unwrap(),
         token_file: read_secret(&CredResolver::with_dir(None), &token, &mut |_| {}).unwrap(),
+        origin: None,
     };
     let hosts = settings.hosts.clone();
     let site = Site::new(settings, keys, SiteRuntime::bootstrap(BootstrapMode::Open));

@@ -57,9 +57,9 @@ web-check: ## Web SDK: pnpm install --frozen-lockfile, then its check script
 	pnpm -C sdk/web run check
 
 # The Worker typecheck borrows sdk/web's pinned TypeScript, hence the install.
-adapters-check: ## Cloudflare adapter templates: node:test suite + Worker typecheck
+adapters-check: ## Cloudflare adapter templates and the origin's MG-Origin-Auth check: node:test suites + Worker typecheck
 	pnpm -C sdk/web install --frozen-lockfile
-	node --test adapters/cloudflare/test/adapters.test.mjs
+	node --test adapters/cloudflare/test/adapters.test.mjs adapters/origin/test/verify-origin-auth.test.mjs
 	pnpm -C sdk/web exec tsc -p ../../adapters/cloudflare/worker/tsconfig.json
 
 compose-check: ## Validate the dev docker-compose file (no Docker daemon needed)

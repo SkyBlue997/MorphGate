@@ -373,6 +373,8 @@ impl TestEnv {
             ("mg-blog-seal-root", "seal.root.json"),
             ("mg-pseudo-key", "pseudo.key.json"),
             ("mg-upstream-keys", "upstream-keys.rotated.json"),
+            ("mg-blog-origin-keys", "origin-keys.rotated.json"),
+            ("mg-wrong-origin-keys", "upstream-keys.json"),
         ] {
             let to = creds.join(name);
             std::fs::copy(repo("testdata/phase1/keys").join(src), &to).unwrap();

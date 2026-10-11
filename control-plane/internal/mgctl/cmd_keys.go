@@ -2,8 +2,10 @@ package mgctl
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"morphgate/control-plane/internal/cli"
 	"morphgate/control-plane/internal/keys"
@@ -12,7 +14,7 @@ import (
 // runKeys dispatches `mgctl keys <subcommand>` (§14.1).
 func (r *runner) runKeys(args []string) int {
 	if len(args) == 0 {
-		r.errf("keys", "expected a subcommand: gen | gen-pseudo | gen-upstream | export")
+		r.errf("keys", "expected a subcommand: gen | gen-pseudo | gen-upstream | gen-origin | export")
 		return cli.ExitUsage
 	}
 	switch args[0] {
@@ -22,10 +24,12 @@ func (r *runner) runKeys(args []string) int {
 		return r.keysGenPseudo(args[1:])
 	case "gen-upstream":
 		return r.keysGenUpstream(args[1:])
+	case "gen-origin":
+		return r.keysGenOrigin(args[1:])
 	case "export":
 		return r.keysExport(args[1:])
 	}
-	r.errf("keys", "unknown subcommand %q (expected gen | gen-pseudo | gen-upstream | export)", args[0])
+	r.errf("keys", "unknown subcommand %q (expected gen | gen-pseudo | gen-upstream | gen-origin | export)", args[0])
 	return cli.ExitUsage
 }
 
@@ -127,46 +131,73 @@ func (r *runner) keysGenPseudo(args []string) int {
 // keysGenUpstream: mgctl keys gen-upstream --out <file.json.age> [--rotate] [--insecure-test-key]
 // Prints values[0], the static value of the Cloudflare rule that sets x-mg-upstream-key.
 func (r *runner) keysGenUpstream(args []string) int {
-	const cmd = "keys gen-upstream"
+	plain, code := r.keysGenValues("keys gen-upstream", "upstream-keys.json.age", "keys.gen_upstream", "upstream_keys",
+		keys.GenerateUpstreamKeys, args)
+	if plain == nil {
+		return code
+	}
+	value, _ := keys.UpstreamPrimaryValue(plain)
+	fmt.Fprintln(r.env.Stderr, "the value below goes into the Cloudflare rule that sets x-mg-upstream-key")
+	fmt.Fprintln(r.env.Stdout, value)
+	return cli.ExitOK
+}
+
+// keysGenOrigin: mgctl keys gen-origin --out <file.json.age> [--rotate] [--insecure-test-key]
+// The MG-Origin-Auth HMAC keys (spec I-38). Prints no key material: the
+// file goes to the Edge (origin_keys) and to the origin with keys export.
+func (r *runner) keysGenOrigin(args []string) int {
+	plain, code := r.keysGenValues("keys gen-origin", "origin-keys.json.age", "keys.gen_origin", "origin_keys",
+		keys.GenerateOriginKeys, args)
+	if plain == nil {
+		return code
+	}
+	fmt.Fprintln(r.env.Stdout, "export it to the origin first (it accepts every value), then to the Edge's origin_keys credential (values[0] signs)")
+	return cli.ExitOK
+}
+
+// keysGenValues creates or rotates a values-style key file (§12.7) and
+// returns its plaintext, or nil and the exit code.
+func (r *runner) keysGenValues(cmd, example, action, resource string,
+	generate func([]byte, time.Time, io.Reader) ([]byte, error), args []string) ([]byte, int) {
 	fl := r.flags(cmd)
-	out := fl.String("out", "", "upstream key file, e.g. upstream-keys.json.age")
+	out := fl.String("out", "", "key file, e.g. "+example)
 	rotate := fl.Bool("rotate", false, "rotate the existing file: new value first, keep the previous one")
 	insecure := fl.Bool("insecure-test-key", false, "allow MGCTL_AGE_WORK_FACTOR below 18 (tests only)")
 	if !r.parse(fl, args) || !r.required(cmd, "out", *out) {
-		return cli.ExitUsage
+		return nil, cli.ExitUsage
 	}
 	wf, ok := r.workFactor(cmd, *insecure)
 	if !ok {
-		return cli.ExitUsage
+		return nil, cli.ExitUsage
 	}
 	if !*rotate && !r.mustNotExist(cmd, *out) {
-		return cli.ExitFailed
+		return nil, cli.ExitFailed
 	}
 	if *rotate {
 		if _, err := os.Stat(*out); err != nil {
 			r.errf(cmd, "--rotate: %v", err)
-			return cli.ExitFailed
+			return nil, cli.ExitFailed
 		}
 	}
 	if !r.preflightAudit(cmd) {
-		return cli.ExitInternal
+		return nil, cli.ExitInternal
 	}
 	pass, ok := r.passphrase(cmd, !*rotate)
 	if !ok {
-		return cli.ExitUsage
+		return nil, cli.ExitUsage
 	}
 	var previous []byte
 	if *rotate {
 		var err error
 		if previous, err = keys.DecryptFile(*out, pass); err != nil {
 			r.errf(cmd, "%v", err)
-			return cli.ExitFailed
+			return nil, cli.ExitFailed
 		}
 	}
-	plain, err := keys.GenerateUpstreamKeys(previous, r.env.Now(), randReader)
+	plain, err := generate(previous, r.env.Now(), randReader)
 	if err != nil {
 		r.errf(cmd, "%v", err)
-		return cli.ExitFailed
+		return nil, cli.ExitFailed
 	}
 	if *rotate {
 		err = keys.ReEncryptFile(*out, plain, pass, wf)
@@ -175,22 +206,20 @@ func (r *runner) keysGenUpstream(args []string) int {
 	}
 	if err != nil {
 		r.errf(cmd, "%v", err)
-		return exitFor(err)
+		return nil, exitFor(err)
 	}
-	value, _ := keys.UpstreamPrimaryValue(plain)
 	values := 1
 	if previous != nil {
 		values = 2
 	}
 	if !r.record(cmd, cli.AuditEvent{
-		Action: "keys.gen_upstream", ResourceType: "upstream_keys", ResourceID: filepath.Base(*out),
+		Action: action, ResourceType: resource, ResourceID: filepath.Base(*out),
 		Diff: workFactorDiff(map[string]any{"rotate": *rotate, "values": values}, wf, *insecure),
 	}) {
-		return cli.ExitInternal
+		return nil, cli.ExitInternal
 	}
-	fmt.Fprintf(r.env.Stderr, "wrote %s; the value below goes into the Cloudflare rule that sets x-mg-upstream-key\n", *out)
-	fmt.Fprintln(r.env.Stdout, value)
-	return cli.ExitOK
+	fmt.Fprintf(r.env.Stderr, "wrote %s\n", *out)
+	return plain, cli.ExitOK
 }
 
 // keysExport: mgctl keys export --in <file.json.age> [--out <file> | -]
@@ -263,6 +292,8 @@ func resourceTypeOf(kind string) string {
 		return "pseudo_key"
 	case keys.KindUpstreamKeys:
 		return "upstream_keys"
+	case keys.KindOriginKeys:
+		return "origin_keys"
 	}
 	return "key"
 }

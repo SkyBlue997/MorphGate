@@ -295,6 +295,10 @@ pub struct SiteConfig {
     pub token_keys: CredRef,
     /// `seal.root.json` (§12.7).
     pub seal_root: CredRef,
+    /// `origin-keys.json` (§12.7, I-38); when set, every forwarded request
+    /// carries `MG-Origin-Auth`.
+    #[serde(default)]
+    pub origin_keys: Option<CredRef>,
 }
 
 fn default_bundle_timeout_ms() -> u64 {
@@ -980,6 +984,17 @@ dir = "/opt/morphgate/sdk"
         assert_eq!(
             s.token_keys,
             CredRef::Credential("mg-blog-token-keys".into())
+        );
+        assert_eq!(s.origin_keys, None);
+        let with_origin = VALID.replace(
+            "seal_root = \"cred://mg-blog-seal-root\"",
+            "seal_root = \"cred://mg-blog-seal-root\"\norigin_keys = \"cred://mg-blog-origin-keys\"",
+        );
+        assert_ne!(with_origin, VALID);
+        let cfg2 = EdgeConfig::from_toml_str(&with_origin).unwrap();
+        assert_eq!(
+            cfg2.sites[0].origin_keys,
+            Some(CredRef::Credential("mg-blog-origin-keys".into()))
         );
         assert_eq!(cfg.bundle_client, BundleClientConfig::default());
         assert_eq!(cfg.events, EventsConfig::default());

@@ -87,6 +87,10 @@ on_lkg_invalid = "closed"              # LKG present but unusable: closed (503, 
 # bootstrap_owner_zones = ["example.com"]   # CF-Worker zones trusted before the first bundle
 token_keys = "cred://mg-blog-token-keys"
 seal_root  = "cred://mg-blog-seal-root"
+# Optional (spec I-38): sign every forwarded request with MG-Origin-Auth so the
+# origin can tell the MG-* headers came from this Edge (mgctl keys gen-origin;
+# the origin keeps a copy of the same file). Add its LoadCredentialEncrypted=.
+# origin_keys = "cred://mg-blog-origin-keys"
 
 [bundle_client]                        # used for https:// bundle roots
 # ca_file = "/etc/morphgate/brain-ca.pem"
