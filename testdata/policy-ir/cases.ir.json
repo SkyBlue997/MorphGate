@@ -76,6 +76,106 @@
       "ir": "CAESPTI7Ch1KGwgBEgwSCnJvdXRlLm5hbWUaCQoHIgVsb2dpbgoaKhgKFhIUaWRlbnRpdHkucHJvb2YudmFsaWQaFGlkZW50aXR5LnByb29mLnZhbGlkGgpyb3V0ZS5uYW1lIAs="
     },
     {
+      "name": "p2.navigation.exempt",
+      "ir": "CAESERIPaHR0cC5uYXZpZ2F0aW9uGg9odHRwLm5hdmlnYXRpb24gAQ=="
+    },
+    {
+      "name": "p2.navigation.post",
+      "ir": "CAESMzIxChESD2h0dHAubmF2aWdhdGlvbgocShoIARIMEgpyZXEubWV0aG9kGggKBiIEUE9TVBoPaHR0cC5uYXZpZ2F0aW9uGgpyZXEubWV0aG9kIAY="
+    },
+    {
+      "name": "p2.navigation.api",
+      "ir": "CAESERIPaHR0cC5uYXZpZ2F0aW9uGg9odHRwLm5hdmlnYXRpb24gAQ=="
+    },
+    {
+      "name": "p2.navigation.has",
+      "ir": "CAESERoPaHR0cC5uYXZpZ2F0aW9uGg9odHRwLm5hdmlnYXRpb24gAQ=="
+    },
+    {
+      "name": "p2.proof.exempt-valid-unknown",
+      "ir": "CAESGioYChYSFGlkZW50aXR5LnByb29mLnZhbGlkGhRpZGVudGl0eS5wcm9vZi52YWxpZCAC"
+    },
+    {
+      "name": "p2.proof.exempt-present-unknown",
+      "ir": "CAESGBIWaWRlbnRpdHkucHJvb2YucHJlc2VudBoWaWRlbnRpdHkucHJvb2YucHJlc2VudCAB"
+    },
+    {
+      "name": "p2.proof.exempt-has",
+      "ir": "CAESEBoOaWRlbnRpdHkucHJvb2YaDmlkZW50aXR5LnByb29mIAE="
+    },
+    {
+      "name": "p2.proof.exempt-has-present",
+      "ir": "CAESGBoWaWRlbnRpdHkucHJvb2YucHJlc2VudBoWaWRlbnRpdHkucHJvb2YucHJlc2VudCAB"
+    },
+    {
+      "name": "p2.proof.exempt-guarded",
+      "ir": "CAESMDouChQqEgoQGg5pZGVudGl0eS5wcm9vZgoWEhRpZGVudGl0eS5wcm9vZi52YWxpZBoOaWRlbnRpdHkucHJvb2YaFGlkZW50aXR5LnByb29mLnZhbGlkIAQ="
+    },
+    {
+      "name": "p2.proof.exempt-or-route",
+      "ir": "CAESPTo7Ch1KGwgBEgwSCnJvdXRlLm5hbWUaCQoHIgVsb2dpbgoaKhgKFhIUaWRlbnRpdHkucHJvb2YudmFsaWQaFGlkZW50aXR5LnByb29mLnZhbGlkGgpyb3V0ZS5uYW1lIAs="
+    },
+    {
+      "name": "p2.proof.post-nav-absent",
+      "ir": "CAESPDI6ChwqGgoYEhZpZGVudGl0eS5wcm9vZi5wcmVzZW50ChoqGAoWEhRpZGVudGl0eS5wcm9vZi52YWxpZBoWaWRlbnRpdHkucHJvb2YucHJlc2VudBoUaWRlbnRpdHkucHJvb2YudmFsaWQgBQ=="
+    },
+    {
+      "name": "p2.proof.post-nav-has",
+      "ir": "CAESFhoUaWRlbnRpdHkucHJvb2YudmFsaWQaFGlkZW50aXR5LnByb29mLnZhbGlkIAE="
+    },
+    {
+      "name": "p2.proof.post-nav-mismatch",
+      "ir": "CAESODI2ChgSFmlkZW50aXR5LnByb29mLnByZXNlbnQKGioYChYSFGlkZW50aXR5LnByb29mLnZhbGlkGhZpZGVudGl0eS5wcm9vZi5wcmVzZW50GhRpZGVudGl0eS5wcm9vZi52YWxpZCAE"
+    },
+    {
+      "name": "p2.proof.api-valid",
+      "ir": "CAESUzJRChgSFmlkZW50aXR5LnByb29mLnByZXNlbnQKFhIUaWRlbnRpdHkucHJvb2YudmFsaWQKHSobChkSF2lkZW50aXR5LnByb29mLnJlcGxheWVkGhZpZGVudGl0eS5wcm9vZi5wcmVzZW50GhdpZGVudGl0eS5wcm9vZi5yZXBsYXllZBoUaWRlbnRpdHkucHJvb2YudmFsaWQgBQ=="
+    },
+    {
+      "name": "p2.proof.api-mismatch",
+      "ir": "CAESODI2ChgSFmlkZW50aXR5LnByb29mLnByZXNlbnQKGioYChYSFGlkZW50aXR5LnByb29mLnZhbGlkGhZpZGVudGl0eS5wcm9vZi5wcmVzZW50GhRpZGVudGl0eS5wcm9vZi52YWxpZCAE"
+    },
+    {
+      "name": "p2.proof.replay-mismatch",
+      "ir": "CAESODI2ChgSFmlkZW50aXR5LnByb29mLnByZXNlbnQKGioYChYSFGlkZW50aXR5LnByb29mLnZhbGlkGhZpZGVudGl0eS5wcm9vZi5wcmVzZW50GhRpZGVudGl0eS5wcm9vZi52YWxpZCAE"
+    },
+    {
+      "name": "p2.proof.replayed",
+      "ir": "CAESGRIXaWRlbnRpdHkucHJvb2YucmVwbGF5ZWQaF2lkZW50aXR5LnByb29mLnJlcGxheWVkIAE="
+    },
+    {
+      "name": "p2.proof.replayed-api",
+      "ir": "CAESGRIXaWRlbnRpdHkucHJvb2YucmVwbGF5ZWQaF2lkZW50aXR5LnByb29mLnJlcGxheWVkIAE="
+    },
+    {
+      "name": "p2.proof.phase1-context",
+      "ir": "CAESGRIXaWRlbnRpdHkucHJvb2YucmVwbGF5ZWQaF2lkZW50aXR5LnByb29mLnJlcGxheWVkIAE="
+    },
+    {
+      "name": "p2.token.bound",
+      "ir": "CAESFhIUaWRlbnRpdHkudG9rZW4uYm91bmQaFGlkZW50aXR5LnRva2VuLmJvdW5kIAE="
+    },
+    {
+      "name": "p2.token.unbound",
+      "ir": "CAESFhIUaWRlbnRpdHkudG9rZW4uYm91bmQaFGlkZW50aXR5LnRva2VuLmJvdW5kIAE="
+    },
+    {
+      "name": "p2.token.level-age-fresh",
+      "ir": "CAESWjJYCi1KKwgBEhYSFGlkZW50aXR5LnRva2VuLmxldmVsGg8KDSILaW50ZXJhY3RpdmUKJ0olCAMSGhIYaWRlbnRpdHkudG9rZW4ubGV2ZWxfYWdlGgUKAxDYBBoUaWRlbnRpdHkudG9rZW4ubGV2ZWwaGGlkZW50aXR5LnRva2VuLmxldmVsX2FnZSAM"
+    },
+    {
+      "name": "p2.token.level-age-old",
+      "ir": "CAESJ0olCAMSGhIYaWRlbnRpdHkudG9rZW4ubGV2ZWxfYWdlGgUKAxCQHBoYaWRlbnRpdHkudG9rZW4ubGV2ZWxfYWdlIAM="
+    },
+    {
+      "name": "p2.token.level-age-vs-age",
+      "ir": "CAESNko0CAUSGhIYaWRlbnRpdHkudG9rZW4ubGV2ZWxfYWdlGhQSEmlkZW50aXR5LnRva2VuLmFnZRoSaWRlbnRpdHkudG9rZW4uYWdlGhhpZGVudGl0eS50b2tlbi5sZXZlbF9hZ2UgAw=="
+    },
+    {
+      "name": "p2.token.level-age-zero",
+      "ir": "CAESRjJECiZKJAgBEhoSGGlkZW50aXR5LnRva2VuLmxldmVsX2FnZRoECgIQAAoaKhgKFhIUaWRlbnRpdHkudG9rZW4uYm91bmQaFGlkZW50aXR5LnRva2VuLmJvdW5kGhhpZGVudGl0eS50b2tlbi5sZXZlbF9hZ2UgBg=="
+    },
+    {
       "name": "docs06.login-high-risk.match",
       "ir": "CAESOzI5Ch1KGwgBEgwSCnJvdXRlLm5hbWUaCQoHIgVsb2dpbgoYShYIBhIMEgpyaXNrLnNjb3JlGgQKAhA8GgpyaXNrLnNjb3JlGgpyb3V0ZS5uYW1lIAw="
     },

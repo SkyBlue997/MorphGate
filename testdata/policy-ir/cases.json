@@ -190,6 +190,377 @@
         "identity.agent"
       ]
     },
+    "cf_p2_exempt_nav": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": [],
+          "navigation": true
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "interactive",
+            "age": 300,
+            "bound": true,
+            "level_age": 300
+          },
+          "proof": {
+            "valid": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.agent",
+        "identity.proof"
+      ]
+    },
+    "cf_p2_post_nav": {
+      "input": {
+        "req": {
+          "method": "POST",
+          "host": "example.com",
+          "path": "/account/login",
+          "query": "next=%2F",
+          "headers": {
+            "accept": "text/html",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "web"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": [],
+          "navigation": true
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "invisible",
+            "age": 120,
+            "bound": true,
+            "level_age": 120
+          },
+          "proof": {
+            "present": false,
+            "valid": false,
+            "replayed": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "login",
+          "sensitivity": "critical",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.agent"
+      ]
+    },
+    "cf_p2_api_proof": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/api/orders",
+          "query": "",
+          "headers": {
+            "accept": "application/json",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "api"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": [],
+          "navigation": false
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "pow",
+            "age": 1500,
+            "bound": true,
+            "level_age": 5400
+          },
+          "proof": {
+            "present": true,
+            "valid": true,
+            "replayed": false
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "api",
+          "sensitivity": "medium",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.agent"
+      ]
+    },
+    "cf_p2_api_replay": {
+      "input": {
+        "req": {
+          "method": "GET",
+          "host": "example.com",
+          "path": "/api/orders",
+          "query": "",
+          "headers": {
+            "accept": "application/json",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+          },
+          "channel": "api"
+        },
+        "net": {
+          "ip": "203.0.113.7",
+          "asn": 64500,
+          "country": "HK",
+          "conn_type": "unknown",
+          "tor": false
+        },
+        "upstream": {
+          "profile": "cloudflare",
+          "authenticated": true,
+          "auth_method": "loopback"
+        },
+        "tls": {
+          "ja4": {
+            "value": "",
+            "source": "",
+            "authenticated": false
+          },
+          "version": ""
+        },
+        "http": {
+          "version": "HTTP/2",
+          "header_order": [],
+          "navigation": false
+        },
+        "edge_tls": {
+          "version": "TLSv1.3",
+          "cipher": "TLS_AES_128_GCM_SHA256",
+          "ciphers_sha1": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "ext_sha1": "",
+          "hello_len": 512
+        },
+        "identity": {
+          "token": {
+            "level": "pow",
+            "age": 1500,
+            "bound": false,
+            "level_age": 1500
+          },
+          "proof": {
+            "present": true,
+            "valid": false,
+            "replayed": true
+          },
+          "agent": {
+            "id": "",
+            "grant_id": ""
+          },
+          "crawler": {
+            "claimed": false,
+            "operator": "",
+            "purpose": "",
+            "verified": false,
+            "cf_vbot": false,
+            "cf_vbot_cat": ""
+          }
+        },
+        "risk": {
+          "score": 12,
+          "confidence": 0.6,
+          "class": "HUMAN_LIKELY",
+          "reasons": []
+        },
+        "route": {
+          "name": "api",
+          "sensitivity": "medium",
+          "env": "production"
+        },
+        "rate": {
+          "login-per-ip": 0.2
+        },
+        "labels": []
+      },
+      "missing": [
+        "tls",
+        "http.header_order",
+        "identity.agent"
+      ]
+    },
     "cf_impersonator": {
       "input": {
         "req": {
@@ -2654,6 +3025,31 @@
     {"name": "docs06.login-require-proof.other-route", "expr": "route.name == \"login\" && !identity.proof.valid", "context": "cf_impersonator", "expect": "false"},
     {"name": "docs06.login-require-proof.phase2-no-proof", "expr": "route.name == \"login\" && !identity.proof.valid", "context": "cf_phase2", "expect": "true"},
     {"name": "docs06.login-require-proof.phase3-proof", "expr": "route.name == \"login\" && !identity.proof.valid", "context": "phase3_agent", "expect": "false"},
+    {"name": "p2.navigation.exempt", "expr": "http.navigation", "context": "cf_p2_exempt_nav", "expect": "true"},
+    {"name": "p2.navigation.post", "expr": "http.navigation && req.method == \"POST\"", "context": "cf_p2_post_nav", "expect": "true"},
+    {"name": "p2.navigation.api", "expr": "http.navigation", "context": "cf_p2_api_proof", "expect": "false"},
+    {"name": "p2.navigation.has", "expr": "has(http.navigation)", "context": "cf_p2_api_proof", "expect": "true"},
+    {"name": "p2.proof.exempt-valid-unknown", "expr": "!identity.proof.valid", "context": "cf_p2_exempt_nav", "expect": "unknown"},
+    {"name": "p2.proof.exempt-present-unknown", "expr": "identity.proof.present", "context": "cf_p2_exempt_nav", "expect": "unknown"},
+    {"name": "p2.proof.exempt-has", "expr": "has(identity.proof)", "context": "cf_p2_exempt_nav", "expect": "false"},
+    {"name": "p2.proof.exempt-has-present", "expr": "has(identity.proof.present)", "context": "cf_p2_exempt_nav", "expect": "false"},
+    {"name": "p2.proof.exempt-guarded", "expr": "!has(identity.proof) || identity.proof.valid", "context": "cf_p2_exempt_nav", "expect": "true"},
+    {"name": "p2.proof.exempt-or-route", "expr": "route.name == \"login\" || !identity.proof.valid", "context": "cf_p2_exempt_nav", "expect": "true"},
+    {"name": "p2.proof.post-nav-absent", "expr": "!identity.proof.present && !identity.proof.valid", "context": "cf_p2_post_nav", "expect": "true"},
+    {"name": "p2.proof.post-nav-has", "expr": "has(identity.proof.valid)", "context": "cf_p2_post_nav", "expect": "true"},
+    {"name": "p2.proof.post-nav-mismatch", "expr": "identity.proof.present && !identity.proof.valid", "context": "cf_p2_post_nav", "expect": "false"},
+    {"name": "p2.proof.api-valid", "expr": "identity.proof.present && identity.proof.valid && !identity.proof.replayed", "context": "cf_p2_api_proof", "expect": "true"},
+    {"name": "p2.proof.api-mismatch", "expr": "identity.proof.present && !identity.proof.valid", "context": "cf_p2_api_proof", "expect": "false"},
+    {"name": "p2.proof.replay-mismatch", "expr": "identity.proof.present && !identity.proof.valid", "context": "cf_p2_api_replay", "expect": "true"},
+    {"name": "p2.proof.replayed", "expr": "identity.proof.replayed", "context": "cf_p2_api_replay", "expect": "true"},
+    {"name": "p2.proof.replayed-api", "expr": "identity.proof.replayed", "context": "cf_p2_api_proof", "expect": "false"},
+    {"name": "p2.proof.phase1-context", "expr": "identity.proof.replayed", "context": "cf_browser", "expect": "unknown"},
+    {"name": "p2.token.bound", "expr": "identity.token.bound", "context": "cf_p2_exempt_nav", "expect": "true"},
+    {"name": "p2.token.unbound", "expr": "identity.token.bound", "context": "cf_p2_api_replay", "expect": "false"},
+    {"name": "p2.token.level-age-fresh", "expr": "identity.token.level == \"interactive\" && identity.token.level_age < 600", "context": "cf_p2_exempt_nav", "expect": "true"},
+    {"name": "p2.token.level-age-old", "expr": "identity.token.level_age < 3600", "context": "cf_p2_api_proof", "expect": "false"},
+    {"name": "p2.token.level-age-vs-age", "expr": "identity.token.level_age > identity.token.age", "context": "cf_p2_api_proof", "expect": "true"},
+    {"name": "p2.token.level-age-zero", "expr": "identity.token.level_age == 0 && !identity.token.bound", "context": "zero", "expect": "true"},
     {"name": "docs06.login-high-risk.match", "expr": "route.name == \"login\" && risk.score >= 60", "context": "cf_login_risky", "expect": "true"},
     {"name": "docs06.login-high-risk.low-score", "expr": "route.name == \"login\" && risk.score >= 60", "context": "cf_browser", "expect": "false"},
     {"name": "valid.admin-paths-owner-only.match", "expr": "glob(req.path, \"/admin/**\") && !ip_in(net.ip, [\"127.0.0.1\", \"10.0.0.0/8\", \"fc00::/7\"])", "context": "cf_admin", "expect": "true"},
