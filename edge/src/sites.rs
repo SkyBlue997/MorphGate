@@ -21,9 +21,9 @@ mod convert;
 mod routing;
 
 pub use convert::{
-    BundleRuntime, EnvRuntime, Intel, LimiterDim, LimiterScope, LimiterSpec, RouteRuntime,
-    build_runtime, default_challenge, default_clearance, default_crawler_policy, default_events,
-    default_origin_headers, default_scoring,
+    BundleRuntime, EnvRuntime, Intel, LimiterDim, LimiterScope, LimiterSpec, RouteMode,
+    RouteRuntime, build_runtime, default_challenge, default_clearance, default_crawler_policy,
+    default_events, default_origin_headers, default_scoring,
 };
 pub use routing::{RouteMatch, select_env, select_route};
 
@@ -76,10 +76,12 @@ pub enum Serving<'a> {
 impl Serving<'_> {
     /// The `mode` of `mg_oversize_total` when oversize requests are forwarded
     /// instead of rejected (I-2), `None` under enforce and for unavailable
-    /// sites.
+    /// sites. Oversize requests skip route matching, so a site in monitor
+    /// mode with any `mode = enforce` route rejects them (I-36): otherwise an
+    /// oversize request would reach an enforced route unevaluated.
     pub fn record_only_mode(&self) -> Option<&'static str> {
         match self {
-            Self::Active(b) if b.monitor_only => Some("monitor"),
+            Self::Active(b) if b.monitor_only && !b.has_enforce_route => Some("monitor"),
             Self::Active(_) | Self::Unavailable => None,
             Self::Open { rule_id } => Some(rule_id),
         }

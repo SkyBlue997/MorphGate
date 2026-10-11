@@ -92,6 +92,9 @@ func TestFullSiteValues(t *testing.T) {
 	if !login.RequireClearance || !login.FailClosed || reset.RequireClearance || reset.FailClosed || !reset.RedactPath {
 		t.Errorf("require_clearance / fail_closed default to sensitivity == critical: login %+v reset %+v", login, reset)
 	}
+	if login.Mode != "" || reset.Mode != "enforce" || prod.Routes[2].Mode != "monitor" {
+		t.Errorf("route modes: login %q reset %q api %q", login.Mode, reset.Mode, prod.Routes[2].Mode)
+	}
 	if last := prod.Routes[len(prod.Routes)-1]; !last.Implicit || last.Name != "default" {
 		t.Errorf("default route not appended: %+v", last)
 	}
@@ -172,6 +175,8 @@ func TestValidationRules(t *testing.T) {
 		{"reserved default name", fullYAML, "- name: reset", "- name: default", `the name "default" is reserved`},
 		{"missing sensitivity", fullYAML, "        sensitivity: high\n", "", "sensitivity: required"},
 		{"bad sensitivity", fullYAML, "sensitivity: high", "sensitivity: severe", `"severe" is not one of low, medium, high, critical`},
+		{"bad route mode", fullYAML, "mode: enforce", "mode: dry_run", `"dry_run" is not one of monitor, enforce`},
+		{"route mode not a string", fullYAML, "mode: monitor", "mode: [monitor]", "mode: must be"},
 		{"bad channel", fullYAML, "channel: api", "channel: grpc", `"grpc" is not one of web, api, mobile`},
 		// Rate limiters.
 		{"bad limiter id", fullYAML, "id: api-per-prefix", "id: Api", `"Api" does not match`},

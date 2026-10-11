@@ -15,14 +15,15 @@
 //!    `GET` also admits `HEAD`, see [`method_admits`]);
 //! 2. of those, the most sensitive one is selected (ties: declared first);
 //! 3. `require_clearance` and `fail_closed` are the OR over every route found
-//!    in step 1, not only the selected one.
+//!    in step 1, not only the selected one, and the route mode (I-36) is the
+//!    strictest of theirs.
 //!
 //! Route matching does not go through the policy evaluator; the §8.2 caps
 //! (≤ 64 routes, ≤ 16 patterns of ≤ 128 bytes with ≤ 4 wildcards) and the
 //! 8 KiB path limit bound the work, and each distinct candidate is matched
 //! once.
 
-use super::convert::{EnvRuntime, RouteRuntime};
+use super::convert::{EnvRuntime, RouteMode, RouteRuntime};
 
 /// The route a request is attributed to.
 #[derive(Debug, Clone, Copy)]
@@ -33,6 +34,15 @@ pub struct RouteMatch<'a> {
     pub require_clearance: bool,
     /// OR over every route matched by some candidate.
     pub fail_closed: bool,
+    /// The strictest mode of every route matched by some candidate.
+    pub mode: RouteMode,
+}
+
+impl RouteMatch<'_> {
+    /// The request is only recorded, never enforced (§9.9, I-36).
+    pub fn monitor(&self, site_monitor_only: bool) -> bool {
+        self.mode.monitor(site_monitor_only)
+    }
 }
 
 /// The environment whose hosts contain `host` (the bundle's environments
@@ -63,6 +73,7 @@ pub fn select_route<'a>(
     let mut selected: Option<(usize, &RouteRuntime)> = None;
     let mut require_clearance = false;
     let mut fail_closed = false;
+    let mut mode = RouteMode::Monitor;
     for candidate in &candidates {
         let Some((pos, route)) = eligible
             .iter()
@@ -73,6 +84,7 @@ pub fn select_route<'a>(
         };
         require_clearance |= route.require_clearance;
         fail_closed |= route.fail_closed;
+        mode = mode.max(route.mode);
         let better = match selected {
             None => true,
             Some((best_pos, best)) => {
@@ -89,16 +101,21 @@ pub fn select_route<'a>(
             route,
             require_clearance,
             fail_closed,
+            mode,
         },
-        None => RouteMatch {
-            route: env
+        None => {
+            let route = env
                 .routes
                 .iter()
                 .find(|r| r.id == "default")
-                .unwrap_or(fallback),
-            require_clearance: false,
-            fail_closed: false,
-        },
+                .unwrap_or(fallback);
+            RouteMatch {
+                route,
+                require_clearance: false,
+                fail_closed: false,
+                mode: route.mode,
+            }
+        }
     }
 }
 
@@ -131,6 +148,7 @@ mod tests {
             fail_closed: sensitivity == RouteSensitivity::Critical,
             require_clearance: sensitivity == RouteSensitivity::Critical,
             redact_path: false,
+            mode: RouteMode::Inherit,
             patterns: paths.iter().map(|p| Glob::new(p).unwrap()).collect(),
         }
     }
@@ -276,6 +294,61 @@ mod tests {
             route("second", &["/x"], RouteSensitivity::High),
         ]);
         assert_eq!(pick(&e, "GET", "/x", false).route.name, "first");
+    }
+
+    /// The route mode (I-36) is the strictest of every matched route, so a
+    /// different spelling of the path never downgrades enforcement.
+    #[test]
+    fn strictest_route_mode_wins() {
+        let mut monitored = route("raw", &["/a%2Fb"], RouteSensitivity::High);
+        monitored.mode = RouteMode::Monitor;
+        let mut enforced = route("decoded", &["/a/b"], RouteSensitivity::Medium);
+        enforced.mode = RouteMode::Enforce;
+        let mut quiet = route("quiet", &["/q/**"], RouteSensitivity::Low);
+        quiet.mode = RouteMode::Monitor;
+        let e = env(vec![
+            monitored,
+            enforced,
+            quiet,
+            route("default", &["/**"], RouteSensitivity::Low),
+        ]);
+        // The monitored route is selected (more sensitive), the enforced one
+        // still decides the mode.
+        let m = pick(&e, "GET", "/a%2Fb", false);
+        assert_eq!(m.route.name, "raw");
+        assert_eq!(m.mode, RouteMode::Enforce);
+        assert!(!m.monitor(true));
+        // Only the decoded view exists: enforce.
+        assert_eq!(pick(&e, "GET", "/a/b", false).mode, RouteMode::Enforce);
+        // Every view hits the monitored route: monitor even when the site
+        // enforces.
+        let m = pick(&e, "GET", "/q/x", false);
+        assert_eq!(
+            (m.route.name.as_str(), m.mode),
+            ("quiet", RouteMode::Monitor)
+        );
+        assert!(m.monitor(false));
+        // A monitored route and an inheriting one (the encoded slash leaves
+        // the raw view to the default route): the site decides.
+        let m = pick(&e, "GET", "/q%2Fx", false);
+        assert_eq!(m.mode, RouteMode::Inherit);
+        assert!(!m.monitor(false) && m.monitor(true));
+        // Nothing declared: the site's switch.
+        let m = pick(&e, "GET", "/other", false);
+        assert_eq!(m.mode, RouteMode::Inherit);
+        assert!(m.monitor(true) && !m.monitor(false));
+    }
+
+    #[test]
+    fn route_mode_resolution() {
+        for site in [false, true] {
+            assert!(RouteMode::Monitor.monitor(site));
+            assert_eq!(RouteMode::Inherit.monitor(site), site);
+            assert!(!RouteMode::Enforce.monitor(site));
+        }
+        assert!(RouteMode::Monitor < RouteMode::Inherit && RouteMode::Inherit < RouteMode::Enforce);
+        assert_eq!(RouteMode::default(), RouteMode::Inherit);
+        assert_eq!(RouteRuntime::fallback().mode, RouteMode::Inherit);
     }
 
     #[test]

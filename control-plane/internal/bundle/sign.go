@@ -129,6 +129,7 @@ type Summary struct {
 	SourceDigest     string            `json:"source_digest,omitempty"` // site YAML + policy + list files
 	Profile          string            `json:"profile"`
 	MonitorOnly      bool              `json:"monitor_only"`
+	RouteModes       map[string]string `json:"route_modes,omitempty"` // "<env>/<route>" -> monitor | enforce (I-36)
 	Hosts            []string          `json:"hosts"`
 	AllowedListeners []string          `json:"allowed_listeners"`
 	TokenKeyIDs      []string          `json:"token_key_ids"`
@@ -186,6 +187,23 @@ func Summarize(sb *morphgatev1.SiteBundle, bundleBytes []byte, signed *morphgate
 		s.Rules += len(env.Rules)
 		s.Environments = append(s.Environments, EnvSummary{Name: env.Name, Hosts: nonNil(env.Hosts),
 			Routes: len(env.Routes), Rules: len(env.Rules), RateLimits: len(env.RateLimits)})
+		for _, r := range env.Routes {
+			var mode string
+			switch r.Mode {
+			case morphgatev1.RouteMode_ROUTE_MODE_INHERIT:
+				continue
+			case morphgatev1.RouteMode_ROUTE_MODE_MONITOR:
+				mode = "monitor"
+			case morphgatev1.RouteMode_ROUTE_MODE_ENFORCE:
+				mode = "enforce"
+			default:
+				mode = r.Mode.String()
+			}
+			if s.RouteModes == nil {
+				s.RouteModes = map[string]string{}
+			}
+			s.RouteModes[env.Name+"/"+r.Name] = mode
+		}
 	}
 	for _, a := range sb.Artifacts {
 		s.Artifacts = append(s.Artifacts, ArtifactSummary{Name: a.Name, SHA256: a.Sha256, Size: a.Size, Version: a.Version})

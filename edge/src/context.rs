@@ -103,6 +103,9 @@ pub struct Facts<'a> {
     pub ts_ms: i64,
     pub site_id: &'a str,
     pub route: &'a RouteInfo,
+    /// The request is only recorded, never enforced: the site's
+    /// `monitor_only` resolved through the matched routes' modes (I-36).
+    pub monitor: bool,
     pub profile: ListenerProfile,
     /// `loopback` / `origin_mtls` / `secret_header` / `none` (§9.2).
     pub auth_method: &'a str,
@@ -693,6 +696,7 @@ mod tests {
                 ts_ms: 1_790_000_000_000,
                 site_id: "blog",
                 route: &self.route,
+                monitor: false,
                 profile,
                 auth_method: if cf.is_some() { "loopback" } else { "none" },
                 cf,

@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,8 +152,23 @@ func TestSummarize(t *testing.T) {
 		sum.BundleSHA256 != hexSHA(bundleBytes) || sum.FileSHA256 != hexSHA(file) || sum.Rules != 0 {
 		t.Errorf("summary %+v", sum)
 	}
-	if _, err := json.Marshal(sum); err != nil {
-		t.Error(err)
+	if sum.RouteModes != nil {
+		t.Errorf("route modes of a bundle without overrides: %v", sum.RouteModes)
+	}
+	if b, err := json.Marshal(sum); err != nil || strings.Contains(string(b), "route_modes") {
+		t.Errorf("%s %v", b, err)
+	}
+
+	// Route overrides are listed by "<env>/<route>" (I-36).
+	routes := sb.Environments[0].Routes
+	routes[0].Mode = morphgatev1.RouteMode_ROUTE_MODE_ENFORCE
+	sb.Environments[0].Routes = append(routes, &morphgatev1.Route{Id: "api", Name: "api", Mode: morphgatev1.RouteMode_ROUTE_MODE_MONITOR},
+		&morphgatev1.Route{Id: "x", Name: "x", Mode: morphgatev1.RouteMode(9)})
+	sum = Summarize(&sb, bundleBytes, s, file)
+	env := sb.Environments[0].Name
+	want := map[string]string{env + "/" + routes[0].Name: "enforce", env + "/api": "monitor", env + "/x": "9"}
+	if !maps.Equal(sum.RouteModes, want) {
+		t.Errorf("route modes %v, want %v", sum.RouteModes, want)
 	}
 }
 

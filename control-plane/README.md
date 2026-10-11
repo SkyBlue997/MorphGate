@@ -52,6 +52,7 @@ Go 模块 `morphgate/control-plane`：`mgctl`（所有者工作站上的运维 C
 格式与校验规则见规格 §8.2，映射到 `SiteBundle` 的方式与缺省值见 §8.3；样例：`testdata/sites/valid/full.yaml`（规格中的示例）、`testdata/sites/valid/minimal.yaml`（全部取缺省值）。实现细节：
 
 - 未知键、YAML 锚点 / 别名、多文档都是错误；诊断信息带 `文件:行:列`。相对路径相对于 YAML 文件所在目录。
+- 路由可设 `mode: monitor | enforce` 覆盖站点的 `monitor_only`（规格 I-36）：多条路由经不同路径视图命中同一请求时取最严者；`mgctl bundle verify` 列出覆盖的路由，签名的审计记录带 `route_modes`。
 - 缺省值：`monitor_only: true`；`channel: web`；`require_clearance` 与 `fail_closed` 在 `sensitivity: critical` 时为 true；限速器 `burst: 1`、`scope: global`、`mode: enforce`；`automation_allowlist_only` 对 `production` 以外的环境为 true。`sensitivity`、限速器的 `key`、`rate`、`on_exceed` 必填。
 - 每个环境末尾追加 `{name: default, paths: ["/**"], channel: web, sensitivity: low}`，除非已有一个 `paths: ["/**"]` 且不限定 `hosts` / `methods` 的路由；`default` 这个名字只能用于这样的路由。每个环境至多 64 条**声明**路由，追加的 `default` 不计入（配置包中至多 65 条，与 Edge 的校验一致，裁决 I-24）。
 - 限速器 id 在整个站点内唯一（跨环境，裁决 I-23）：Valkey 键 `mg:rl:{site}:{limiter}:{kh}` 不含环境，两个环境共用一个 id 会共用同一组 GCRA 桶。
