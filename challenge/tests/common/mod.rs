@@ -3,6 +3,8 @@
 //! well-formed claims.
 #![allow(dead_code)] // each test binary uses a different subset
 
+pub mod random;
+
 use mg_challenge::{Rng, RngError};
 use mg_core::{ChallengeBind, ChallengeType, PowParams, RiskBand, SealedChallengeClaims};
 use std::path::PathBuf;
@@ -22,6 +24,34 @@ pub fn read(rel: &str) -> Vec<u8> {
 
 pub fn kat() -> serde_json::Value {
     serde_json::from_slice(&read("kat.json")).expect("kat.json is JSON")
+}
+
+/// `testdata/phase2/kat.json` (read-only, Phase 2 spec §0.4, §6.11).
+pub fn kat2() -> serde_json::Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../testdata/phase2/kat.json");
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    serde_json::from_slice(&bytes).expect("phase2 kat.json is JSON")
+}
+
+/// Well-formed Phase 2 interactive claims for site `blog`, issued at
+/// `iat_ms` with the 600 s lifetime, `self_hold` and `pow_a11y`, `k = 8`.
+pub fn interactive_claims(iat_ms: i64) -> SealedChallengeClaims {
+    let mut c = pow_claims(iat_ms);
+    c.challenge_type = ChallengeType::Interactive;
+    c.providers = vec![
+        mg_core::challenge::ProviderId::SelfHold,
+        mg_core::challenge::ProviderId::PowA11y,
+    ];
+    c.attempt_no = 1;
+    c.ui_seed = 0x0123_4567_89ab_cdef;
+    c.exp_ms = iat_ms + 600_000;
+    c.pow = Some(PowParams {
+        alg: mg_challenge::POW_ALG_V2.into(),
+        difficulty: 16,
+        k: 8,
+        a11y_difficulty: 17,
+    });
+    c
 }
 
 pub fn hex(s: &str) -> Vec<u8> {

@@ -24,10 +24,20 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Length of one epoch (a UTC day) in milliseconds.
 pub const EPOCH_MS: i64 = 86_400_000;
-/// Longest lifetime of a Phase 1 challenge (`invisible` / `pow`).
+/// Longest lifetime of an `invisible` / `pow` challenge (Phase 2 spec §6.1:
+/// unchanged). Interactive challenges live up to
+/// [`MAX_INTERACTIVE_C_LIFETIME_MS`].
 pub const MAX_C_LIFETIME_MS: i64 = 120_000;
+/// Longest lifetime of an interactive challenge (Phase 2 spec §6.1, D-42):
+/// `mg_core::SealedChallengeClaims::MAX_INTERACTIVE_LIFETIME_MS`.
+pub const MAX_INTERACTIVE_C_LIFETIME_MS: i64 =
+    mg_core::SealedChallengeClaims::MAX_INTERACTIVE_LIFETIME_MS;
 /// Tolerated clock difference between Edges.
 pub const CLOCK_SKEW_MS: i64 = 5_000;
+/// How long after the day boundary the previous epoch is still accepted:
+/// the longest challenge lifetime (600 s, interactive) plus the clock skew
+/// (Phase 2 spec §6.1). One window for every challenge type.
+pub const PREVIOUS_EPOCH_WINDOW_MS: i64 = MAX_INTERACTIVE_C_LIFETIME_MS + CLOCK_SKEW_MS;
 
 /// Upper bound on a key file; real files are a few hundred bytes.
 const MAX_KEY_FILE_LEN: usize = 64 * 1024;
@@ -62,15 +72,17 @@ pub fn parse_epoch_kid(kid: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// Epochs whose challenges may be opened at `now_ms` (spec §6.1): the current
-/// epoch `e`; also `e − 1` during the first 125 s of the day (a challenge
-/// lives at most 120 s, plus 5 s of skew); also `e + 1` during the last 5 s
-/// of the day (another Edge's clock may already be in the next day).
+/// Epochs whose challenges may be opened at `now_ms` (Phase 2 spec §6.1,
+/// D-42; replaces the 125 s window of Phase 1 §6.1 and I-18): the current
+/// epoch `e`; also `e − 1` during the first 605 s of the day (an interactive
+/// challenge lives at most 600 s, plus 5 s of skew; the same window serves
+/// every type); also `e + 1` during the last 5 s of the day (another Edge's
+/// clock may already be in the next day).
 pub fn accepted_epochs(now_ms: i64) -> RangeInclusive<u64> {
     let now = now_ms.max(0);
     let e = now / EPOCH_MS;
     let into_day = now - e * EPOCH_MS;
-    let lo = if into_day <= MAX_C_LIFETIME_MS + CLOCK_SKEW_MS && e > 0 {
+    let lo = if into_day <= PREVIOUS_EPOCH_WINDOW_MS && e > 0 {
         e - 1
     } else {
         e

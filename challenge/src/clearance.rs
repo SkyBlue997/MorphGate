@@ -18,10 +18,30 @@
 //! * only `pasetors::version4::LocalToken::{encrypt, decrypt}` is used; the
 //!   claims (with Unix-second `iat` / `exp` / `sst`, D-29) are checked here,
 //!   not by pasetors' ISO 8601 claim rules.
+//!
+//! Phase 2 (docs/impl/phase2-spec.md §6.8, D-46) adds claims `v = 2`:
+//!
+//! ```json
+//! {"v":2,"kid":"blog-t-20261012","sid":"blog","env":"production","sub":"…","sst":1790000000,
+//!  "lvl":"interactive","iat":1790000000,"exp":1790001800,"lat":1790000000,
+//!  "cnf":{"jkt":"<43-char thumbprint>"},
+//!  "bind":{"uah":"…","ipp":"…","ipa":"…"},"rb":"medium","jti":"…"}
+//! ```
+//!
+//! * `lat` (required in v2, absent in v1): when the level was earned, Unix
+//!   seconds, `sst ≤ lat ≤ iat`; it survives refreshes;
+//! * `cnf` (optional in v2, absent in v1): exactly `{"jkt": <thumbprint>}`,
+//!   the SDK session key the token is bound to;
+//! * both versions verify; [`mint`] still writes v1 only, [`mint_v2`] picks
+//!   the version by the rule of §6.8 and [`mint_refresh`] renews a token;
+//! * the script-readable status cookie `__Host-mg_st=<iat>.<exp>.<b>`
+//!   ([`status_cookie_value`]) accompanies the token when the bundle has
+//!   `schema_version = 2`.
 
 use crate::b64;
 use crate::bind::{BindCheck, BindInputs, Bound, compare};
 use crate::json::ObjectOnly;
+use crate::jwk::{is_jkt, jkt_eq};
 use crate::keys::TokenKeySet;
 use crate::rng::{Rng, random_array};
 use mg_core::{BindResult, RiskBand, TokenLevel, TokenStatus};
@@ -45,15 +65,22 @@ pub const MAX_COOKIE_BYTES: usize = 16 * 1024;
 /// At most this many clearance cookies are tried per request.
 pub const MAX_COOKIE_CANDIDATES: usize = 2;
 
-const CLAIMS_VERSION: u32 = 1;
+/// Name of the script-readable status cookie (Phase 2 spec §6.8, D-46).
+pub const STATUS_COOKIE_NAME: &str = "__Host-mg_st";
+/// Claims version of Phase 1 tokens.
+pub const CLAIMS_V1: u32 = 1;
+/// Claims version with `lat` and the optional `cnf` (Phase 2 spec §6.8).
+pub const CLAIMS_V2: u32 = 2;
+
 const MAX_FOOTER_LEN: usize = 128;
 const IMPLICIT_DOMAIN: &[u8] = b"mg-clr-v1";
 
-/// The claims of a clearance token. `Debug` omits `sub`, `jti` and the
-/// binding hashes.
+/// The claims of a clearance token, v1 or v2. `Debug` omits `sub`, `jti`,
+/// the binding hashes and the `cnf` thumbprint.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClearanceClaims {
+    /// [`CLAIMS_V1`] or [`CLAIMS_V2`].
     pub v: u32,
     pub kid: String,
     pub sid: String,
@@ -67,6 +94,13 @@ pub struct ClearanceClaims {
     pub iat: i64,
     /// Expires at, Unix seconds.
     pub exp: i64,
+    /// v2 only (required there): when the level was earned, Unix seconds,
+    /// `sst ≤ lat ≤ iat`. `None` in v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lat: Option<i64>,
+    /// v2 only (optional): the session key the token is bound to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cnf: Option<Cnf>,
     pub bind: ClearanceBind,
     /// Risk band at issuance.
     pub rb: RiskBand,
@@ -93,10 +127,40 @@ impl fmt::Debug for ClearanceClaims {
             .field("lvl", &self.lvl)
             .field("iat", &self.iat)
             .field("exp", &self.exp)
+            .field("lat", &self.lat)
+            .field("cnf", &self.cnf)
             .field("bind", &self.bind)
             .field("rb", &self.rb)
             .field("ruc", &self.ruc)
             .finish_non_exhaustive() // sub and jti deliberately omitted
+    }
+}
+
+impl ClearanceClaims {
+    /// When the level was earned: `lat`, or `iat` for a v1 token (which is
+    /// never refreshed, so it earned its level when it was issued).
+    pub fn level_at(&self) -> i64 {
+        self.lat.unwrap_or(self.iat)
+    }
+
+    /// The bound session key's thumbprint, if any.
+    pub fn cnf_jkt(&self) -> Option<&str> {
+        self.cnf.as_ref().map(|c| c.jkt.as_str())
+    }
+}
+
+/// The confirmation claim of a v2 token (§6.8): exactly one member, the
+/// 43-character thumbprint of the SDK session key. `Debug` does not print it
+/// (spec §2.4 item 10).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cnf {
+    pub jkt: String,
+}
+
+impl fmt::Debug for Cnf {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Cnf(..)")
     }
 }
 
@@ -268,6 +332,12 @@ struct RawClaims {
     lvl: String,
     iat: i64,
     exp: i64,
+    /// Absent, or an integer (`null` is rejected here); which version needs
+    /// it is checked by `verify_inner`.
+    #[serde(default, deserialize_with = "some_i64")]
+    lat: Option<i64>,
+    #[serde(default, deserialize_with = "some_cnf")]
+    cnf: Option<Cnf>,
     bind: ObjectOnly<ClearanceBind>,
     rb: RiskBand,
     jti: String,
@@ -283,13 +353,167 @@ fn some_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::
     bool::deserialize(d).map(Some)
 }
 
-/// Mints a token with the active key of `keys`. Draws `sub` (new sessions
+/// A present `lat` must be an integer, never `null`.
+fn some_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    i64::deserialize(d).map(Some)
+}
+
+/// A present `cnf` must be an object with exactly `jkt`, never `null`.
+fn some_cnf<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Cnf>, D::Error> {
+    ObjectOnly::<Cnf>::deserialize(d).map(|c| Some(c.0))
+}
+
+/// Mints a v1 token with the active key of `keys`. Draws `sub` (new sessions
 /// only) and then `jti` from `rng`; the PASETO nonce comes from the OS RNG
 /// inside pasetors. Returns the token and its claims.
+///
+/// Unchanged in Phase 2 (spec §2.3); v2 tokens come from [`mint_v2`] and
+/// [`mint_refresh`].
 pub fn mint(
     keys: &TokenKeySet,
     site_id: &str,
     p: &MintParams<'_>,
+    rng: &dyn Rng,
+) -> Result<(String, ClearanceClaims), TokenError> {
+    mint_inner(keys, site_id, p, None, rng)
+}
+
+/// What [`mint_v2`] puts into a token beyond [`MintParams`] (Phase 2 spec
+/// §6.8).
+pub struct MintV2Params<'a> {
+    pub base: MintParams<'a>,
+    /// The thumbprint of the session key that signed the submission, for
+    /// `cnf.jkt` (43 characters); `None` for an unbound token.
+    pub cnf_jkt: Option<&'a str>,
+    /// When the level was earned; `None` means now (`lat = iat`).
+    pub lat: Option<i64>,
+    /// The bundle has `schema_version = 2`. When false the token is v1 and
+    /// `cnf_jkt` / `lat` are dropped (D-66: a schema 1 Edge accepts v2
+    /// submissions but issues v1 tokens only).
+    pub allow_v2: bool,
+}
+
+impl fmt::Debug for MintV2Params<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MintV2Params")
+            .field("base", &self.base)
+            .field("bound", &self.cnf_jkt.is_some())
+            .field("lat", &self.lat)
+            .field("allow_v2", &self.allow_v2)
+            .finish()
+    }
+}
+
+/// The v2-only claims of a token being minted.
+struct V2Extra {
+    lat: i64,
+    cnf: Option<Cnf>,
+}
+
+/// Mints a token by the version rule of §6.8: v2 when `allow_v2` and the
+/// token has a `cnf`, a level other than `invisible` / `pow`, or a `lat`
+/// other than its `iat`; v1 otherwise. A v2 `lat` must satisfy
+/// `sst ≤ lat ≤ now` ([`TokenError::Lifetime`]) and `cnf_jkt` must be a
+/// 43-character thumbprint ([`TokenError::Claims`]).
+pub fn mint_v2(
+    keys: &TokenKeySet,
+    site_id: &str,
+    p: &MintV2Params<'_>,
+    rng: &dyn Rng,
+) -> Result<(String, ClearanceClaims), TokenError> {
+    let now = p.base.now_s;
+    let lat = p.lat.unwrap_or(now);
+    let needs_v2 = p.cnf_jkt.is_some()
+        || !matches!(p.base.lvl, TokenLevel::Invisible | TokenLevel::Pow)
+        || lat != now;
+    if !p.allow_v2 || !needs_v2 {
+        return mint_inner(keys, site_id, &p.base, None, rng);
+    }
+    if lat > now {
+        return Err(TokenError::Lifetime);
+    }
+    let cnf = match p.cnf_jkt {
+        Some(jkt) if is_jkt(jkt) => Some(Cnf {
+            jkt: jkt.to_owned(),
+        }),
+        Some(_) => return Err(TokenError::Claims),
+        None => None,
+    };
+    mint_inner(keys, site_id, &p.base, Some(V2Extra { lat, cnf }), rng)
+}
+
+/// Renews a verified token (§6.8 "刷新", `POST /__mg/r`): a v2 token with
+/// `exp = min(now + ttl_s, sst + session_max_s)`, `iat = now`, a new `jti`
+/// and the `kid` of the active key; `sub`, `sst`, `lat` (`iat` of a v1
+/// token), `lvl`, `cnf`, `rb`, `bind`, `sid`, `env` and `ruc` are copied.
+///
+/// The caller has already run `refresh_check` (D-47: which levels refresh,
+/// `ruc`, `cnf` and binding rules) and applies the 60 s rule (`too_old`)
+/// itself; this function only refuses what would not verify: `old` from
+/// another site ([`TokenError::Site`]), a `ttl_s` outside `1..=86 400`, a
+/// session already past `sst + session_max_s` or a `lat` after `now`
+/// ([`TokenError::Lifetime`]), malformed copied claims
+/// ([`TokenError::Claims`]).
+pub fn mint_refresh(
+    keys: &TokenKeySet,
+    site_id: &str,
+    old: &ClearanceClaims,
+    now_s: i64,
+    ttl_s: u32,
+    session_max_s: u32,
+    rng: &dyn Rng,
+) -> Result<(String, ClearanceClaims), TokenError> {
+    if old.sid != site_id {
+        return Err(TokenError::Site);
+    }
+    let ttl = i64::from(ttl_s);
+    if !(1..=MAX_TOKEN_LIFETIME_S).contains(&ttl) {
+        return Err(TokenError::Lifetime);
+    }
+    let by_ttl = now_s.checked_add(ttl).ok_or(TokenError::Lifetime)?;
+    let by_session = old
+        .sst
+        .checked_add(i64::from(session_max_s))
+        .ok_or(TokenError::Lifetime)?;
+    let exp = by_ttl.min(by_session);
+    let lat = old.level_at();
+    if exp <= now_s || old.sst > lat || lat > now_s {
+        return Err(TokenError::Lifetime);
+    }
+    if old.cnf.as_ref().is_some_and(|c| !is_jkt(&c.jkt)) {
+        return Err(TokenError::Claims);
+    }
+    let jti = random_id(rng)?;
+    let (kid, _) = keys.active();
+    let claims = ClearanceClaims {
+        v: CLAIMS_V2,
+        kid: kid.to_owned(),
+        sid: old.sid.clone(),
+        env: old.env.clone(),
+        sub: old.sub.clone(),
+        sst: old.sst,
+        lvl: old.lvl,
+        iat: now_s,
+        exp,
+        lat: Some(lat),
+        cnf: old.cnf.clone(),
+        bind: old.bind.clone(),
+        rb: old.rb,
+        jti,
+        ruc: old.ruc,
+    };
+    if claims.bind.decode().is_none() || !is_random_id(&claims.sub) {
+        return Err(TokenError::Claims);
+    }
+    let token = encrypt(keys, site_id, &claims)?;
+    Ok((token, claims))
+}
+
+fn mint_inner(
+    keys: &TokenKeySet,
+    site_id: &str,
+    p: &MintParams<'_>,
+    v2: Option<V2Extra>,
     rng: &dyn Rng,
 ) -> Result<(String, ClearanceClaims), TokenError> {
     let ttl = i64::from(p.ttl_s);
@@ -312,10 +536,17 @@ pub fn mint(
         }
         None => (random_id(rng)?, p.now_s),
     };
+    if v2.as_ref().is_some_and(|x| x.lat < sst) {
+        return Err(TokenError::Lifetime);
+    }
     let jti = random_id(rng)?;
-    let (kid, key) = keys.active();
+    let (kid, _) = keys.active();
+    let (v, lat, cnf) = match v2 {
+        Some(x) => (CLAIMS_V2, Some(x.lat), x.cnf),
+        None => (CLAIMS_V1, None, None),
+    };
     let claims = ClearanceClaims {
-        v: CLAIMS_VERSION,
+        v,
         kid: kid.to_owned(),
         sid: site_id.to_owned(),
         env: p.env.to_owned(),
@@ -324,12 +555,25 @@ pub fn mint(
         lvl: p.lvl,
         iat: p.now_s,
         exp,
+        lat,
+        cnf,
         bind: p.bind.clone(),
         rb: p.rb,
         jti,
         ruc: p.replay_unchecked,
     };
-    let payload = serde_json::to_vec(&claims).map_err(|_| TokenError::Claims)?;
+    let token = encrypt(keys, site_id, &claims)?;
+    Ok((token, claims))
+}
+
+/// Encrypts `claims` with the active key and the footer of its kid.
+fn encrypt(
+    keys: &TokenKeySet,
+    site_id: &str,
+    claims: &ClearanceClaims,
+) -> Result<String, TokenError> {
+    let (kid, key) = keys.active();
+    let payload = serde_json::to_vec(claims).map_err(|_| TokenError::Claims)?;
     let footer = serde_json::to_vec(&Footer { kid: kid.into() }).map_err(|_| TokenError::Footer)?;
     if footer.len() > MAX_FOOTER_LEN {
         return Err(TokenError::Footer);
@@ -348,15 +592,16 @@ pub fn mint(
     if token.len() > MAX_TOKEN_LEN {
         return Err(TokenError::TooLong);
     }
-    Ok((token, claims))
+    Ok(token)
 }
 
 /// Verifies a token for `site_id` in `env` at `now_s` (spec §6.5, checks in
 /// order): length, footer, kid in the allowed set, decryption with the
-/// implicit assertion, claims (`v`, kid, site, env, `bind.uah` / `bind.ipp`,
-/// `sub` / `jti` as base64url of 16 bytes, `ruc` absent or `true`),
-/// `sst ≤ iat ≤ now + 5`,
-/// `iat < exp ≤ iat + 86 400`, `exp > now`, `lvl`.
+/// implicit assertion, claims (`v` ∈ {1, 2} with the Phase 2 rules of §6.8:
+/// v1 without `lat` / `cnf`, v2 with `lat` and an optional `cnf.jkt` of 43
+/// characters; kid, site, env, `bind.uah` / `bind.ipp`, `sub` / `jti` as
+/// base64url of 16 bytes, `ruc` absent or `true`), `sst ≤ iat ≤ now + 5`,
+/// `sst ≤ lat ≤ iat`, `iat < exp ≤ iat + 86 400`, `exp > now`, `lvl`.
 ///
 /// Bindings are compared separately with [`check_clearance_bind`].
 pub fn verify(
@@ -410,7 +655,17 @@ fn verify_inner(
 
     let ObjectOnly(raw) = serde_json::from_str::<ObjectOnly<RawClaims>>(trusted.payload())
         .map_err(|_| TokenError::Claims)?;
-    if raw.v != CLAIMS_VERSION || raw.kid != footer.kid {
+    if raw.kid != footer.kid {
+        return Err(TokenError::Claims);
+    }
+    // Phase 2 spec §6.8: v1 is exactly the Phase 1 payload; v2 requires
+    // `lat` and may carry a well-formed `cnf`.
+    let version_ok = match raw.v {
+        CLAIMS_V1 => raw.lat.is_none() && raw.cnf.is_none(),
+        CLAIMS_V2 => raw.lat.is_some() && raw.cnf.as_ref().is_none_or(|c| is_jkt(&c.jkt)),
+        _ => false,
+    };
+    if !version_ok {
         return Err(TokenError::Claims);
     }
     if raw.sid != site_id {
@@ -429,6 +684,9 @@ fn verify_inner(
         return Err(TokenError::Claims);
     }
     if raw.sst > raw.iat {
+        return Err(TokenError::Lifetime);
+    }
+    if raw.lat.is_some_and(|lat| lat < raw.sst || lat > raw.iat) {
         return Err(TokenError::Lifetime);
     }
     if raw.iat > now_s.saturating_add(TOKEN_CLOCK_SKEW_S) {
@@ -452,6 +710,8 @@ fn verify_inner(
         lvl,
         iat: raw.iat,
         exp: raw.exp,
+        lat: raw.lat,
+        cnf: raw.cnf,
         bind,
         rb: raw.rb,
         jti: raw.jti,
@@ -495,6 +755,45 @@ pub fn check_clearance_bind(claims: &ClearanceClaims, current: &BindInputs) -> B
 /// success response of `/__mg/c`, never on an origin response.
 pub fn set_cookie_value(token: &str, max_age_s: u32) -> String {
     format!("{COOKIE_NAME}={token}; Max-Age={max_age_s}; Path=/; Secure; HttpOnly; SameSite=Lax")
+}
+
+/// The value of the status cookie `__Host-mg_st` (Phase 2 spec §6.8, D-46):
+/// `<iat>.<exp>.<b>` with the token's Unix seconds and `b` = `1` when the
+/// token has a `cnf`, else `0`. It holds no level and no secret; the SDK
+/// reads it to schedule refreshes, the Edge never decides on it.
+pub fn status_cookie_value(iat: i64, exp: i64, bound: bool) -> String {
+    format!("{iat}.{exp}.{}", u8::from(bound))
+}
+
+/// The `Set-Cookie` value of the status cookie, written right after the
+/// `__Host-mg_clr` one with the same `Max-Age` (schema 2 bundles only):
+/// `__Host-mg_st=<iat>.<exp>.<b>; Max-Age=<n>; Path=/; Secure; SameSite=Lax`,
+/// deliberately without `HttpOnly`.
+pub fn status_set_cookie_value(claims: &ClearanceClaims, max_age_s: u32) -> String {
+    let value = status_cookie_value(claims.iat, claims.exp, claims.cnf.is_some());
+    format!("{STATUS_COOKIE_NAME}={value}; Max-Age={max_age_s}; Path=/; Secure; SameSite=Lax")
+}
+
+/// [`reusable_session`] with the Phase 2 rule of §6.8: the session also
+/// continues only if the new submission's key `jkt` equals the old token's
+/// `cnf.jkt`, or the old token has no `cnf`. A changed or missing key starts
+/// a new session. (The near-line session verdict of §6.8 is the Edge's
+/// check.)
+pub fn reusable_session_v2(
+    prev: &ClearanceClaims,
+    bind: &BindCheck,
+    now_s: i64,
+    session_max_s: u32,
+    jkt: Option<&str>,
+) -> Option<(String, i64)> {
+    let same_key = match (prev.cnf_jkt(), jkt) {
+        (None, _) => true,
+        (Some(old), Some(new)) => jkt_eq(old, new),
+        (Some(_), None) => false,
+    };
+    same_key
+        .then(|| reusable_session(prev, bind, now_s, session_max_s))
+        .flatten()
 }
 
 /// The values of the `__Host-mg_clr` cookies in `Cookie` headers, in order,

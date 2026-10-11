@@ -12,11 +12,14 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
-use common::{DAY_START_MS, FailingRng, MIDDAY_MS, TestRng, pow_claims, seal_root, sealer};
-use mg_challenge::{
-    MAX_C_LEN, OpenError, SealError, aad, check_challenge_bind, derive_epoch_key, epoch_kid,
-    epoch_no, random_nonce,
+use common::{
+    DAY_START_MS, FailingRng, MIDDAY_MS, TestRng, interactive_claims, pow_claims, seal_root, sealer,
 };
+use mg_challenge::{
+    MAX_C_LEN, OpenError, RENEW_MAX_EXPIRED_MS, RenewOpenError, SealError, aad,
+    check_challenge_bind, derive_epoch_key, epoch_kid, epoch_no, max_c_lifetime_ms, random_nonce,
+};
+use mg_core::challenge::ProviderId;
 use mg_core::{BindResult, ChallengeType, ClaimsError, SealedChallengeClaims};
 use mg_proto::v1::sealed_challenge_claims::{Bind, Pow};
 use mg_proto::v1::{SealedChallenge, SealedChallengeClaims as ProtoClaims};
@@ -529,8 +532,9 @@ fn claims_structure_checks() {
     );
 }
 
-/// §6.1 / §6.8: `e − 1` opens up to 125 s after the day boundary and not
-/// from 125.001 s; `e − 2` never; `e + 1` only in the last 5 s of the day.
+/// Phase 2 spec §6.1 (D-42, replacing the 125 s of Phase 1): `e − 1` opens
+/// up to 605 s after the day boundary and not from 605.001 s; `e − 2` never;
+/// `e + 1` only in the last 5 s of the day.
 #[test]
 fn epoch_boundaries() {
     let s = sealer("blog", &[1]);
@@ -543,9 +547,14 @@ fn epoch_boundaries() {
         claims.kid = epoch_kid(EPOCH - 1);
         Craft::new(&claims.kid).seal_claims(&proto_of(&claims))
     };
-    let at = DAY_START_MS + 125_000;
-    assert!(open_at(&prev_kid_live_at(at), at).is_ok());
-    let at = DAY_START_MS + 125_001;
+    for at in [
+        DAY_START_MS + 125_000,
+        DAY_START_MS + 125_001,
+        DAY_START_MS + 605_000,
+    ] {
+        assert!(open_at(&prev_kid_live_at(at), at).is_ok(), "{at}");
+    }
+    let at = DAY_START_MS + 605_001;
     assert_eq!(open_at(&prev_kid_live_at(at), at), Err(OpenError::Kid));
 
     // The natural case: sealed a second before midnight, opened after it.
@@ -707,9 +716,9 @@ fn seal_rejects_malformed_claims() {
     let mut c = pow_claims(MIDDAY_MS);
     c.site = "shop".into();
     assert_eq!(s.seal(&c, HOST, &rng), Err(SealError::Shape));
-    // Nothing lives longer than the epoch window allows, not even a
-    // (Phase 2) interactive challenge whose own limit is 10 minutes.
-    // Interactive claims follow the Phase 2 rules of spec §6.2.
+    // Phase 2 spec §6.1: interactive challenges live up to 600 s (the epoch
+    // window grew to match), never longer. Interactive claims follow the
+    // Phase 2 rules of spec §6.2.
     let mut c = pow_claims(MIDDAY_MS);
     c.challenge_type = ChallengeType::Interactive;
     c.providers = vec![
@@ -726,15 +735,365 @@ fn seal_rejects_malformed_claims() {
         a11y_difficulty: 17,
     });
     c.bind.jkt = Some(vec![0x6a; 16]);
-    c.exp_ms = c.iat_ms + 600_000;
+    c.exp_ms = c.iat_ms + 600_001;
     assert_eq!(
         s.seal(&c, HOST, &rng),
         Err(SealError::Invalid(ClaimsError::InvalidLifetime))
     );
-    c.exp_ms = c.iat_ms + 120_000;
+    c.exp_ms = c.iat_ms + 600_000;
     let sealed = s.seal(&c, HOST, &rng).unwrap();
     assert_eq!(
         s.open(&sealed, HOST, ChallengeType::Interactive, MIDDAY_MS),
         Ok(c)
     );
+}
+
+/// Hand-seals claims as an interactive C (aad type `interactive`), so open
+/// can be shown to reject what seal refuses.
+fn craft_interactive(claims: &SealedChallengeClaims) -> String {
+    let mut craft = Craft::new(&claims.kid);
+    craft.aad_type = ChallengeType::Interactive;
+    craft.seal_claims(&proto_of(claims))
+}
+
+/// Phase 2 spec §6.1, §6.11: interactive C round trip and the 600 s
+/// boundary; the 120 s limit of the other types is unchanged.
+#[test]
+fn interactive_round_trip_and_lifetimes() {
+    let s = sealer("blog", &[1]);
+    let rng = TestRng::new(21);
+    let mut claims = interactive_claims(MIDDAY_MS);
+    claims.bind.jkt = Some(
+        mg_challenge::bind_hash("jkt", "L4dd7awNurWUQc4fTCqCUVBTgWLzOpDFXjyWVZ9LxOc").to_vec(),
+    );
+    claims.providers.push(ProviderId::Turnstile);
+    claims.renew_no = 6;
+    let c = s.seal(&claims, HOST, &rng).unwrap();
+    assert!(c.len() <= MAX_C_LEN, "{}", c.len());
+    for now in [MIDDAY_MS, MIDDAY_MS + 480_000, claims.exp_ms - 1] {
+        assert_eq!(
+            s.open(&c, HOST, ChallengeType::Interactive, now),
+            Ok(claims.clone())
+        );
+    }
+    assert_eq!(
+        s.open(&c, HOST, ChallengeType::Interactive, claims.exp_ms),
+        Err(OpenError::Expired)
+    );
+    // The type is part of the aad.
+    assert_eq!(
+        s.open(&c, HOST, ChallengeType::Pow, MIDDAY_MS),
+        Err(OpenError::Aead)
+    );
+
+    assert_eq!(max_c_lifetime_ms(ChallengeType::Interactive), 600_000);
+    assert_eq!(max_c_lifetime_ms(ChallengeType::Pow), 120_000);
+    assert_eq!(max_c_lifetime_ms(ChallengeType::Invisible), 120_000);
+    let mut long = interactive_claims(MIDDAY_MS);
+    long.exp_ms = long.iat_ms + 600_001;
+    let lifetime = Err(SealError::Invalid(ClaimsError::InvalidLifetime));
+    assert_eq!(s.seal(&long, HOST, &rng), lifetime);
+    assert_eq!(
+        s.open(
+            &craft_interactive(&long),
+            HOST,
+            ChallengeType::Interactive,
+            MIDDAY_MS
+        ),
+        Err(OpenError::Invalid(ClaimsError::InvalidLifetime))
+    );
+    // A pow C may not borrow the interactive lifetime.
+    let mut pow = pow_claims(MIDDAY_MS);
+    pow.exp_ms = pow.iat_ms + 120_001;
+    assert_eq!(s.seal(&pow, HOST, &rng), lifetime);
+    pow.exp_ms = pow.iat_ms + 600_000;
+    assert_eq!(s.seal(&pow, HOST, &rng), lifetime);
+    assert_eq!(
+        open(
+            &Craft::new(&pow.kid).seal_claims(&proto_of(&pow)),
+            MIDDAY_MS
+        ),
+        Err(OpenError::Invalid(ClaimsError::InvalidLifetime))
+    );
+}
+
+/// Phase 2 spec §6.2: one counter-example per rule, refused by `seal` and,
+/// sealed by hand, rejected by `open`.
+#[test]
+fn phase2_claims_rules() {
+    type Edit = fn(&mut SealedChallengeClaims);
+    let interactive: [(&str, Edit, ClaimsError); 14] = [
+        (
+            "no providers",
+            |c| c.providers.clear(),
+            ClaimsError::InvalidProviders,
+        ),
+        (
+            "duplicate provider",
+            |c| c.providers.push(ProviderId::SelfHold),
+            ClaimsError::InvalidProviders,
+        ),
+        (
+            "no pow_a11y",
+            |c| c.providers = vec![ProviderId::SelfHold],
+            ClaimsError::InvalidProviders,
+        ),
+        (
+            "tencent",
+            |c| c.providers.push(ProviderId::Tencent),
+            ClaimsError::InvalidProviders,
+        ),
+        (
+            "attempt 0",
+            |c| c.attempt_no = 0,
+            ClaimsError::InvalidAttempt,
+        ),
+        ("ui_seed 0", |c| c.ui_seed = 0, ClaimsError::InvalidUiSeed),
+        (
+            "renew_no 7",
+            |c| c.renew_no = 7,
+            ClaimsError::InvalidRenewNo,
+        ),
+        (
+            "pow v1",
+            |c| c.pow.as_mut().unwrap().alg = mg_challenge::POW_ALG.into(),
+            ClaimsError::InvalidPow,
+        ),
+        (
+            "k 0",
+            |c| c.pow.as_mut().unwrap().k = 0,
+            ClaimsError::InvalidPow,
+        ),
+        (
+            "k 9",
+            |c| c.pow.as_mut().unwrap().k = 9,
+            ClaimsError::InvalidPow,
+        ),
+        (
+            "difficulty 33",
+            |c| c.pow.as_mut().unwrap().difficulty = 33,
+            ClaimsError::InvalidPow,
+        ),
+        (
+            "a11y difficulty 33",
+            |c| c.pow.as_mut().unwrap().a11y_difficulty = 33,
+            ClaimsError::InvalidPow,
+        ),
+        ("no pow", |c| c.pow = None, ClaimsError::InvalidPow),
+        (
+            "lifetime 600.001 s",
+            |c| c.exp_ms = c.iat_ms + 600_001,
+            ClaimsError::InvalidLifetime,
+        ),
+    ];
+    let s = sealer("blog", &[1]);
+    let rng = TestRng::new(22);
+    for (what, edit, want) in interactive {
+        let mut c = interactive_claims(MIDDAY_MS);
+        edit(&mut c);
+        assert_eq!(
+            s.seal(&c, HOST, &rng),
+            Err(SealError::Invalid(want.clone())),
+            "{what}"
+        );
+        // `open` runs the shape checks of step 4 (PoW present, at most 32
+        // bits) before the claims rules; `seal` runs `check` first.
+        let open_want = match what {
+            "difficulty 33" | "no pow" => OpenError::Shape,
+            _ => OpenError::Invalid(want),
+        };
+        assert_eq!(
+            s.open(
+                &craft_interactive(&c),
+                HOST,
+                ChallengeType::Interactive,
+                MIDDAY_MS
+            ),
+            Err(open_want),
+            "{what}"
+        );
+    }
+    // The limits themselves are fine.
+    for edit in [
+        (|c| c.renew_no = 6) as Edit,
+        |c| c.pow.as_mut().unwrap().k = 1,
+        |c| c.pow.as_mut().unwrap().difficulty = 32,
+        |c| c.pow.as_mut().unwrap().a11y_difficulty = 32,
+        |c| c.providers = vec![ProviderId::PowA11y],
+        |c| {
+            c.providers = vec![
+                ProviderId::PowA11y,
+                ProviderId::Turnstile,
+                ProviderId::SelfHold,
+            ]
+        },
+        |c| c.ui_seed = u64::MAX,
+    ] {
+        let mut c = interactive_claims(MIDDAY_MS);
+        edit(&mut c);
+        let sealed = s.seal(&c, HOST, &rng).unwrap();
+        assert_eq!(
+            s.open(&sealed, HOST, ChallengeType::Interactive, MIDDAY_MS),
+            Ok(c)
+        );
+    }
+
+    let pow: [(&str, Edit, ClaimsError); 7] = [
+        (
+            "providers",
+            |c| c.providers = vec![ProviderId::PowA11y],
+            ClaimsError::InvalidProviders,
+        ),
+        ("attempt", |c| c.attempt_no = 1, ClaimsError::InvalidAttempt),
+        ("ui_seed", |c| c.ui_seed = 1, ClaimsError::InvalidUiSeed),
+        ("renew_no", |c| c.renew_no = 1, ClaimsError::InvalidRenewNo),
+        (
+            "pow v2",
+            |c| c.pow.as_mut().unwrap().alg = mg_challenge::POW_ALG_V2.into(),
+            ClaimsError::InvalidPow,
+        ),
+        (
+            "k",
+            |c| c.pow.as_mut().unwrap().k = 1,
+            ClaimsError::InvalidPow,
+        ),
+        (
+            "a11y difficulty",
+            |c| c.pow.as_mut().unwrap().a11y_difficulty = 1,
+            ClaimsError::InvalidPow,
+        ),
+    ];
+    for (what, edit, want) in pow {
+        let mut c = pow_claims(MIDDAY_MS);
+        edit(&mut c);
+        assert_eq!(
+            s.seal(&c, HOST, &rng),
+            Err(SealError::Invalid(want.clone())),
+            "{what}"
+        );
+        assert_eq!(
+            open(&Craft::new(&c.kid).seal_claims(&proto_of(&c)), MIDDAY_MS),
+            Err(OpenError::Invalid(want)),
+            "{what}"
+        );
+    }
+
+    // Common: bind.jkt is absent or 16 bytes, for every type.
+    for mut c in [interactive_claims(MIDDAY_MS), pow_claims(MIDDAY_MS)] {
+        c.bind.jkt = Some(vec![1; 15]);
+        assert_eq!(
+            s.seal(&c, HOST, &rng),
+            Err(SealError::Invalid(ClaimsError::InvalidJktBinding))
+        );
+        let crafted = if c.challenge_type == ChallengeType::Interactive {
+            craft_interactive(&c)
+        } else {
+            Craft::new(&c.kid).seal_claims(&proto_of(&c))
+        };
+        assert_eq!(
+            s.open(&crafted, HOST, c.challenge_type, MIDDAY_MS),
+            Err(OpenError::Shape),
+            "length checks of step 4 come first"
+        );
+        c.bind.jkt = Some(vec![1; 16]);
+        let sealed = s.seal(&c, HOST, &rng).unwrap();
+        assert_eq!(s.open(&sealed, HOST, c.challenge_type, MIDDAY_MS), Ok(c));
+    }
+}
+
+/// Phase 2 spec §6.10, §7.4 step 4: `open_for_renew` opens a C that expired
+/// at most an hour ago, including one of the previous epoch.
+#[test]
+fn open_for_renew_window() {
+    let s = sealer("blog", &[1]);
+    let rng = TestRng::new(23);
+    let claims = interactive_claims(MIDDAY_MS);
+    let c = s.seal(&claims, HOST, &rng).unwrap();
+    let renew = |now| s.open_for_renew(&c, HOST, now);
+    assert_eq!(renew(MIDDAY_MS + 1), Ok((claims.clone(), false)));
+    assert_eq!(renew(claims.exp_ms - 1), Ok((claims.clone(), false)));
+    assert_eq!(renew(claims.exp_ms), Ok((claims.clone(), true)));
+    assert_eq!(
+        renew(claims.exp_ms + RENEW_MAX_EXPIRED_MS),
+        Ok((claims.clone(), true))
+    );
+    assert_eq!(
+        renew(claims.exp_ms + RENEW_MAX_EXPIRED_MS + 1),
+        Err(RenewOpenError::TooOld)
+    );
+    assert_eq!(RenewOpenError::TooOld.reason_code(), "ic.c_expired");
+    // Not yet valid is not "too old".
+    assert_eq!(
+        renew(MIDDAY_MS - 5_001),
+        Err(RenewOpenError::Open(OpenError::Invalid(
+            ClaimsError::NotYetValid
+        )))
+    );
+
+    // Only interactive C renew: a pow C does not open under the interactive aad.
+    let pow = s.seal(&pow_claims(MIDDAY_MS), HOST, &rng).unwrap();
+    let err = s.open_for_renew(&pow, HOST, MIDDAY_MS).unwrap_err();
+    assert_eq!(err, RenewOpenError::Open(OpenError::Aead));
+    assert_eq!(err.reason_code(), "ic.c_invalid");
+    assert_eq!(
+        s.open_for_renew(&c, "other.example", MIDDAY_MS),
+        Err(RenewOpenError::Open(OpenError::Aead))
+    );
+    assert_eq!(
+        s.open_for_renew("!", HOST, MIDDAY_MS),
+        Err(RenewOpenError::Open(OpenError::Encoding))
+    );
+
+    // An expired C must still satisfy every other rule.
+    let mut bad = interactive_claims(MIDDAY_MS);
+    bad.renew_no = 7;
+    let crafted = craft_interactive(&bad);
+    assert_eq!(
+        s.open_for_renew(&crafted, HOST, bad.exp_ms + 1),
+        Err(RenewOpenError::Open(OpenError::Invalid(
+            ClaimsError::InvalidRenewNo
+        )))
+    );
+    let mut no_uah = interactive_claims(MIDDAY_MS);
+    no_uah.bind.uah = None;
+    assert_eq!(
+        s.open_for_renew(&craft_interactive(&no_uah), HOST, no_uah.exp_ms + 1),
+        Err(RenewOpenError::Open(OpenError::Shape))
+    );
+
+    // Across the day boundary: sealed a second before midnight (epoch E − 1),
+    // expired at 00:09:59, renewed up to an hour later.
+    let late = interactive_claims(DAY_START_MS - 1_000);
+    assert_eq!(epoch_no(late.iat_ms), EPOCH - 1);
+    let c = s.seal(&late, HOST, &rng).unwrap();
+    let at = late.exp_ms + RENEW_MAX_EXPIRED_MS;
+    assert_eq!(
+        s.open(&c, HOST, ChallengeType::Interactive, at),
+        Err(OpenError::Kid)
+    );
+    assert_eq!(s.open_for_renew(&c, HOST, at), Ok((late.clone(), true)));
+    assert_eq!(
+        s.open_for_renew(&c, HOST, at + 1),
+        Err(RenewOpenError::TooOld)
+    );
+    // Once the extended window has left epoch E − 1 behind, its C are too old.
+    assert_eq!(
+        s.open_for_renew(&c, HOST, DAY_START_MS + RENEW_MAX_EXPIRED_MS + 605_001),
+        Err(RenewOpenError::TooOld)
+    );
+    // E − 2 is always too old; E + 1 is only accepted in the last 5 s.
+    for (kid, want) in [
+        (epoch_kid(EPOCH - 2), RenewOpenError::TooOld),
+        (epoch_kid(EPOCH + 1), RenewOpenError::Open(OpenError::Kid)),
+        ("e0x".to_owned(), RenewOpenError::Open(OpenError::Kid)),
+    ] {
+        let mut odd = interactive_claims(MIDDAY_MS);
+        odd.kid = kid.clone();
+        let crafted = craft_interactive(&odd);
+        assert_eq!(
+            s.open_for_renew(&crafted, HOST, MIDDAY_MS),
+            Err(want),
+            "{kid}"
+        );
+    }
 }

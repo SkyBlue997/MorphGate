@@ -12,6 +12,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
+use common::random::{N, mutate, mutate_text, random_bytes, random_text};
 use common::{MIDDAY_MS, TestRng, read, sealer};
 use mg_challenge::{
     ClearanceBind, MintParams, SealKeys, TokenKeySet, aad, clearance_cookies, derive_epoch_key,
@@ -22,57 +23,6 @@ use mg_proto::v1::SealedChallenge;
 use pasetors::keys::SymmetricKey;
 use pasetors::version4::{LocalToken, V4};
 use prost::Message;
-
-const N: usize = 10_000;
-const B64URL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-const STRUCTURAL: &[u8] = b".;=:/?#%\\\" {}[],\t\r\n\x00\x7f";
-
-/// A random string mostly over the base64url alphabet, with structural
-/// characters and the occasional multi-byte character mixed in.
-fn random_text(rng: &TestRng, max_len: u64) -> String {
-    let len = rng.below(max_len + 1) as usize;
-    let mut s = String::with_capacity(len);
-    for _ in 0..len {
-        match rng.below(20) {
-            0 => s.push(STRUCTURAL[rng.below(STRUCTURAL.len() as u64) as usize] as char),
-            1 => s.push(['é', '中', '\u{feff}', '🦀'][rng.below(4) as usize]),
-            _ => s.push(B64URL[rng.below(B64URL.len() as u64) as usize] as char),
-        }
-    }
-    s
-}
-
-fn random_bytes(rng: &TestRng, max_len: u64) -> Vec<u8> {
-    let mut v = vec![0u8; rng.below(max_len + 1) as usize];
-    mg_challenge::Rng::fill(rng, &mut v).unwrap();
-    v
-}
-
-/// Replaces, inserts or deletes a few bytes of `input`.
-fn mutate(rng: &TestRng, input: &[u8]) -> Vec<u8> {
-    let mut v = input.to_vec();
-    for _ in 0..=rng.below(3) {
-        let pos = if v.is_empty() {
-            0
-        } else {
-            rng.below(v.len() as u64) as usize
-        };
-        let byte = (rng.next_u64() >> 56) as u8;
-        match rng.below(3) {
-            0 if !v.is_empty() => v[pos] = byte,
-            1 => v.insert(pos, byte),
-            _ if !v.is_empty() => {
-                v.remove(pos);
-            }
-            _ => v.push(byte),
-        }
-    }
-    v
-}
-
-fn mutate_text(rng: &TestRng, input: &str) -> String {
-    String::from_utf8_lossy(&mutate(rng, input.as_bytes())).into_owned()
-}
 
 #[test]
 fn sealed_challenge_open_never_panics() {
