@@ -77,11 +77,16 @@ use pingora::upstreams::peer::HttpPeer;
 use pingora::{Error, ErrorSource, ErrorType, Result};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 /// TCP connect timeout toward the origin.
 pub const ORIGIN_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `reason` of `mg_protocol_rejected_total` for a request target the Edge
+/// cannot parse (not origin-form, asterisk-form or an http(s) URI).
+pub const BAD_TARGET: &str = "bad_target";
 
 /// The `rule_id` of oversize requests forwarded under monitor / bootstrap-open (I-2).
 pub const OVERSIZE_SKIPPED_RULE: &str = "hard.oversize_skipped";
@@ -107,6 +112,27 @@ pub struct Shared {
     /// The once-per-10-minutes table of the `/__mg/t` alert metrics
     /// (Phase 2 spec §9.4).
     pub telemetry_dedup: crate::telemetry::Dedup,
+    /// Requests in flight (a request context exists): on shutdown the event
+    /// flusher is told to stop only once this reaches 0 (ruling I-52).
+    pub inflight: Arc<AtomicUsize>,
+}
+
+/// Counts one request in flight for as long as its context lives (the
+/// context is dropped after `logging`, so its events are queued by then).
+#[derive(Debug)]
+pub struct InflightGuard(Arc<AtomicUsize>);
+
+impl InflightGuard {
+    pub fn new(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::AcqRel);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl std::fmt::Debug for Shared {
@@ -280,6 +306,17 @@ pub struct EdgeCtx {
     pub submit_net: Option<AccessNet>,
     /// A `POST /__mg/r` (Phase 2 spec §9.3): its `kind=refresh` event.
     pub refresh: Option<Box<crate::refresh::RefreshRecord>>,
+    /// A `POST /__mg/c/renew` that failed (counted) or rebound (§15.1).
+    pub renew_feedback: Option<Box<crate::renew::RenewFeedback>>,
+    /// The class of the origin response's `Content-Type` (§13.1 `ct`).
+    pub content: Option<mg_edge_core::events::ContentClass>,
+    /// The path the records show instead of the target's (`/…` for a path
+    /// over 8 KiB answered before route selection, §9.7 item 1).
+    pub record_path: Option<String>,
+    /// The length of a path recorded as `/…`.
+    pub path_len: Option<usize>,
+    /// Holds the in-flight count while the request lives (I-52).
+    pub inflight: Option<InflightGuard>,
     /// The Edge's own time and the origin connect time (§13.7).
     pub timing: Timing,
 }
@@ -342,6 +379,11 @@ impl EdgeCtx {
             redact_as: None,
             submit_net: None,
             refresh: None,
+            renew_feedback: None,
+            content: None,
+            record_path: None,
+            path_len: None,
+            inflight: None,
             timing: Timing::default(),
         }
     }
@@ -403,6 +445,10 @@ impl EdgeProxy {
     ) -> Result<bool> {
         ctx.access_route = Some(route);
         ctx.target = Target::for_record(path);
+        if route != ev::ROUTE_EDGE {
+            let method = session.req_header().method.as_str().to_owned();
+            record_path(ctx, &method, path);
+        }
         self.answer(session, resp).await
     }
 
@@ -467,7 +513,12 @@ impl EdgeProxy {
         let raw = raw_headers(req);
         let slices = as_slices(&raw);
         let Some(target) = parse_target(req.raw_path()) else {
-            return self.protocol_reject(session, Reject::BadMethod).await;
+            // Phase 2 spec §22: its own reason, no longer `bad_method`.
+            metrics()
+                .protocol_rejected
+                .with_label_values(&[self.listener.name.as_str(), BAD_TARGET])
+                .inc();
+            return self.answer(session, EdgeResponse::bad_target()).await;
         };
         let method = req.method.as_str().to_owned();
         let limits = check_limits_detailed(&method, &target.path, &target.query, &slices);
@@ -578,6 +629,7 @@ impl EdgeProxy {
                 None => {
                     ctx.access_route = Some(ev::ROUTE_PROTOCOL);
                     ctx.target = Target::for_record(&target.path);
+                    record_path(ctx, &method, &target.path);
                     return self.protocol_reject(session, kind.reject()).await;
                 }
             }
@@ -798,7 +850,7 @@ impl EdgeProxy {
                     k_pseudo: &self.shared.k_pseudo,
                     rdns: &self.shared.rdns,
                 };
-                let rec = decide::evaluate(services, bundle, env, &facts).await;
+                let mut rec = decide::evaluate(services, bundle, env, &facts).await;
                 let summary = DecisionSummary {
                     rule_id: rec.rule_id().to_owned(),
                     action: rec.decision.action,
@@ -832,6 +884,14 @@ impl EdgeProxy {
                         is_navigation(&crate::context::req_headers(&raw, &removed))
                     }),
                 };
+                // §15.3: the decision event names the first provider of an
+                // interactive C.
+                if let Some(ChallengeAnswer::Issued {
+                    provider: Some(p), ..
+                }) = ctx.challenge
+                {
+                    rec.decision.provider_id = Some(p);
+                }
                 // `enforce` never forwards `/__mg/v`; never proxy it anyway.
                 let answer = match answer {
                     None if verify => Some(EdgeResponse::not_found()),
@@ -868,10 +928,52 @@ impl EdgeProxy {
             }
         };
         ctx.decision = Some(summary);
+        if ctx.oversize.is_some() {
+            // Phase 2 spec §9.7 item 1: forwarded unevaluated.
+            record_path(ctx, &method, &target.path);
+        }
         ctx.target = target;
         ctx.site = Some(site);
         ctx.runtime = Some(runtime);
         Ok(false)
+    }
+}
+
+/// Longest path matched against the routes of a request answered (or
+/// forwarded unevaluated) before route selection (Phase 2 spec §9.7 item 1,
+/// the §9.3.1 path cap).
+pub const RECORD_PATH_MAX: usize = 8 * 1024;
+/// The path recorded instead of one longer than [`RECORD_PATH_MAX`].
+pub const LONG_PATH: &str = "/…";
+
+/// Phase 2 spec §9.7 item 1 (I-35 review): the path a request answered or
+/// forwarded before route selection is recorded with. A path of at most
+/// 8 KiB on a site with a route table is matched like any request (§9.4 path
+/// views), and a `redact_path` route writes `/<route name>`; a longer path is
+/// `/…` with its length (`path_len`). Without a bundle (bootstrap,
+/// `lkg_invalid`) there is no route table and the path is kept.
+fn record_path(ctx: &mut EdgeCtx, method: &str, path: &str) {
+    if path.len() > RECORD_PATH_MAX {
+        ctx.record_path = Some(LONG_PATH.to_owned());
+        ctx.path_len = Some(path.len());
+        return;
+    }
+    let Some(bundle) = ctx.runtime.as_ref().and_then(|r| r.bundle.clone()) else {
+        return;
+    };
+    let Some(env) = bundle.env_for_host(&ctx.host) else {
+        return;
+    };
+    let rm = select_route(
+        env,
+        &ctx.host,
+        method,
+        path,
+        bundle.case_insensitive_paths,
+        &FALLBACK_ROUTE,
+    );
+    if rm.route.redact_path {
+        ctx.redact_as = Some(rm.route.name.clone());
     }
 }
 
@@ -1083,6 +1185,7 @@ impl EdgeProxy {
                 let how = ChallengeAnswer::Issued {
                     ty: issued.ty,
                     bits: issued.bits,
+                    provider: None,
                 };
                 (
                     crate::pages::proof_required_json(
@@ -1273,6 +1376,7 @@ impl EdgeProxy {
             asn: built.ctx.net.asn,
             country: built.ctx.net.country.clone(),
         });
+        ctx.renew_feedback = renewed.feedback.map(Box::new);
         self.answer(session, renewed.response).await
     }
 
@@ -1528,6 +1632,27 @@ impl EdgeProxy {
             (None, None) => None,
         };
         let req = session.req_header();
+        // mg:ev v2 request facts (Phase 2 spec §13.1).
+        let header = |n: &str| req.headers.get(n).and_then(|v| v.to_str().ok());
+        let decided = ctx.evaluation.is_some() || ctx.decision.is_some();
+        let path_hash = (cfg.stream && decided).then(|| {
+            let p = match (ctx.redact_as.as_deref(), bundle) {
+                (Some(route), _) => mg_edge_core::events::redacted_path(route),
+                (None, Some(b)) if b.case_insensitive_paths => {
+                    mg_core::paths::rfc3986_view(&ctx.target.path).to_lowercase()
+                }
+                (None, _) => mg_core::paths::rfc3986_view(&ctx.target.path).into_owned(),
+            };
+            mg_edge_core::events::path_hash(&self.shared.k_pseudo, site_id, &p)
+        });
+        let ua_family = header("user-agent")
+            .map(|ua| mg_core::ua::parse(crate::context::truncate_utf8(ua, 512)).family);
+        let stream = ev::StreamFacts {
+            path_hash: path_hash.as_deref(),
+            bait: cfg.stream && decided && bundle.is_some_and(|b| b.is_bait(&ctx.target.path)),
+            cross_site: ev::cross_site(header("sec-fetch-site"), header("sec-fetch-mode")),
+            ua_family,
+        };
         let f = Finished {
             edge_id: &self.shared.edge_id,
             site: site_id,
@@ -1535,7 +1660,8 @@ impl EdgeProxy {
             ts_ms: ctx.ts_ms,
             method: req.method.as_str(),
             host: &ctx.host,
-            path: &ctx.target.path,
+            path: ctx.record_path.as_deref().unwrap_or(&ctx.target.path),
+            path_len: ctx.path_len,
             env: env.as_deref(),
             status: session.response_written().map(|r| r.status.as_u16()),
             bytes_out: session.body_bytes_sent() as u64,
@@ -1544,6 +1670,8 @@ impl EdgeProxy {
             cf_ray: ctx.cf.as_ref().and_then(|c| c.cf_ray.as_deref()),
             cfg: &cfg,
             k_pseudo: &self.shared.k_pseudo,
+            content: ctx.content,
+            stream,
         };
         let redact = ctx.redact_as.as_deref();
         // The missing-signal counter covers exactly the requests that
@@ -1583,8 +1711,26 @@ impl EdgeProxy {
                 .as_ref()
                 .and_then(|c| c.tier1.as_ref())
                 .and_then(|t| t.as_org.as_deref());
+            // §15.5: the friction denominator, `/__mg/v` included.
+            if rec.ctx.http.navigation && rec.ctx.http.method == "GET" {
+                m.navigations.with_label_values(&[site_id]).inc();
+            }
+            // D-62: requests with a replay-unchecked clearance.
+            if rec.token_replay_unchecked {
+                m.token_ruc.with_label_values(&[site_id]).inc();
+            }
+            let session = (rec.ctx.identity.token.status == mg_core::TokenStatus::Valid)
+                .then(|| rec.ctx.session_id.clone())
+                .flatten();
             records.extend(ev::evaluated(&f, rec, redact.is_some(), as_org));
-            records.extend(ev::access(&f, &route, Some(decision), redact, &net));
+            records.extend(ev::access_with_session(
+                &f,
+                &route,
+                Some(decision),
+                redact,
+                &net,
+                session.as_deref(),
+            ));
         } else if let Some(summary) = &ctx.decision {
             m.requests_total
                 .with_label_values(&[
@@ -1630,6 +1776,10 @@ impl EdgeProxy {
             if let Some(r) = ctx.refresh.as_deref() {
                 records.extend(ev::refresh(&f, r));
             }
+            if let Some(r) = ctx.renew_feedback.as_deref() {
+                let asn = ctx.submit_net.as_ref().and_then(|n| n.asn);
+                records.extend(ev::renewal(&f, r, asn));
+            }
             let net = ctx.submit_net.clone().unwrap_or_default();
             records.extend(ev::access(&f, route, None, redact, &net));
         }
@@ -1651,7 +1801,9 @@ impl ProxyHttp for EdgeProxy {
     type CTX = EdgeCtx;
 
     fn new_ctx(&self) -> Self::CTX {
-        EdgeCtx::new()
+        let mut ctx = EdgeCtx::new();
+        ctx.inflight = Some(InflightGuard::new(&self.shared.inflight));
+        ctx
     }
 
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
@@ -1715,6 +1867,12 @@ impl ProxyHttp for EdgeProxy {
     ) -> Result<()> {
         let started = Instant::now();
         headers::strip_edge_owned(upstream_response);
+        // §13.1 `ct`, §15.3 `kind=access`: the class of the origin's answer.
+        let ct = upstream_response
+            .headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok());
+        ctx.content = Some(mg_edge_core::events::ContentClass::of(ct));
         ctx.timing.add_since(started);
         Ok(())
     }

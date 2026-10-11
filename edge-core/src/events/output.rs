@@ -667,21 +667,24 @@ mod tests {
     /// Stream entries count against `max_batch_lines` only.
     #[test]
     fn stream_items_have_no_byte_size() {
-        let entry = StreamEntry::decision(&super::super::DecisionEntry {
-            site: "s",
-            ts_ms: 1,
-            request_id: "r",
-            session: None,
-            route: "default",
-            action: Action::Allow,
-            dry_run: false,
-            class: BotClass::HumanLikely,
-            score: 1,
-            ipk: None,
-            pfk: None,
-            asn: None,
-            status: Some(200),
-        });
+        let entry = StreamEntry::decision_v2(&super::super::DecisionEntryV2::new(
+            super::super::DecisionEntry {
+                site: "s",
+                ts_ms: 1,
+                request_id: "r",
+                session: None,
+                route: "default",
+                action: Action::Allow,
+                dry_run: false,
+                class: BotClass::HumanLikely,
+                score: 1,
+                ipk: None,
+                pfk: None,
+                asn: None,
+                status: Some(200),
+            },
+            "GET",
+        ));
         assert_eq!(Item::entry(EventClass::Sampled, entry).bytes(), 0);
         assert_eq!(
             Item::line(EventClass::Sampled, Sink::Main, text(9)).bytes(),

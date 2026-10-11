@@ -429,8 +429,13 @@ impl fmt::Debug for ChallengeRequest<'_> {
 pub enum ChallengeAnswer {
     /// 308 to https (D-32).
     HttpsRedirect,
-    /// A `C` of this type and difficulty was issued.
-    Issued { ty: ChallengeType, bits: u32 },
+    /// A `C` of this type and difficulty was issued; `provider` is the
+    /// first provider of an interactive `C` (§15.3 `decision.provider_id`).
+    Issued {
+        ty: ChallengeType,
+        bits: u32,
+        provider: Option<mg_core::ProviderId>,
+    },
     /// 429: `mg.ix.issue` (Phase 2 spec §7.1).
     RateLimited,
     /// 503: the RNG failed, or the claims could not be sealed.
@@ -441,7 +446,7 @@ impl fmt::Display for ChallengeAnswer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::HttpsRedirect => f.write_str("https_redirect"),
-            Self::Issued { ty, bits } => write!(f, "issued:{ty}/{bits}"),
+            Self::Issued { ty, bits, .. } => write!(f, "issued:{ty}/{bits}"),
             Self::RateLimited => f.write_str("rate_limited"),
             Self::Unavailable => f.write_str("unavailable"),
         }
@@ -586,6 +591,7 @@ pub fn respond(req: &ChallengeRequest<'_>, rng: &dyn Rng) -> (EdgeResponse, Chal
         ChallengeAnswer::Issued {
             ty: issued.ty,
             bits: issued.bits,
+            provider: issued.provider.parse().ok(),
         },
     )
 }
@@ -871,7 +877,8 @@ mod tests {
             a,
             ChallengeAnswer::Issued {
                 ty: ChallengeType::Invisible,
-                bits: 14
+                bits: 14,
+                provider: None,
             }
         );
         assert_eq!(r.status, 403);
@@ -903,7 +910,8 @@ mod tests {
             a,
             ChallengeAnswer::Issued {
                 ty: ChallengeType::Pow,
-                bits: 16
+                bits: 16,
+                provider: None,
             }
         );
         let v: serde_json::Value = serde_json::from_str(r.body_text()).unwrap();

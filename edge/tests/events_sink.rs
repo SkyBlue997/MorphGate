@@ -202,7 +202,8 @@ fn four_kinds_with_envelopes_sampling_and_redaction() {
     assert_eq!(feedback["route_id"], "members");
     assert_eq!(
         feedback["msg"],
-        format!("challenge pass {} route=members", shown.ty.as_str())
+        // Phase 2 spec §15.1: `<type>/<provider>`.
+        format!("challenge pass {}/none route=members", shown.ty.as_str())
     );
     let submit_rid = feedback["request_id"].as_str().unwrap().to_owned();
     let telemetry = wait_line(&sinks.short, "telemetry", |v| {
@@ -501,18 +502,31 @@ fn every_request_has_its_stream_entry() {
         std::thread::sleep(Duration::from_millis(50));
     };
     let names: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+    // Phase 2 spec §13.1: mg:ev v2.
     assert_eq!(
         names,
         [
             "v", "kind", "site", "ts", "rid", "sess", "route", "action", "dry", "class", "score",
-            "ipk", "pfk", "asn", "status"
+            "ipk", "pfk", "asn", "status", "m", "ph", "ct", "bt", "xs", "tk", "pf", "uf", "fam",
+            "ctype"
         ]
     );
     let get_field = |k: &str| fields.iter().find(|(n, _)| n == k).unwrap().1.clone();
+    assert_eq!(get_field("v"), "2");
     assert_eq!(get_field("kind"), "decision");
     assert_eq!(get_field("action"), "allow");
     assert_eq!(get_field("status"), "200");
     assert_eq!(get_field("ipk").len(), 32);
+    assert_eq!(get_field("m"), "GET");
+    assert_eq!(get_field("ph").len(), 16);
+    assert_eq!(get_field("uf"), "chrome");
+    assert_eq!(get_field("fam"), "4");
+    assert_eq!(
+        (get_field("bt"), get_field("xs"), get_field("tk")),
+        ("0".into(), "0".into(), "0".into())
+    );
+    assert_eq!(get_field("pf"), "-");
+    assert_eq!(get_field("ctype"), "");
     assert!(fields.iter().all(|(_, v)| !v.contains("198.51.100.33")));
     assert_eq!(
         edge.metric("mg_event_dropped_total{class=\"sampled\",sink=\"stream\"}"),
@@ -536,8 +550,9 @@ fn protocol_rejections_and_oversize_requests() {
         v["kind"] == "access" && v["route"] == "__protocol"
     });
     assert_eq!(v["status"], 414);
-    assert_eq!(v["path"].as_str().unwrap().len(), 1024);
-    assert!(long.starts_with(v["path"].as_str().unwrap()));
+    // Phase 2 spec §9.7 item 1: a path over 8 KiB is `/…` with its length.
+    assert_eq!(v["path"], "/…");
+    assert_eq!(v["path_len"], long.len());
     assert!(v.get("action").is_none(), "{v}");
     assert_eq!(v["ip_prefix"], "198.51.100.0/24");
     let rid = v["request_id"].as_str().unwrap().to_owned();
@@ -561,10 +576,35 @@ fn protocol_rejections_and_oversize_requests() {
     assert_eq!(d["oversize"], "path");
     assert_eq!(d["sample_rate"], 1.0);
     assert_eq!(d["decision"]["dry_run"], true);
-    assert_eq!(d["ctx"]["http"]["path"].as_str().unwrap().len(), 8 * 1024);
+    assert_eq!(d["ctx"]["http"]["path"], "/…");
+    assert_eq!(d["path_len"], long.len());
     let rid = d["ctx"]["request_id"].as_str().unwrap().to_owned();
     let a = wait_line(&sinks.main, "oversize access", |v| is(v, "access", &rid));
     assert_eq!(a["route"], "-");
     assert_eq!(a["status"], 200);
-    assert_eq!(a["path"].as_str().unwrap().len(), 1024);
+    assert_eq!(a["path"], "/…");
+    assert_eq!(a["path_len"], long.len());
+}
+
+/// Phase 2 spec §9.7 item 1 (I-35 review): a request answered before route
+/// selection (a foreign Worker's 403) is still matched against the routes:
+/// on a `redact_path` route its access record shows `/<route>`, never the
+/// tokenized path.
+#[test]
+fn early_answers_follow_redact_path() {
+    let env = TestEnv::new("events-early");
+    let (_edge, sinks) = start(&env, &bundle(), &env.default_config(""));
+    let r = get(
+        env.listen,
+        "example.com",
+        "/members/tok3n-secret",
+        &format!("{}CF-Worker: attacker.example\r\n", cf("198.51.100.37")),
+    );
+    assert_eq!(r.status, 403);
+    let v = wait_line(&sinks.main, "early access", |v| {
+        v["kind"] == "access" && v["route"] == "__site"
+    });
+    assert_eq!(v["path"], "/members", "{v}");
+    let all = sinks.main.accepted_lines().join("\n");
+    assert!(!all.contains("tok3n-secret"), "{all}");
 }

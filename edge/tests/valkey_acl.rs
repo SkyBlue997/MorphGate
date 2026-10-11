@@ -1,15 +1,17 @@
 //! The Edge's Valkey ACL user (docs/impl/phase1-spec.md §17 step 2, §19,
-//! docs/10 VK-02 / VK-06; WP-E1b): with exactly the selectors of §17,
+//! docs/10 VK-02 / VK-06; WP-E1b; Phase 2 spec §14.5, WP-E2b): with exactly
+//! the selectors of Phase 2 spec §14.5,
 //!
 //! ```text
 //! ACL SETUSER edge on >… resetkeys resetchannels -@all +get +set +mget +evalsha
 //!   +script|load +ping +xadd +time +select +client|setinfo +client|setname
-//!   %R~mg:v:* ~mg:rl:* ~mg:n:* %W~mg:ev
+//!   %R~mg:v:* ~mg:rl:* ~mg:n:* ~mg:jti:* ~mg:jc:* ~mg:rp:* %W~mg:ev
 //! ```
 //!
 //! every operation of the Edge's state layer works (connect: `PING` +
-//! `SCRIPT LOAD`; round trip 1: `MGET` verdicts + `EVALSHA mg_gcra`; round
-//! trip 2: `EVALSHA mg_nonce_issue`; `XADD mg:ev`), and each forbidden
+//! `SCRIPT LOAD`; round trip 1: `MGET` verdicts + `EVALSHA mg_gcra` +
+//! `EVALSHA mg_jti`; round trip 2: `EVALSHA mg_nonce_issue` v2 with a
+//! provider-token replay key; `XADD mg:ev`), and each forbidden
 //! operation is refused: writing `mg:v:*` (also from inside a script),
 //! reading `mg:rev:*` or `mg:ev`, `PUBLISH`, `SCRIPT FLUSH` / `KILL`,
 //! `FLUSHALL`, `CONFIG`, `EVAL`, `KEYS`, `DEL`. This answers the §19 open
@@ -26,16 +28,17 @@ mod common;
 use common::valkey::Valkey;
 use mg_core::gcra::GcraParams;
 use mg_edge_core::state::{
-    EVENT_STREAM_KEY, LimitCheck, LimiterKey, MG_GCRA_LUA, NonceIssueV2, NonceResultV2, RoundTrip1,
-    StateConfig, StateHandle, StateMode, StateService, entity_key, verdict_key,
+    EVENT_STREAM_KEY, JtiCheck, JtiOutcome, LimitCheck, LimiterKey, MG_GCRA_LUA, NonceIssueV2,
+    NonceResultV2, RoundTrip1V2, StateConfig, StateHandle, StateMode, StateService, TokenReplay,
+    entity_key, verdict_key,
 };
 use redis::Commands;
 use std::time::Duration;
 
-/// The §17 selectors, verbatim.
+/// The Phase 2 spec §14.5 selectors, verbatim.
 const RULES: &str = "on resetkeys resetchannels -@all +get +set +mget +evalsha +script|load \
                      +ping +xadd +time +select +client|setinfo +client|setname \
-                     %R~mg:v:* ~mg:rl:* ~mg:n:* %W~mg:ev";
+                     %R~mg:v:* ~mg:rl:* ~mg:n:* ~mg:jti:* ~mg:jc:* ~mg:rp:* %W~mg:ev";
 
 const K: [u8; 32] = [9; 32];
 
@@ -128,29 +131,43 @@ fn edge_acl_user_can_do_exactly_what_the_edge_needs() {
         let task = tokio::spawn(service.run(stopped));
         wait_valkey(&handle).await;
 
-        // Round trip 1: MGET + EVALSHA mg_gcra (GET / SET mg:rl:*).
+        // Round trip 1: MGET + EVALSHA mg_gcra (GET / SET mg:rl:*) +
+        // EVALSHA mg_jti (mg:jc:*, mg:jti:*).
+        let now = 1_790_000_000_000;
+        let jti = JtiCheck::new(
+            site.as_str(),
+            &K,
+            &"k".repeat(43),
+            "A".repeat(22),
+            now / 1000,
+        );
         let r = handle
-            .round_trip1(RoundTrip1 {
-                verdict_keys: vec![ip_key.clone()],
-                limits: vec![gcra.clone()],
-            })
+            .round_trip1_v2(
+                RoundTrip1V2 {
+                    verdict_keys: vec![ip_key.clone()],
+                    limits: vec![gcra.clone()],
+                    jti: Some(jti.clone()),
+                },
+                now,
+            )
             .await;
         assert_eq!(r.mode, StateMode::Valkey, "{r:?}");
         assert_eq!(r.verdicts[0].as_deref(), Some(verdict));
         assert!(r.limits[0].allowed);
+        assert_eq!(r.jti, Some(JtiOutcome::Fresh));
 
-        // Round trip 2: EVALSHA mg_nonce_issue v2 (SET NX mg:n:*, mg:rl:*).
+        // Round trip 2: EVALSHA mg_nonce_issue v2 (SET NX mg:n:*, the
+        // provider-token key mg:rp:*, mg:rl:*).
         let nonce = NonceIssueV2 {
             site: site.clone(),
             nonce: [7; 16],
             ttl_ms: 60_000,
-            replay: None,
+            replay: Some(TokenReplay::new("turnstile", "acl-test-token")),
             limits: vec![LimitCheck {
                 key: LimiterKey::new(site.as_str(), "acl-issue", "ip_prefix=192.0.2.0/24"),
                 ..gcra.clone()
             }],
         };
-        let now = 1_790_000_000_000;
         assert!(matches!(
             handle.nonce_issue_v2(nonce.clone(), now, now).await,
             NonceResultV2::Fresh { .. }
@@ -177,6 +194,18 @@ fn edge_acl_user_can_do_exactly_what_the_edge_needs() {
             handle2.nonce_issue_v2(nonce, now, now).await,
             NonceResultV2::Reused
         );
+        // ... and the jti replay.
+        let r = handle2
+            .round_trip1_v2(
+                RoundTrip1V2 {
+                    verdict_keys: Vec::new(),
+                    limits: Vec::new(),
+                    jti: Some(jti),
+                },
+                now,
+            )
+            .await;
+        assert_eq!(r.jti, Some(JtiOutcome::Replayed));
         stop.send_replace(true);
         stop2.send_replace(true);
         let _ = tokio::time::timeout(Duration::from_secs(5), task).await;

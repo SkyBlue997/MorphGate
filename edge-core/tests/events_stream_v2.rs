@@ -260,11 +260,11 @@ fn bounds_and_placeholders() {
     assert_eq!(entry.get("ct"), Some(""));
     assert_eq!(entry.get("fam"), Some(""));
     let names: Vec<&str> = entry.fields().iter().map(|(n, _)| *n).collect();
-    let v1: Vec<&str> = StreamEntry::decision(&base())
-        .fields()
-        .iter()
-        .map(|(n, _)| *n)
-        .collect();
+    // The v1 fields first, in their order.
+    let v1 = [
+        "v", "kind", "site", "ts", "rid", "sess", "route", "action", "dry", "class", "score",
+        "ipk", "pfk", "asn", "status",
+    ];
     assert_eq!(names[..v1.len()], v1[..]);
     assert_eq!(
         names[v1.len()..],

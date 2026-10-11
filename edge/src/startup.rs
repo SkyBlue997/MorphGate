@@ -219,6 +219,7 @@ impl Startup {
             if s.force_monitor {
                 warn(forced_monitor_warning(&s.id));
             }
+            stream_warning(&s.id, current.as_ref(), &cfg.valkey, &mut warn);
             interactive_warnings(
                 &s.id,
                 current.as_ref(),
@@ -456,6 +457,22 @@ pub fn forced_monitor_warning(site: &str) -> String {
          (every route is monitor, whatever the bundle says); remove it once a monitor \
          bundle is deployed (D-60)"
     )
+}
+
+/// Phase 2 spec §10.1: the LKG asks for `mg:ev` (`events.stream`) while
+/// `[valkey] mode = "local"` writes none, so mg-nearline gets no input.
+pub fn stream_warning(
+    site: &str,
+    lkg: Option<&VerifiedBundle>,
+    valkey: &crate::config::ValkeyConfig,
+    warn: &mut dyn FnMut(String),
+) {
+    let stream = lkg.is_some_and(|vb| vb.bundle.events.as_ref().is_some_and(|e| e.stream));
+    if stream && valkey.mode == ValkeyMode::Local {
+        warn(format!(
+            "site {site}: the bundle sets events.stream but [valkey] mode = \"local\" writes no mg:ev: mg-nearline gets no input (D-38)"
+        ));
+    }
 }
 
 /// Smallest `local_nonce_capacity` recommended with interactive challenges

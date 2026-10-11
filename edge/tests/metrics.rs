@@ -39,6 +39,8 @@ const FAMILIES: &[(&str, &[&str])] = &[
     ("mg_double_challenge_total", &["site", "route"]),
     ("mg_endpoint_cache_hit_reports_total", &["site"]),
     ("mg_sw_intercept_reports_total", &["site"]),
+    ("mg_navigations_total", &["site"]),
+    ("mg_token_ruc_total", &["site"]),
     (
         "mg_upstream_auth_failures_total",
         &["listener", "profile", "reason"],
@@ -247,6 +249,7 @@ fn every_family_is_served_with_its_labels() {
             2.0,
         ),
         ("mg_origin_connect_seconds_count{site=\"blog\"}", 1.0),
+        ("mg_navigations_total{site=\"blog\"}", 1.0),
     ] {
         let v = common::metric_value(&text, series).unwrap_or(0.0);
         assert!(v >= min, "{series} = {v}, want >= {min}\n{text}");
@@ -267,6 +270,8 @@ fn every_family_is_served_with_its_labels() {
         "mg_double_challenge_total{route=\"default\",site=\"blog\"}",
         "mg_endpoint_cache_hit_reports_total{site=\"blog\"}",
         "mg_sw_intercept_reports_total{site=\"blog\"}",
+        "mg_token_ruc_total{site=\"blog\"}",
+        "mg_protocol_rejected_total{listener=\"cf-tunnel\",reason=\"bad_target\"}",
     ] {
         assert_eq!(common::metric_value(&text, series), Some(0.0), "{series}");
     }

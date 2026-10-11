@@ -72,6 +72,53 @@ pub struct Renewed {
     pub result: &'static str,
     /// The deciding `ic.*` code (debug log), `None` on success.
     pub code: Option<&'static str>,
+    /// The `kind=feedback` of a counted failure or a rebind (Phase 2 spec
+    /// §15.1); `None` for every other result.
+    pub feedback: Option<RenewFeedback>,
+}
+
+/// A renewal's `kind=feedback` (Phase 2 spec §15.1): the old `C`'s route,
+/// type, attempt, renewal number, binding and first provider, and the
+/// reason; `rebind` for a bound `C` renewed from another prefix.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenewFeedback {
+    pub feedback: mg_core::ChallengeResult,
+    pub rebind: bool,
+}
+
+/// The feedback of a renewal of `claims` (when it was opened).
+fn renew_feedback(
+    s: &Submit<'_>,
+    claims: Option<&SealedChallengeClaims>,
+    code: Option<&'static str>,
+    rebind: bool,
+) -> RenewFeedback {
+    let mut fb = mg_core::ChallengeResult {
+        request_id: s.request_id.to_owned(),
+        site_id: s.site_id.to_owned(),
+        challenge_type: ChallengeType::Unspecified,
+        outcome: Some(if rebind {
+            mg_core::VerdictOutcome::Pass
+        } else {
+            mg_core::VerdictOutcome::Fail
+        }),
+        reason_codes: code.map(|c| vec![c.to_owned()]).unwrap_or_default(),
+        cf_ray: s.built.ctx.upstream.cf_ray.clone(),
+        ..mg_core::ChallengeResult::default()
+    };
+    if let Some(c) = claims {
+        fb.route_id = Some(c.route_class.clone());
+        fb.challenge_type = c.challenge_type;
+        fb.provider_id = c.providers.first().copied();
+        fb.risk_band = Some(c.risk_band);
+        fb.attempt_no = c.attempt_no;
+        fb.renew_no = c.renew_no;
+        fb.bound = c.bind.jkt.is_some();
+    }
+    RenewFeedback {
+        feedback: fb,
+        rebind,
+    }
 }
 
 enum Stop {
@@ -486,10 +533,19 @@ pub async fn renew(
     };
     response.close = !flow.body_done;
     metrics().challenge_renew.with_label_values(&[result]).inc();
+    // §15.1: only counted failures and rebinds write kind=feedback.
+    let feedback = if result == "rebind" {
+        Some(renew_feedback(s, flow.claims.as_ref(), None, true))
+    } else if code.is_some_and(crate::mg_endpoints::counts_as_failure) && response.status != 429 {
+        Some(renew_feedback(s, flow.claims.as_ref(), code, false))
+    } else {
+        None
+    };
     Renewed {
         response,
         result,
         code,
+        feedback,
     }
 }
 

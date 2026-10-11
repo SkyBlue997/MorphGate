@@ -109,6 +109,10 @@ pub struct BundleRuntime {
     /// `ArtifactRef.name`s referenced by the bundle but not available: their
     /// fields are MISSING (§9.10).
     pub missing_artifacts: BTreeSet<String>,
+    /// The scanner baits of `mg:ev` v2 `bt` (Phase 2 spec §13.1): the
+    /// built-in list with `events.scanner_baits_builtin` and the extra globs,
+    /// lower-cased (schema 2 only).
+    pub scanner_baits: Vec<Glob>,
 }
 
 impl fmt::Debug for BundleRuntime {
@@ -147,6 +151,16 @@ impl BundleRuntime {
             TokenLevel::InteractiveExt(_) => c.ttl_interactive_ext_s,
         };
         ttl.clamp(1, mg_challenge::MAX_TOKEN_LIFETIME_S as u32)
+    }
+
+    /// `bt` of `mg:ev` v2 (Phase 2 spec §13.1): the fully decoded path
+    /// view matches a scanner bait, case-insensitively.
+    pub fn is_bait(&self, path: &str) -> bool {
+        if self.scanner_baits.is_empty() {
+            return false;
+        }
+        let view = mg_core::paths::decoded_view(path).to_lowercase();
+        self.scanner_baits.iter().any(|g| g.matches(&view))
     }
 
     /// The environment serving `host`.
@@ -560,6 +574,26 @@ pub fn build_runtime(
         _ => ("en", "/".to_owned(), "/".to_owned()),
     };
 
+    let events = b.events.clone().unwrap_or_else(default_events);
+    let mut scanner_baits = Vec::new();
+    if phase2 {
+        let builtin: &[&str] = if events.scanner_baits_builtin {
+            &crate::events::BUILTIN_SCANNER_BAITS
+        } else {
+            &[]
+        };
+        for p in builtin
+            .iter()
+            .copied()
+            .chain(events.scanner_baits.iter().map(String::as_str))
+        {
+            scanner_baits.push(
+                Glob::new(&p.to_lowercase())
+                    .map_err(|e| format!("events.scanner_baits {p:?}: {e}"))?,
+            );
+        }
+    }
+
     Ok(BundleRuntime {
         site_id: b.site_id.clone(),
         version: b.version,
@@ -586,11 +620,12 @@ pub fn build_runtime(
         clearance: b.clearance.unwrap_or_else(default_clearance),
         scoring,
         crawler_policy,
-        events: b.events.clone().unwrap_or_else(default_events),
+        events,
         origin_headers: b.origin_headers.unwrap_or_else(default_origin_headers),
         cloudflare: b.cloudflare.clone(),
         intel,
         missing_artifacts,
+        scanner_baits,
     })
 }
 

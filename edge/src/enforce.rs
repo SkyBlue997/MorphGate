@@ -281,6 +281,12 @@ impl EdgeResponse {
         Self::plain(status, body)
     }
 
+    /// 400 for a request target the Edge cannot parse (Phase 2 spec §22:
+    /// `mg_protocol_rejected_total{reason="bad_target"}`).
+    pub fn bad_target() -> Self {
+        Self::plain(400, "bad request target")
+    }
+
     /// The §9.3.1 protocol rejections: 414 / 431 / 400.
     pub fn protocol(reject: Reject) -> Self {
         let body = match reject {

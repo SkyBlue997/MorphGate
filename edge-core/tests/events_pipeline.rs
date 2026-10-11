@@ -3,9 +3,9 @@
 
 use mg_core::{Action, BotClass, BoxFuture, ChallengeType, VerdictOutcome};
 use mg_edge_core::events::{
-    DecisionEntry, DropSink, EventClass, EventMetrics, EventQueues, EventRecord, EventSink,
-    EventsConfig, FeedbackEntry, PostOutcome, Sink, StreamEntry, StreamWriter, VlClient, VlOptions,
-    envelope,
+    DecisionEntry, DecisionEntryV2, DropSink, EventClass, EventMetrics, EventQueues, EventRecord,
+    EventSink, EventsConfig, FeedbackEntryV2, PostOutcome, Sink, StreamEntry, StreamWriter,
+    VlClient, VlOptions, envelope,
 };
 use mg_edge_core::testkit::vl::{FakeVl, RecordingStreamWriter, VlReply, VlRequest};
 use serde_json::json;
@@ -694,21 +694,24 @@ async fn file_sink_appends_every_line() {
 }
 
 fn decision_entry(rid: &str) -> StreamEntry {
-    StreamEntry::decision(&DecisionEntry {
-        site: "blog",
-        ts_ms: 1_790_000_000_123,
-        request_id: rid,
-        session: Some("sess-1"),
-        route: "login",
-        action: Action::Challenge,
-        dry_run: true,
-        class: BotClass::AutomationLikely,
-        score: 45,
-        ipk: Some("0123456789abcdef0123456789abcdef"),
-        pfk: Some("fedcba9876543210fedcba9876543210"),
-        asn: Some(64500),
-        status: Some(403),
-    })
+    StreamEntry::decision_v2(&DecisionEntryV2::new(
+        DecisionEntry {
+            site: "blog",
+            ts_ms: 1_790_000_000_123,
+            request_id: rid,
+            session: Some("sess-1"),
+            route: "login",
+            action: Action::Challenge,
+            dry_run: true,
+            class: BotClass::AutomationLikely,
+            score: 45,
+            ipk: Some("0123456789abcdef0123456789abcdef"),
+            pfk: Some("fedcba9876543210fedcba9876543210"),
+            asn: Some(64500),
+            status: Some(403),
+        },
+        "GET",
+    ))
 }
 
 /// §13.6: the writer receives every entry of the batch (stream-only records
@@ -736,15 +739,19 @@ async fn stream_writer_receives_ordered_entries() {
     ));
     run.send(
         EventRecord::new(EventClass::Priority, Sink::Main, line("feedback", 2)).with_stream(
-            StreamEntry::feedback(&FeedbackEntry {
+            StreamEntry::feedback_v2(&FeedbackEntryV2 {
                 site: "blog",
                 ts_ms: 1_790_000_000_124,
                 request_id: "r2",
                 route: "login",
-                outcome: VerdictOutcome::Pass,
+                outcome: VerdictOutcome::Pass.into(),
                 challenge_type: ChallengeType::Pow,
                 pfk: None,
                 asn: None,
+                provider: None,
+                ipk: None,
+                session: None,
+                level: None,
             }),
         ),
     );
@@ -775,7 +782,8 @@ async fn stream_writer_receives_ordered_entries() {
         names(&entries[0]),
         [
             "v", "kind", "site", "ts", "rid", "sess", "route", "action", "dry", "class", "score",
-            "ipk", "pfk", "asn", "status"
+            "ipk", "pfk", "asn", "status", "m", "ph", "ct", "bt", "xs", "tk", "pf", "uf", "fam",
+            "ctype"
         ]
     );
     let values: Vec<&str> = entries[0]
@@ -786,7 +794,7 @@ async fn stream_writer_receives_ordered_entries() {
     assert_eq!(
         values,
         [
-            "1",
+            "2",
             "decision",
             "blog",
             "1790000000123",
@@ -800,13 +808,23 @@ async fn stream_writer_receives_ordered_entries() {
             "0123456789abcdef0123456789abcdef",
             "fedcba9876543210fedcba9876543210",
             "64500",
-            "403"
+            "403",
+            "GET",
+            "",
+            "",
+            "0",
+            "0",
+            "0",
+            "-",
+            "",
+            "",
+            ""
         ]
     );
     assert_eq!(
         entries[1].fields(),
         [
-            ("v", "1".to_owned()),
+            ("v", "2".to_owned()),
             ("kind", "feedback".to_owned()),
             ("site", "blog".to_owned()),
             ("ts", "1790000000124".to_owned()),
@@ -816,6 +834,10 @@ async fn stream_writer_receives_ordered_entries() {
             ("type", "pow".to_owned()),
             ("pfk", String::new()),
             ("asn", "0".to_owned()),
+            ("p", String::new()),
+            ("ipk", String::new()),
+            ("sess", String::new()),
+            ("lvl", String::new()),
         ]
     );
     // Never the client IP in clear.

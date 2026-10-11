@@ -7,8 +7,8 @@
 
 use mg_core::{Action, BotClass};
 use mg_edge_core::events::{
-    DecisionEntry, DropSink, EventClass, EventQueues, EventRecord, EventSink, EventsConfig, Sink,
-    StreamEntry, StreamWriter, VlClient, VlOptions, envelope,
+    DecisionEntry, DecisionEntryV2, DropSink, EventClass, EventQueues, EventRecord, EventSink,
+    EventsConfig, Sink, StreamEntry, StreamWriter, VlClient, VlOptions, envelope,
 };
 use mg_edge_core::testkit::vl::{FakeVl, RecordingStreamWriter, VlReply};
 use serde_json::json;
@@ -58,21 +58,26 @@ fn secret_record(class: EventClass, target: Sink) -> EventRecord {
             "http": {"path": "/reset/tok3n-secret", "cookie": "__Host-mg=v4.local.SECRET"}
         }}),
     );
-    EventRecord::new(class, target, line).with_stream(StreamEntry::decision(&DecisionEntry {
-        site: "blog",
-        ts_ms: 1_790_000_000_000,
-        request_id: "rid-SECRET",
-        session: Some("sess-SECRET"),
-        route: "reset",
-        action: Action::Block,
-        dry_run: false,
-        class: BotClass::Scanner,
-        score: 90,
-        ipk: None,
-        pfk: None,
-        asn: None,
-        status: Some(403),
-    }))
+    EventRecord::new(class, target, line).with_stream(StreamEntry::decision_v2(
+        &DecisionEntryV2::new(
+            DecisionEntry {
+                site: "blog",
+                ts_ms: 1_790_000_000_000,
+                request_id: "rid-SECRET",
+                session: Some("sess-SECRET"),
+                route: "reset",
+                action: Action::Block,
+                dry_run: false,
+                class: BotClass::Scanner,
+                score: 90,
+                ipk: None,
+                pfk: None,
+                asn: None,
+                status: Some(403),
+            },
+            "GET",
+        ),
+    ))
 }
 
 /// Every warn / info path of the flusher: VictoriaLogs rejection (400),

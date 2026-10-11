@@ -86,20 +86,6 @@ pub struct DecisionEntry<'a> {
     pub status: Option<u16>,
 }
 
-/// Inputs of a `kind feedback` entry (one per `POST /__mg/c`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FeedbackEntry<'a> {
-    pub site: &'a str,
-    pub ts_ms: i64,
-    pub request_id: &'a str,
-    /// The challenge's `route_class` route.
-    pub route: &'a str,
-    pub outcome: VerdictOutcome,
-    pub challenge_type: ChallengeType,
-    pub pfk: Option<&'a str>,
-    pub asn: Option<u32>,
-}
-
 /// Value of the leading `v` field of a Phase 2 entry (Phase 2 spec §13.1).
 pub const STREAM_ENTRY_VERSION_V2: &str = "2";
 
@@ -273,6 +259,27 @@ pub struct DecisionEntryV2<'a> {
     pub challenge_type: Option<ChallengeType>,
 }
 
+impl<'a> DecisionEntryV2<'a> {
+    /// The v2 entry of `base` with only the method known: no path hash,
+    /// no origin response, no bait, not cross-site, no clearance, no proof,
+    /// no UA family, no client IP family, no challenge type.
+    pub fn new(base: DecisionEntry<'a>, method: &'a str) -> Self {
+        Self {
+            base,
+            method,
+            path_hash: None,
+            content: None,
+            bait: false,
+            cross_site: false,
+            token: false,
+            proof: ProofResult::None,
+            ua_family: None,
+            family: None,
+            challenge_type: None,
+        }
+    }
+}
+
 /// `outcome` of a feedback entry v2 (Phase 2 spec §13.1, §15.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FeedbackOutcome {
@@ -326,7 +333,7 @@ impl StreamEntry {
     /// pfk asn status m ph ct bt xs tk pf uf fam ctype` (Phase 2 spec
     /// §13.1): the v1 fields in their order, then the v2 fields.
     pub fn decision_v2(e: &DecisionEntryV2<'_>) -> Self {
-        let mut entry = Self::decision(&e.base);
+        let mut entry = Self::decision_v1(&e.base);
         entry.fields[0].1 = STREAM_ENTRY_VERSION_V2.to_owned();
         let flag = |b: bool| if b { "1" } else { "0" }.to_owned();
         let ctype = match (e.base.action, e.challenge_type) {
@@ -377,8 +384,10 @@ impl StreamEntry {
         }
     }
 
-    /// `v 1 kind decision site ts rid sess route action dry class score ipk pfk asn status`.
-    pub fn decision(e: &DecisionEntry<'_>) -> Self {
+    /// The v1 fields `v kind site ts rid sess route action dry class score
+    /// ipk pfk asn status`, which every v2 decision entry starts with (the
+    /// v1 entry itself is no longer written: the Phase 2 switch, spec §2.3).
+    fn decision_v1(e: &DecisionEntry<'_>) -> Self {
         Self {
             fields: vec![
                 ("v", STREAM_ENTRY_VERSION.to_owned()),
@@ -396,24 +405,6 @@ impl StreamEntry {
                 ("pfk", e.pfk.unwrap_or("").to_owned()),
                 ("asn", e.asn.unwrap_or(0).to_string()),
                 ("status", e.status.unwrap_or(0).to_string()),
-            ],
-        }
-    }
-
-    /// `v 1 kind feedback site ts rid route outcome type pfk asn`.
-    pub fn feedback(e: &FeedbackEntry<'_>) -> Self {
-        Self {
-            fields: vec![
-                ("v", STREAM_ENTRY_VERSION.to_owned()),
-                ("kind", "feedback".to_owned()),
-                ("site", e.site.to_owned()),
-                ("ts", e.ts_ms.to_string()),
-                ("rid", e.request_id.to_owned()),
-                ("route", e.route.to_owned()),
-                ("outcome", e.outcome.as_str().to_owned()),
-                ("type", e.challenge_type.as_str().to_owned()),
-                ("pfk", e.pfk.unwrap_or("").to_owned()),
-                ("asn", e.asn.unwrap_or(0).to_string()),
             ],
         }
     }
@@ -448,7 +439,7 @@ mod tests {
 
     #[test]
     fn decision_entry_unknown_values_use_spec_placeholders() {
-        let e = StreamEntry::decision(&DecisionEntry {
+        let e = StreamEntry::decision_v1(&DecisionEntry {
             site: "blog",
             ts_ms: 5,
             request_id: "r",

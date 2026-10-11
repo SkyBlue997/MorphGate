@@ -196,6 +196,10 @@ pub struct EdgeMetrics {
     pub endpoint_cache_hit_reports: IntCounterVec,
     /// `mg_sw_intercept_reports_total{site}` (§9.4).
     pub sw_intercept_reports: IntCounterVec,
+    /// `mg_navigations_total{site}` (Phase 2 spec §15.5, §20).
+    pub navigations: IntCounterVec,
+    /// `mg_token_ruc_total{site}` (D-62).
+    pub token_ruc: IntCounterVec,
 }
 
 static METRICS: LazyLock<EdgeMetrics> = LazyLock::new(EdgeMetrics::register);
@@ -421,6 +425,16 @@ impl EdgeMetrics {
                 "SDK reports of a site Service Worker answering /__mg/ requests.",
                 &["site"]
             ),
+            navigations: counter!(
+                "mg_navigations_total",
+                "GET navigations that reached the decision step (/__mg/v included): the denominator of the human friction ratio.",
+                &["site"]
+            ),
+            token_ruc: counter!(
+                "mg_token_ruc_total",
+                "Requests that carried a clearance issued without a replay check (ruc).",
+                &["site"]
+            ),
         }
     }
 
@@ -441,7 +455,12 @@ impl EdgeMetrics {
         }
         self.interactive_available.with_label_values(&[site]);
         self.site_forced_monitor.with_label_values(&[site]);
-        for c in [&self.endpoint_cache_hit_reports, &self.sw_intercept_reports] {
+        for c in [
+            &self.endpoint_cache_hit_reports,
+            &self.sw_intercept_reports,
+            &self.navigations,
+            &self.token_ruc,
+        ] {
             c.with_label_values(&[site]);
         }
         self.double_challenge.with_label_values(&[site, "default"]);
@@ -476,7 +495,13 @@ impl EdgeMetrics {
                 .with_label_values(&[listener])
                 .set(0);
         }
-        for reason in ["uri_too_long", "header_too_large", "bad_method", "bad_host"] {
+        for reason in [
+            "uri_too_long",
+            "header_too_large",
+            "bad_method",
+            "bad_host",
+            crate::proxy::BAD_TARGET,
+        ] {
             self.protocol_rejected
                 .with_label_values(&[listener, reason]);
         }
