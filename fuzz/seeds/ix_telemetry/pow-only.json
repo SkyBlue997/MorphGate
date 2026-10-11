@@ -1,0 +1,1 @@
+{"ix":{"v":1,"mode":"pow_only","modality":"none","locale":"zh-CN","ks":"memory","sv":"0.3.0","fallback":"ts_load_timeout","trusted":0,"act_ms":4100,"pow":{"ms":11,"worker":false,"impl":"js"}}}

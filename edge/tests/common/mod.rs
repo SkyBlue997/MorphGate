@@ -1002,7 +1002,13 @@ pub mod challenge {
     }
 
     fn attr(html: &str, name: &str) -> String {
-        html.split(&format!("{name}=\""))
+        // The attributes of `<main id="mg-challenge">` (template v2's CSS
+        // mentions `[data-mg-type=…]` earlier in the page).
+        let main = html
+            .split("<main id=\"mg-challenge\"")
+            .nth(1)
+            .unwrap_or(html);
+        main.split(&format!("{name}=\""))
             .nth(1)
             .and_then(|t| t.split('"').next())
             .unwrap_or_else(|| panic!("no {name} in {html}"))
@@ -1082,5 +1088,194 @@ pub mod challenge {
             .next()
             .unwrap()
             .to_owned()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The Phase 2 client (WP-E2a): the template v2 page, the session key, the
+// signed v2 submission and the renewal, solved with mg-challenge's test-only
+// helpers (Phase 2 spec D-59: no solver outside edge/tests).
+
+pub mod interactive {
+    use super::{Response, TestEnv, cf, raw};
+    use mg_challenge::testkit::TestSessionKey;
+    use mg_challenge::{SubmissionFields, pow_solve, pow_solve_v2};
+    use serde_json::{Value, json};
+
+    /// The SDK build reported in submissions (any 16 hex characters).
+    pub const BUILD: &str = "1df90640e0c5fec4";
+
+    /// A challenge as a template v2 page or a JSON answer shows it.
+    #[derive(Debug, Clone)]
+    pub struct Shown {
+        pub c: String,
+        pub ty: String,
+        pub bits: u32,
+        pub ret: String,
+        /// The plain parameters of an interactive `C`.
+        pub ix: Option<Value>,
+    }
+
+    fn unescape(s: &str) -> String {
+        s.replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+    }
+
+    /// The value of `name` on `<main id="mg-challenge">`, unescaped.
+    pub fn main_attr(html: &str, name: &str) -> String {
+        let main = html
+            .split("<main id=\"mg-challenge\"")
+            .nth(1)
+            .unwrap_or_else(|| panic!("no <main id=\"mg-challenge\"> in {html}"));
+        let raw = main
+            .split(&format!(" {name}=\""))
+            .nth(1)
+            .and_then(|t| t.split('"').next())
+            .unwrap_or_else(|| panic!("no {name} in {html}"));
+        unescape(raw)
+    }
+
+    pub fn from_page(html: &str) -> Shown {
+        let ix = main_attr(html, "data-mg-ix");
+        Shown {
+            c: main_attr(html, "data-mg-c"),
+            ty: main_attr(html, "data-mg-type"),
+            bits: main_attr(html, "data-mg-pow-bits").parse().unwrap_or(0),
+            ret: main_attr(html, "data-mg-ret"),
+            ix: (!ix.is_empty()).then(|| serde_json::from_str(&ix).unwrap()),
+        }
+    }
+
+    pub fn from_json(v: &Value) -> Shown {
+        Shown {
+            c: v["challenge"].as_str().unwrap().to_owned(),
+            ty: v["type"].as_str().unwrap_or("interactive").to_owned(),
+            bits: v["pow"]["bits"].as_u64().unwrap_or(0) as u32,
+            ret: v["ret"].as_str().unwrap_or_default().to_owned(),
+            ix: v.get("ix").cloned(),
+        }
+    }
+
+    /// `t` with the interactive telemetry of `mode` (`hold` / `single`),
+    /// held or waited for `ms` (rounded up to the SDK's 10 ms steps).
+    pub fn t_of(mode: &str, ms: u64) -> String {
+        let ms = ms.div_ceil(10) * 10;
+        let ix = match mode {
+            "hold" => json!({"v": 1, "mode": "hold", "modality": "mouse", "locale": "zh-CN",
+                "ks": "idb", "sv": "0.3.0", "fallback": null, "trusted": 3, "act_ms": 2300,
+                "pre": {"moves": 5, "path_px": 9, "straight": 0.7, "speed_mean": 6, "speed_sd": 4,
+                        "dir_changes": 3, "render_to_input_ms": 11, "to_target_ms": 9},
+                "hold": {"ms": ms, "offset": [0.1, -0.2], "jitter_px": 2, "moves": 3, "cancels": 0,
+                         "pressure": 0.5, "pressure_var": 0, "contact_var": 0},
+                "page": {"vis": 0, "vis_during": 0, "focus": 0, "frame_mean": 4, "frame_sd": 1},
+                "pow": {"ms": 8, "worker": true, "impl": "js"}}),
+            "single" => json!({"v": 1, "mode": "single", "modality": "keyboard", "locale": "en",
+                "ks": "local", "sv": "0.3.0", "fallback": null, "trusted": 3, "act_ms": 2000,
+                "single": {"wait_ms": ms},
+                "page": {"vis": 1, "vis_during": 0, "focus": 2, "frame_mean": 4, "frame_sd": 1},
+                "pow": {"ms": 9, "worker": true, "impl": "wasm"}}),
+            other => panic!("{other}"),
+        };
+        json!({"ix": ix}).to_string()
+    }
+
+    /// The signed v2 submission of `s` by `key` for provider `p` with `t`
+    /// (PoW v2 at the provider's difficulty for an interactive `C`, PoW v1
+    /// otherwise).
+    pub fn submission(key: &TestSessionKey, s: &Shown, p: &str, t: &str) -> Value {
+        let counters = match &s.ix {
+            Some(ix) => {
+                let bits = if p == "pow_a11y" {
+                    ix["pow"]["a11y_bits"].as_u64().unwrap()
+                } else {
+                    ix["pow"]["bits"].as_u64().unwrap()
+                } as u32;
+                let k = ix["pow"]["k"].as_u64().unwrap() as usize;
+                pow_solve_v2(&s.c, bits, k, 1 << 24).expect("solvable")
+            }
+            None => vec![pow_solve(&s.c, s.bits, 1 << 24).expect("solvable")],
+        };
+        let ts = 1_790_000_000_123u64;
+        let sig = key.sign_submission(&SubmissionFields {
+            c: &s.c,
+            ty: &s.ty,
+            p,
+            pp: "",
+            t,
+            counters: &counters,
+            ret: &s.ret,
+            ts,
+            build: BUILD,
+        });
+        json!({"v": 2, "type": s.ty, "c": s.c, "p": p, "pp": "", "t": t,
+               "pow": {"counters": counters}, "ret": s.ret, "ts": ts, "build": BUILD,
+               "jwk": key.jwk_value(), "sig": sig})
+    }
+
+    /// The `self_hold` hold submission of an interactive `s`.
+    pub fn hold(key: &TestSessionKey, s: &Shown) -> Value {
+        let ms = s.ix.as_ref().unwrap()["hold_ms"].as_u64().unwrap();
+        submission(key, s, "self_hold", &t_of("hold", ms))
+    }
+
+    /// Sleeps until the server-side minimum time of `s` has passed (§7.7):
+    /// the SDK waits `min_ms` + 100 ms after receiving the `C`.
+    pub fn wait_min(s: &Shown) {
+        let ms = s.ix.as_ref().map_or(0, |ix| ix["min_ms"].as_u64().unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(ms + 150));
+    }
+
+    /// The signed renewal of `s` by `key` (§7.4).
+    pub fn renewal(key: &TestSessionKey, c: &str) -> Value {
+        let ts = 1_790_000_000_456u64;
+        json!({"v": 2, "c": c, "jwk": key.jwk_value(), "ts": ts, "sig": key.sign_renew(c, ts)})
+    }
+
+    /// `POST <path>` with JSON `v` from `ip` with `ua` and extra headers.
+    pub fn post_json(
+        env: &TestEnv,
+        path: &str,
+        ip: &str,
+        ua: &str,
+        extra: &str,
+        v: &Value,
+    ) -> Response {
+        let body = v.to_string();
+        let req = format!(
+            "POST {path} HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\
+             Content-Length: {}\r\n{}User-Agent: {ua}\r\nContent-Type: application/json\r\n\
+             Sec-Fetch-Mode: cors\r\n{extra}\r\n{body}",
+            body.len(),
+            cf(ip)
+        );
+        raw(env.listen, req.as_bytes()).unwrap_or_else(|e| panic!("POST {path}: {e}"))
+    }
+
+    /// Every `Set-Cookie` of a response, in order.
+    pub fn set_cookies(r: &Response) -> Vec<String> {
+        r.head
+            .lines()
+            .skip(1)
+            .filter_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.eq_ignore_ascii_case("set-cookie")
+                    .then(|| v.trim().to_owned())
+            })
+            .collect()
+    }
+
+    /// `name=value` of the first `Set-Cookie` named `name`.
+    pub fn cookie(r: &Response, name: &str) -> Option<String> {
+        set_cookies(r)
+            .into_iter()
+            .find(|c| c.starts_with(&format!("{name}=")))
+            .map(|c| c.split(';').next().unwrap().to_owned())
+    }
+
+    pub fn json_body(r: &Response) -> Value {
+        serde_json::from_str(&r.body).unwrap_or_else(|e| panic!("{e}: {}\n{}", r.head, r.body))
     }
 }

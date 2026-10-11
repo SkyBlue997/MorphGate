@@ -26,6 +26,8 @@ pub use mg_core::paths::{cloudflare_view, rfc3986_view};
 pub const HEALTHZ_PATH: &str = "/__mg/healthz";
 /// Challenge submission endpoint (§10.3).
 pub const SUBMIT_PATH: &str = "/__mg/c";
+/// Renewal of an interactive challenge (Phase 2 spec §7.4).
+pub const RENEW_PATH: &str = "/__mg/c/renew";
 /// Prefix of the SDK files (§10.4): `/__mg/s/<file>`.
 pub const SDK_PREFIX: &str = "/__mg/s/";
 /// Verify entry for challenged fetches (§10.5, I-39): `/__mg/v?ret=<path>`.
@@ -40,6 +42,9 @@ pub enum RouteKind {
     SdkFile,
     /// `POST /__mg/c`: a challenge submission (§10.3).
     Submit,
+    /// `POST /__mg/c/renew`: renewal of an interactive challenge (Phase 2
+    /// spec §7.4).
+    Renew,
     /// `GET /__mg/v`: the verify entry (§10.5, I-39).
     Verify,
     /// Any other path under `/__mg`: reserved, answered 404.
@@ -54,7 +59,9 @@ impl RouteKind {
     pub const fn metric_label(self) -> &'static str {
         match self {
             Self::Healthz => "healthz",
-            Self::SdkFile | Self::Submit | Self::Verify | Self::EdgeReserved => "edge",
+            Self::SdkFile | Self::Submit | Self::Renew | Self::Verify | Self::EdgeReserved => {
+                "edge"
+            }
             Self::Origin => "origin",
         }
     }
@@ -63,7 +70,7 @@ impl RouteKind {
 /// Classifies a request path (without query string).
 ///
 /// Only the exact raw paths are endpoints: `/__mg/healthz`, `/__mg/c`,
-/// `/__mg/v` and `/__mg/s/<file>` (the file name is checked against the SDK manifest by
+/// `/__mg/c/renew`, `/__mg/v` and `/__mg/s/<file>` (the file name is checked against the SDK manifest by
 /// [`crate::mg_endpoints::sdk_file`]). A path is in the reserved namespace if
 /// its raw form, its RFC 3986 form or its Cloudflare form (see
 /// [`rfc3986_view`], [`cloudflare_view`]) is `/__mg` or starts with `/__mg/`
@@ -73,6 +80,8 @@ pub fn classify(path: &str) -> RouteKind {
         RouteKind::Healthz
     } else if path == SUBMIT_PATH {
         RouteKind::Submit
+    } else if path == RENEW_PATH {
+        RouteKind::Renew
     } else if path == VERIFY_PATH {
         RouteKind::Verify
     } else if path.starts_with(SDK_PREFIX) {
@@ -95,7 +104,9 @@ mod tests {
         assert_eq!(classify("/__mg/"), RouteKind::EdgeReserved);
         assert_eq!(classify("/__mg/healthz/extra"), RouteKind::EdgeReserved);
         assert_eq!(classify("/__mg/c"), RouteKind::Submit);
-        assert_eq!(classify("/__mg/c/renew"), RouteKind::EdgeReserved);
+        assert_eq!(classify("/__mg/c/renew"), RouteKind::Renew);
+        assert_eq!(classify("/__mg/c/renew/"), RouteKind::EdgeReserved);
+        assert_eq!(classify("/__mg/c/Renew"), RouteKind::EdgeReserved);
         assert_eq!(classify("/__mg/r"), RouteKind::EdgeReserved);
         assert_eq!(classify("/__mg/v"), RouteKind::Verify);
         assert_eq!(classify("/__mg/v/"), RouteKind::EdgeReserved);

@@ -401,6 +401,8 @@ mod tests {
                 Default::default(),
                 &crate::sites::default_scoring(),
                 &crate::sites::default_crawler_policy(),
+                1,
+                false,
             ),
         }
     }

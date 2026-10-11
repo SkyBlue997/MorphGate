@@ -40,7 +40,7 @@ export interface V2Element {
 export const DEFAULT_MANIFEST_VERSION: ManifestVersion;
 export const MANIFEST_VERSION: ManifestVersion;
 export const TEMPLATE_NAME: "challenge.html";
-export const TEMPLATE_SOURCES: Readonly<Record<ManifestVersion, string>>;
+export const TEMPLATE_SOURCES: Readonly<Partial<Record<ManifestVersion, string>>>;
 export const MANIFEST_NAME: "manifest.json";
 export const MAX_TEMPLATE_BYTES: number;
 export const SDK_FILE_PATTERN: RegExp;

@@ -155,7 +155,13 @@ fn ty(s: &str) -> ChallengeType {
 
 /// The value of the attribute `name` in the challenge page.
 fn attr(html: &str, name: &str) -> String {
-    html.split(&format!("{name}=\""))
+    // The attributes of `<main id="mg-challenge">` (template v2's CSS
+    // mentions `[data-mg-type=…]` earlier in the page).
+    let main = html
+        .split("<main id=\"mg-challenge\"")
+        .nth(1)
+        .unwrap_or(html);
+    main.split(&format!("{name}=\""))
         .nth(1)
         .and_then(|t| t.split('"').next())
         .unwrap_or_else(|| panic!("no {name} in {html}"))
@@ -415,8 +421,9 @@ fn challenge_page_to_clearance() {
     assert_eq!(new.ret, "/members/a?x=1");
 
     assert!(metric(&edge, "invisible", "issued") >= 2.0);
+    // Phase 2 spec §15.5: the C attached to a failure is `reissued`.
     assert!(
-        metric(&edge, "pow", "issued") >= 1.0,
+        metric(&edge, "pow", "reissued") >= 1.0,
         "the new C of a failure"
     );
     assert_eq!(metric(&edge, "invisible", "solved"), 1.0);
@@ -445,7 +452,11 @@ fn json_challenge_and_fetch_submission() {
     let r = submit_json(&env, ip, CHROME, "", &solved(&shown, CHROME));
     assert_eq!(r.status, 200, "{}\n{}", r.head, r.body);
     let body: Value = serde_json::from_str(&r.body).unwrap();
-    assert_eq!(body, json!({"ok": true, "ret": "/members/api"}));
+    assert_eq!(
+        (&body["ok"], &body["ret"], &body["v"]),
+        (&json!(true), &json!("/members/api"), &json!(2))
+    );
+    assert!(body["now_ms"].as_i64().unwrap() > 1_700_000_000_000);
     cookie_of(&r);
 
     // charset=UTF-8 (any case) and other parameters are accepted.
@@ -585,7 +596,8 @@ fn submission_failures() {
         &solved(&shown, CHROME),
     );
     assert_eq!(r.status, 425);
-    assert_eq!(r.body, "{\"error\":\"mg_too_early\"}");
+    assert_eq!(r.body, "{\"error\":\"mg_too_early\",\"v\":2}");
+    assert_eq!(r.header("mg-error"), Some("mg_too_early"));
 
     // Content-Encoding.
     let r = submit_json(

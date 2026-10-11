@@ -4,12 +4,12 @@ Browser challenge assets for MorphGate, a defensive bot-management and traffic-s
 
 ## Install and deploy the npm assets
 
-Version `0.2.0-preview.1` is compatible with **MorphGate Edge built from `master` at commit `710beea` or later** (`mg-edge --version` reports `0.1.0 (<commit>)`), which serves the `/__mg/v` entry that `MorphGate.fetch()` and `MorphGate.verify()` navigate to (spec I-39). With the Edge of [v0.1.0-preview.1](https://github.com/SkyBlue997/MorphGate/releases/tag/v0.1.0-preview.1), use `0.1.0-phase1`: the challenge page works with either version, but that Edge answers `/__mg/v` with 404. See the [compatibility table](#compatibility) for the Phase 2 releases. The Edge generates and verifies the sealed challenges. This package supplies the matching browser script and page template, consumed as a static asset directory; it has no Node.js import entry point.
+Version `0.3.0` builds an SDK directory with manifest v2 and template v2 and is compatible with **`mg-edge` 0.2.0 or later** (`mg-edge --version` reports `0.2.0 (<commit>)`), which serves the interactive challenge, `/__mg/c/renew` and the stable alias `/__mg/s/mg.js`. With an older Edge, use `0.2.0-preview.1` (manifest v1). See the [compatibility table](#compatibility). The Edge generates and verifies the sealed challenges. This package supplies the matching browser script and page template, consumed as a static asset directory; it has no Node.js import entry point.
 
 Install the pinned package in your deployment project:
 
 ```sh
-npm install --save-exact @ermiaodada/morphgate-web-sdk@0.2.0-preview.1
+npm install --save-exact @ermiaodada/morphgate-web-sdk@0.3.0
 ```
 
 The package contains `dist/sdk/manifest.json`, `dist/sdk/challenge.html`, a content-hashed `dist/sdk/mg.<hex16>.js`, license/notice files and package documentation. Source files, tests and development scripts remain in the [source repository](https://github.com/SkyBlue997/MorphGate/tree/master/sdk/web).
@@ -17,16 +17,16 @@ The package contains `dist/sdk/manifest.json`, `dist/sdk/challenge.html`, a cont
 Copy the complete `dist/sdk/` directory onto the Edge host. For example, on that host:
 
 ```sh
-sudo mkdir -p /opt/morphgate/web-sdk-0.2.0-preview.1/sdk
-sudo cp -R node_modules/@ermiaodada/morphgate-web-sdk/dist/sdk/. /opt/morphgate/web-sdk-0.2.0-preview.1/sdk/
-sudo cp node_modules/@ermiaodada/morphgate-web-sdk/LICENSE node_modules/@ermiaodada/morphgate-web-sdk/NOTICE /opt/morphgate/web-sdk-0.2.0-preview.1/
+sudo mkdir -p /opt/morphgate/web-sdk-0.3.0/sdk
+sudo cp -R node_modules/@ermiaodada/morphgate-web-sdk/dist/sdk/. /opt/morphgate/web-sdk-0.3.0/sdk/
+sudo cp node_modules/@ermiaodada/morphgate-web-sdk/LICENSE node_modules/@ermiaodada/morphgate-web-sdk/NOTICE /opt/morphgate/web-sdk-0.3.0/
 ```
 
 Set the corresponding directory in the Edge configuration:
 
 ```toml
 [sdk]
-dir = "/opt/morphgate/web-sdk-0.2.0-preview.1/sdk"
+dir = "/opt/morphgate/web-sdk-0.3.0/sdk"
 ```
 
 Keep the hashed script, template and manifest together without editing their contents or names. Edge validates the manifest hashes and template when loading the directory. Validate the complete server configuration, with its credentials available, before starting or reloading:
@@ -45,8 +45,7 @@ For fresh deployment keys, configuration and the checked systemd reload procedur
 |---|---|---|---|
 | `0.1.0-phase1` | manifest v1 | `0.1.0-preview.1` and later | No `/__mg/v` on the oldest Edge |
 | `0.2.0-preview.1` | manifest v1, template v1 | `0.1.0` from commit `710beea` | `MorphGate.fetch()` uses the verify entry (I-39) |
-| source between WP-W2 and WP-E2a (unpublished) | manifest v1, template v1 | `0.1.0` from commit `710beea` | Still reports `0.2.0-preview.1`; `DEFAULT_MANIFEST_VERSION = 1`. Proofs, refresh and the session key switch on only when an Edge sets `__Host-mg_st` (schema 2), so with a Phase 1 Edge the pages behave as in Phase 1 |
-| `0.3.x` (with WP-E2a) | manifest v2, template v2 | `mg-edge` ≥ `0.2.0` | Interactive challenge, in-place solving, `MG-Proof`, refresh, telemetry. `mg-edge` 0.2.x still accepts 0.2.x directories (manifest v1; no interactive challenge) |
+| `0.3.0` | manifest v2, template v2 | `mg-edge` ≥ `0.2.0` | Interactive challenge, in-place solving, `MG-Proof`, refresh, telemetry. `mg-edge` 0.2.x still accepts 0.2.x directories (manifest v1; no interactive challenge) |
 
 The stable alias `/__mg/s/mg.js` exists from `mg-edge` 0.2.0 on, for both directory versions. A rollback to a Phase 1 Edge needs the hashed file name again (spec §19 step 9).
 

@@ -1,15 +1,25 @@
 //! The Web SDK directory (`[sdk] dir`, docs/impl/phase1-spec.md §11.1,
-//! §11.2, §10.4, ruling I-28).
+//! §11.2, §10.4, ruling I-28; docs/impl/phase2-spec.md §12.2, §12.3, D-39).
 //!
 //! Loaded once at start-up (and by `--check-config`): `manifest.json` is
 //! parsed strictly, every listed file is read into memory and checked against
-//! its SHA-256, and the challenge page template is checked against the §11.2
-//! contract with [`validate_template`], a rule-for-rule port of
-//! `sdk/web/scripts/build-dist.mjs` `validateTemplate` (I-28). The files in
-//! `files` are served under `/__mg/s/<name>` from memory
-//! ([`crate::mg_endpoints`]); `challenge.html` is pre-split into literal text
-//! and placeholders ([`Template`]) and rendered per response
+//! its SHA-256, and the challenge page template is checked against the
+//! contract of its manifest version with [`validate_template_version`], a
+//! rule-for-rule port of `sdk/web/scripts/build-dist.mjs` `validateTemplate`
+//! (I-28). The files in `files` are served under `/__mg/s/<name>` from
+//! memory ([`crate::mg_endpoints`]), and the SDK file also under the stable
+//! alias `/__mg/s/mg.js` (D-39); `challenge.html` is pre-split into literal
+//! text and placeholders ([`Template`]) and rendered per response
 //! ([`crate::pages`]).
+//!
+//! Two manifest versions are accepted (Phase 2 spec §12.2):
+//!
+//! * `v = 1`: the Phase 1 template contract (10 placeholders); interactive
+//!   challenges are not available with it (§5.1);
+//! * `v = 2`: template v2 (§12.3): `{{ix}}`, `{{help_href}}`,
+//!   `{{privacy_href}}` and the interactive control's structure.
+//!
+//! Either way `files` must not list `mg.js` (the alias name, D-39).
 //!
 //! # Porting notes
 //!
@@ -25,7 +35,9 @@
 //! * placeholders `/\{\{([^{}]*)\}\}/g` ([`placeholder_spans`]);
 //! * comments `/<!--[\s\S]*?(?:-->|$)/g` and `<script>` / `<style>` raw text
 //!   `/(<(script|style)\b(?:…)*>)([\s\S]*?)(?:<\/\2\s*>|$)/gi`, the regions
-//!   where no placeholder may appear.
+//!   where no placeholder may appear;
+//! * v2: an element's content range `contentRange` (`<(/?)name\b…>`,
+//!   case-insensitive, counting nested elements of the same name).
 //!
 //! The template is at most 32 KiB, every scanner is at worst quadratic in
 //! it, and none panics (tested with 10,000 mutated templates).
@@ -41,8 +53,13 @@ use std::sync::Arc;
 
 /// The manifest file name.
 pub const MANIFEST: &str = "manifest.json";
-/// The only template of Phase 1.
+/// The template file of both manifest versions.
 pub const TEMPLATE: &str = "challenge.html";
+/// The stable alias of the SDK file (`/__mg/s/mg.js`, D-39); never a
+/// manifest `files` name.
+pub const ALIAS: &str = "mg.js";
+/// `Cache-Control` of the alias (D-39, Phase 2 spec §11.1).
+pub const ALIAS_CACHE_CONTROL: &str = "public, max-age=300";
 /// Template size limit (§11.2).
 pub const MAX_TEMPLATE_BYTES: usize = 32 * 1024;
 /// Size limit of one served SDK file (the gzip budget is 30 KiB; this only
@@ -50,7 +67,7 @@ pub const MAX_TEMPLATE_BYTES: usize = 32 * 1024;
 pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 
-/// Exactly these placeholders, each at least once (§11.2).
+/// Exactly these placeholders, each at least once (§11.2, template v1).
 pub const PLACEHOLDERS: [&str; 10] = [
     "lang",
     "nonce",
@@ -64,7 +81,19 @@ pub const PLACEHOLDERS: [&str; 10] = [
     "state",
 ];
 
-/// A placeholder of [`PLACEHOLDERS`].
+/// Template v2 adds these placeholders (Phase 2 spec §12.3).
+pub const PLACEHOLDERS_V2_EXTRA: [&str; 3] = ["ix", "help_href", "privacy_href"];
+
+/// The placeholders of a template version (1 or 2).
+pub fn placeholders(version: u32) -> Vec<&'static str> {
+    let mut all = PLACEHOLDERS.to_vec();
+    if version == 2 {
+        all.extend(PLACEHOLDERS_V2_EXTRA);
+    }
+    all
+}
+
+/// A placeholder of [`PLACEHOLDERS`] or [`PLACEHOLDERS_V2_EXTRA`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placeholder {
     Lang,
@@ -77,10 +106,16 @@ pub enum Placeholder {
     Ret,
     RequestId,
     State,
+    /// v2: the plain interactive parameters (`data-mg-ix`, §7.2).
+    Ix,
+    /// v2: `challenge.help_path`.
+    HelpHref,
+    /// v2: `challenge.privacy_path`.
+    PrivacyHref,
 }
 
 impl Placeholder {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 13] = [
         Self::Lang,
         Self::Nonce,
         Self::SdkSrc,
@@ -91,11 +126,15 @@ impl Placeholder {
         Self::Ret,
         Self::RequestId,
         Self::State,
+        Self::Ix,
+        Self::HelpHref,
+        Self::PrivacyHref,
     ];
 
     fn from_name(name: &str) -> Option<Self> {
         PLACEHOLDERS
             .iter()
+            .chain(PLACEHOLDERS_V2_EXTRA.iter())
             .position(|p| *p == name)
             .map(|i| Self::ALL[i])
     }
@@ -185,6 +224,8 @@ pub fn escape_html_into(value: &str, out: &mut String) {
 /// A loaded, verified SDK directory.
 #[derive(Clone)]
 pub struct SdkDir {
+    /// `manifest.v`: 1 (Phase 1 template) or 2 (template v2, §12.2).
+    pub manifest_version: u32,
     /// `manifest.build` (16 lower-case hex characters).
     pub build: String,
     /// The SDK file name (`mg.<hex16>.js`).
@@ -198,6 +239,7 @@ pub struct SdkDir {
 impl fmt::Debug for SdkDir {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SdkDir")
+            .field("manifest_version", &self.manifest_version)
             .field("build", &self.build)
             .field("sdk", &self.sdk)
             .field("files", &self.files.keys().collect::<Vec<_>>())
@@ -227,8 +269,14 @@ impl SdkDir {
         let m: Manifest = serde_json::from_slice(&raw)
             .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
         let at = |why: String| format!("{}: {why}", manifest_path.display());
-        if m.v != 1 {
+        if m.v != 1 && m.v != 2 {
             return Err(at(format!("unsupported v {}", m.v)));
+        }
+        // D-39: the alias name is the Edge's, never a build file.
+        if m.files.contains_key(ALIAS) {
+            return Err(at(format!(
+                "files must not list {ALIAS:?} (the alias, D-39)"
+            )));
         }
         if m.build.len() != 16 || !m.build.bytes().all(is_lower_hex) {
             return Err(at("build must be 16 lower-case hex characters".into()));
@@ -253,17 +301,19 @@ impl SdkDir {
             files.insert(name.clone(), Bytes::from(bytes));
         }
         let template = read_verified(dir, TEMPLATE, &m.templates[TEMPLATE], MAX_TEMPLATE_BYTES)?;
-        let errors = validate_template(&template);
+        let errors = validate_template_version(&template, m.v);
         if !errors.is_empty() {
             return Err(format!(
-                "{}: violates the template contract (spec §11.2): {}",
+                "{}: violates the template v{} contract (spec §11.2, Phase 2 spec §12.3): {}",
                 dir.join(TEMPLATE).display(),
+                m.v,
                 errors.join("; ")
             ));
         }
         let html = std::str::from_utf8(&template).map_err(|_| "template: not valid UTF-8")?;
         let template = Template::split(html)?;
         Ok(Self {
+            manifest_version: m.v,
             build: m.build,
             sdk: m.sdk,
             files,
@@ -274,6 +324,21 @@ impl SdkDir {
     /// The `src` of the SDK script on the challenge page (§11.2).
     pub fn sdk_src(&self) -> String {
         format!("/__mg/s/{}", self.sdk)
+    }
+
+    /// The bytes of the SDK file, which the alias `/__mg/s/mg.js` serves.
+    pub fn sdk_bytes(&self) -> Option<&Bytes> {
+        self.files.get(&self.sdk)
+    }
+
+    /// The alias's `ETag`: the build, quoted (D-39).
+    pub fn etag(&self) -> String {
+        format!("\"{}\"", self.build)
+    }
+
+    /// Template v2 (interactive challenges are possible, §5.1).
+    pub fn is_v2(&self) -> bool {
+        self.manifest_version == 2
     }
 }
 
@@ -696,6 +761,18 @@ const MAIN_ATTRIBUTES: [(&str, &str); 7] = [
 /// `data-mg-path-prefix="{{prefix}}"`. Returns every violation (empty =
 /// valid).
 pub fn validate_template(bytes: &[u8]) -> Vec<String> {
+    validate_template_version(bytes, 1)
+}
+
+/// [`validate_template`] for a template version: 1 (Phase 1, §11.2) or 2
+/// (Phase 2 spec §12.3: the v1 rules with the 13 placeholders of
+/// [`placeholders`], plus the template v2 structure), as `validateTemplate(template,
+/// version)` checks it.
+pub fn validate_template_version(bytes: &[u8], version: u32) -> Vec<String> {
+    if version != 1 && version != 2 {
+        return vec![format!("unknown template version {version}")];
+    }
+    let names = placeholders(version);
     let mut errors = Vec::new();
     if bytes.len() > MAX_TEMPLATE_BYTES {
         errors.push(format!(
@@ -713,15 +790,15 @@ pub fn validate_template(bytes: &[u8]) -> Vec<String> {
 
     // Placeholders: exactly the known set, each at least once, no stray braces.
     let spans = placeholder_spans(html);
-    let mut seen = [false; PLACEHOLDERS.len()];
+    let mut seen = vec![false; names.len()];
     for &(s, e) in &spans {
         let name = &html[s + 2..e - 2];
-        match PLACEHOLDERS.iter().position(|p| *p == name) {
+        match names.iter().position(|p| *p == name) {
             Some(k) => seen[k] = true,
             None => errors.push(format!("unknown placeholder {{{{{name}}}}}")),
         }
     }
-    for (k, name) in PLACEHOLDERS.iter().enumerate() {
+    for (k, name) in names.iter().enumerate() {
         if !seen[k] {
             errors.push(format!("placeholder {{{{{name}}}}} missing"));
         }
@@ -870,29 +947,304 @@ pub fn validate_template(bytes: &[u8]) -> Vec<String> {
             errors.push("the SDK <script> needs data-mg-path-prefix=\"{{prefix}}\"".into());
         }
     }
+    if version == 2 {
+        errors.extend(v2_errors(html, &tags));
+    }
     errors
+}
+
+/// One required element of template v2 (`V2_ELEMENTS`): its id, tag,
+/// attributes (`None`: present with any value) and the element it must be
+/// inside (`"main"`: `<main id="mg-challenge">`).
+struct V2Element {
+    id: &'static str,
+    tag: &'static str,
+    attrs: &'static [(&'static str, Option<&'static str>)],
+    within: &'static str,
+}
+
+const V2_ELEMENTS: [V2Element; 10] = [
+    V2Element {
+        id: "mg-ix",
+        tag: "div",
+        attrs: &[("hidden", None)],
+        within: "main",
+    },
+    V2Element {
+        id: "mg-purpose",
+        tag: "p",
+        attrs: &[],
+        within: "mg-ix",
+    },
+    V2Element {
+        id: "mg-hold",
+        tag: "button",
+        attrs: &[
+            ("type", Some("button")),
+            ("aria-describedby", Some("mg-purpose")),
+        ],
+        within: "mg-ix",
+    },
+    V2Element {
+        id: "mg-alt-single",
+        tag: "button",
+        attrs: &[("type", Some("button"))],
+        within: "mg-ix",
+    },
+    V2Element {
+        id: "mg-alt-pow",
+        tag: "button",
+        attrs: &[("type", Some("button"))],
+        within: "mg-ix",
+    },
+    V2Element {
+        id: "mg-progress",
+        tag: "div",
+        attrs: &[
+            ("role", Some("progressbar")),
+            ("aria-labelledby", Some("mg-purpose")),
+            ("hidden", None),
+        ],
+        within: "mg-ix",
+    },
+    V2Element {
+        id: "mg-turnstile",
+        tag: "div",
+        attrs: &[("hidden", None)],
+        within: "mg-ix",
+    },
+    V2Element {
+        id: "mg-help",
+        tag: "a",
+        attrs: &[("href", Some("{{help_href}}"))],
+        within: "main",
+    },
+    V2Element {
+        id: "mg-privacy",
+        tag: "a",
+        attrs: &[("href", Some("{{privacy_href}}"))],
+        within: "main",
+    },
+    V2Element {
+        id: "mg-stuck",
+        tag: "p",
+        attrs: &[],
+        within: "main",
+    },
+];
+
+/// ECMAScript `\w`.
+fn is_word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// `contentRange`: from the end of `tag`'s start tag to its matching end
+/// tag (`<(/?)name\b(?:[^>"']|"[^"]*"|'[^']*')*>`, case-insensitive,
+/// counting nested elements of the same name); the end of the document
+/// when unclosed.
+fn content_range(html: &str, tag: &Tag) -> (usize, usize) {
+    let b = html.as_bytes();
+    let name = tag.name.as_bytes();
+    let mut depth = 1usize;
+    let mut i = tag.end;
+    while i < b.len() {
+        if b[i] == b'<' {
+            let closing = b.get(i + 1) == Some(&b'/');
+            let n = i + 1 + usize::from(closing);
+            if starts_with_ci(b, n, name) {
+                let after = n + name.len();
+                // `\b` between the name's last character and the next one.
+                let last_word = name.last().is_some_and(|c| is_word(*c));
+                let next_word = b.get(after).is_some_and(|c| is_word(*c));
+                if last_word != next_word
+                    && let Some(end) = tag_end(b, after)
+                {
+                    if closing {
+                        depth -= 1;
+                        if depth == 0 {
+                            return (tag.end, i);
+                        }
+                    } else {
+                        depth += 1;
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    (tag.end, b.len())
+}
+
+/// Non-overlapping occurrences of `needle` in `html`.
+fn occurrences(html: &str, needle: &str) -> usize {
+    html.matches(needle).count()
+}
+
+/// `v2Errors`: the template v2 rules on top of v1 (Phase 2 spec §12.3).
+fn v2_errors(html: &str, tags: &[Tag]) -> Vec<String> {
+    let mut errors = Vec::new();
+    if occurrences(html, "{{ix}}") != 1 {
+        errors.push("{{ix}} must appear exactly once".into());
+    }
+    let main: Vec<&Tag> = tags
+        .iter()
+        .filter(|t| t.name == "main" && t.get("id") == Some("mg-challenge"))
+        .collect();
+    if main.len() == 1 && main[0].get("data-mg-ix") != Some("{{ix}}") {
+        errors.push("<main id=\"mg-challenge\"> needs data-mg-ix=\"{{ix}}\"".into());
+    }
+    // {{help_href}} / {{privacy_href}}: only as the quoted value of an href.
+    for name in ["help_href", "privacy_href"] {
+        let placeholder = format!("{{{{{name}}}}}");
+        let uses = occurrences(html, &placeholder);
+        let hrefs = || {
+            tags.iter()
+                .flat_map(|t| &t.attrs)
+                .filter(|a| a.name == "href")
+        };
+        let in_href = hrefs().filter(|a| a.value.contains(&placeholder)).count();
+        let exact = hrefs().filter(|a| a.value == placeholder).count();
+        if uses != in_href || exact != in_href {
+            errors.push(format!(
+                "{placeholder} may appear only as a quoted href value"
+            ));
+        }
+    }
+    let by_id =
+        |id: &str| -> Vec<&Tag> { tags.iter().filter(|t| t.get("id") == Some(id)).collect() };
+    let range = |id: &str| -> Option<(usize, usize)> {
+        let found = if id == "main" {
+            main.clone()
+        } else {
+            by_id(id)
+        };
+        (found.len() == 1).then(|| content_range(html, found[0]))
+    };
+    for spec in &V2_ELEMENTS {
+        let found = by_id(spec.id);
+        if found.len() != 1 {
+            errors.push(format!(
+                "id \"{}\" must appear exactly once (found {})",
+                spec.id,
+                found.len()
+            ));
+            continue;
+        }
+        let tag = found[0];
+        let attrs_ok = spec.attrs.iter().all(|(n, v)| match v {
+            None => tag.get(n).is_some(),
+            Some(v) => tag.get(n) == Some(*v),
+        });
+        if tag.name != spec.tag || !attrs_ok {
+            let wanted: Vec<String> = spec
+                .attrs
+                .iter()
+                .map(|(n, v)| match v {
+                    None => (*n).to_owned(),
+                    Some(v) => format!("{n}=\"{v}\""),
+                })
+                .collect();
+            let wanted = if wanted.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", wanted.join(" "))
+            };
+            errors.push(format!("needs <{} id=\"{}\"{wanted}>", spec.tag, spec.id));
+        }
+        let inside = range(spec.within).is_some_and(|(s, e)| tag.start >= s && tag.start < e);
+        if !inside {
+            let place = if spec.within == "main" {
+                "<main id=\"mg-challenge\">".to_owned()
+            } else {
+                format!("#{}", spec.within)
+            };
+            errors.push(format!("#{} must be inside {place}", spec.id));
+        }
+    }
+    // #mg-hold: a text label and an aria-hidden progress layer.
+    let hold = by_id("mg-hold");
+    if hold.len() == 1 {
+        let (from, to) = content_range(html, hold[0]);
+        let inner = &html[from..to];
+        if !has_aria_hidden_true(inner) {
+            errors.push("#mg-hold needs an aria-hidden=\"true\" progress layer".into());
+        }
+        if js_trim(&strip_tags(inner)).is_empty() {
+            errors.push("#mg-hold needs a text label".into());
+        }
+    }
+    errors
+}
+
+/// `/aria-hidden\s*=\s*"true"/`.
+fn has_aria_hidden_true(s: &str) -> bool {
+    let mut from = 0;
+    while let Some(off) = s[from..].find("aria-hidden") {
+        let mut k = skip_js_space(s, from + off + "aria-hidden".len());
+        if s[k..].starts_with('=') {
+            k = skip_js_space(s, k + 1);
+            if s[k..].starts_with("\"true\"") {
+                return true;
+            }
+        }
+        from += off + 1;
+    }
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The frozen manifest v1 directory (Phase 2 spec §2.1): the v1
+    /// contract tests below run against its template.
     fn fixture_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sdk-v1")
+    }
+
+    /// The current SDK build (manifest v2).
+    fn fixture_v2_dir() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sdk")
+    }
+
+    fn good_v2() -> String {
+        std::fs::read_to_string(fixture_v2_dir().join(TEMPLATE)).unwrap()
     }
 
     fn good() -> String {
         std::fs::read_to_string(fixture_dir().join(TEMPLATE)).unwrap()
     }
 
+    /// Phase 2 spec §12.2: both directory versions load.
     #[test]
     fn loads_the_fixture_sdk() {
-        let sdk = SdkDir::load(&fixture_dir()).unwrap();
-        assert_eq!(sdk.build.len(), 16);
-        assert_eq!(sdk.sdk, format!("mg.{}.js", sdk.build));
-        assert!(sdk.files.contains_key(&sdk.sdk));
-        assert_eq!(sdk.sdk_src(), format!("/__mg/s/{}", sdk.sdk));
+        for (dir, v) in [(fixture_dir(), 1), (fixture_v2_dir(), 2)] {
+            let sdk = SdkDir::load(&dir).unwrap();
+            assert_eq!(sdk.manifest_version, v);
+            assert_eq!(sdk.is_v2(), v == 2);
+            assert_eq!(sdk.build.len(), 16);
+            assert_eq!(sdk.sdk, format!("mg.{}.js", sdk.build));
+            assert!(sdk.files.contains_key(&sdk.sdk));
+            assert_eq!(sdk.sdk_src(), format!("/__mg/s/{}", sdk.sdk));
+            assert_eq!(sdk.sdk_bytes(), sdk.files.get(&sdk.sdk));
+            assert_eq!(sdk.etag(), format!("\"{}\"", sdk.build));
+        }
         assert!(validate_template(good().as_bytes()).is_empty());
+        assert!(validate_template_version(good_v2().as_bytes(), 2).is_empty());
+        // Each version's rules refuse the other's template.
+        let v1_as_v2 = validate_template_version(good().as_bytes(), 2).join("; ");
+        assert!(v1_as_v2.contains("{{ix}} missing"), "{v1_as_v2}");
+        let v2_as_v1 = validate_template(good_v2().as_bytes()).join("; ");
+        assert!(
+            v2_as_v1.contains("unknown placeholder {{ix}}"),
+            "{v2_as_v1}"
+        );
+        assert_eq!(
+            validate_template_version(good_v2().as_bytes(), 3),
+            ["unknown template version 3"]
+        );
     }
 
     /// §16: the fixture is a copy of the SDK build (`sdk/web/dist/sdk/`),
@@ -907,16 +1259,20 @@ mod tests {
         };
         assert_eq!(
             manifest,
-            std::fs::read(fixture_dir().join(MANIFEST)).unwrap(),
+            std::fs::read(fixture_v2_dir().join(MANIFEST)).unwrap(),
             "edge/tests/fixtures/sdk is stale: copy sdk/web/dist/sdk/ into it"
         );
     }
 
     fn copy_fixture(tag: &str) -> std::path::PathBuf {
+        copy_dir(tag, &fixture_dir())
+    }
+
+    fn copy_dir(tag: &str, from: &Path) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("mg-edge-sdk-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        for e in std::fs::read_dir(fixture_dir()).unwrap() {
+        for e in std::fs::read_dir(from).unwrap() {
             let e = e.unwrap();
             std::fs::copy(e.path(), dir.join(e.file_name())).unwrap();
         }
@@ -934,7 +1290,10 @@ mod tests {
         let dir = copy_fixture("manifest");
         let manifest = std::fs::read_to_string(dir.join(MANIFEST)).unwrap();
         for (from, to, needle) in [
-            ("\"v\": 1", "\"v\": 2", "unsupported v"),
+            ("\"v\": 1", "\"v\": 3", "unsupported v"),
+            ("\"v\": 1", "\"v\": 0", "unsupported v"),
+            // A v1 template under a v2 manifest breaks the v2 contract.
+            ("\"v\": 1", "\"v\": 2", "template v2 contract"),
             ("\"build\"", "\"extra\": 1, \"build\"", "unknown field"),
             ("\"templates\"", "\"templatez\"", "unknown field"),
         ] {
@@ -950,6 +1309,30 @@ mod tests {
         assert!(SdkDir::load(&dir).is_err());
         let _ = std::fs::remove_dir_all(&dir);
         assert!(SdkDir::load(Path::new("/nonexistent/sdk")).is_err());
+
+        // D-39: a manifest that lists `mg.js` is refused, whatever the
+        // version (the alias is the Edge's name).
+        for (tag, from) in [("alias1", fixture_dir()), ("alias2", fixture_v2_dir())] {
+            let dir = copy_dir(tag, &from);
+            let sdk = SdkDir::load(&dir).unwrap();
+            std::fs::copy(dir.join(&sdk.sdk), dir.join(ALIAS)).unwrap();
+            let manifest = std::fs::read_to_string(dir.join(MANIFEST)).unwrap();
+            let sha = manifest
+                .split(&format!("\"{}\": \"", sdk.sdk))
+                .nth(1)
+                .and_then(|t| t.split('"').next())
+                .unwrap()
+                .to_owned();
+            let listed = manifest.replacen(
+                "\"files\": {",
+                &format!("\"files\": {{\n    \"mg.js\": \"{sha}\","),
+                1,
+            );
+            std::fs::write(dir.join(MANIFEST), listed).unwrap();
+            let e = SdkDir::load(&dir).unwrap_err();
+            assert!(e.contains("must not list \"mg.js\""), "{e}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// A template breaking the contract is refused at load time even when
@@ -1258,11 +1641,163 @@ mod tests {
         assert_eq!(out, "&amp;&lt;&gt;&quot;&#39;x");
     }
 
+    /// The rejection table of `sdk/web/test/template-v2.test.ts`, case by
+    /// case (Phase 2 spec §12.3: the Edge's v2 check equals
+    /// `validateTemplate(…, 2)`).
+    #[test]
+    fn rejects_every_v2_contract_violation_like_validate_template() {
+        let t = good_v2();
+        let cut = |t: &str, from: &str, to: &str| -> String {
+            let s = t.find(from).unwrap();
+            let e = s + t[s..].find(to).unwrap() + to.len();
+            format!("{}{}", &t[..s], &t[e..])
+        };
+        let hold_start = t.find("<button id=\"mg-hold\"").unwrap();
+        let hold_end = hold_start + t[hold_start..].find("</button>").unwrap();
+        let hold_div = format!(
+            "{}<div{}</div>{}",
+            &t[..hold_start],
+            &t[hold_start + "<button".len()..hold_end],
+            &t[hold_end + "</button>".len()..]
+        );
+        let label_start = t.find("<span class=\"mg-label\">").unwrap();
+        let no_label = format!(
+            "{}</button>{}",
+            &t[..label_start],
+            &t[hold_end + "</button>".len()..]
+        );
+        let mut cases: Vec<(String, String, String)> = vec![
+            (
+                "{{ix}} twice".into(),
+                t.replace(
+                    "<div id=\"mg-turnstile\" hidden>",
+                    "<div id=\"mg-turnstile\" hidden data-x=\"{{ix}}\">",
+                ),
+                "{{ix}} must appear exactly once".into(),
+            ),
+            (
+                "{{ix}} on another attribute".into(),
+                t.replace("data-mg-ix=\"{{ix}}\"", "data-mg-ixx=\"{{ix}}\""),
+                "data-mg-ix=\"{{ix}}\"".into(),
+            ),
+            (
+                "{{help_href}} in text".into(),
+                t.replace("<noscript>", "<noscript>{{help_href}}"),
+                "{{help_href}} may appear only as a quoted href value".into(),
+            ),
+            (
+                "{{privacy_href}} in another attribute".into(),
+                t.replace(
+                    "<div id=\"mg-turnstile\" hidden>",
+                    "<div id=\"mg-turnstile\" hidden title=\"{{privacy_href}}\">",
+                ),
+                "{{privacy_href}} may appear only as a quoted href value".into(),
+            ),
+            (
+                "{{help_href}} inside a longer href".into(),
+                t.replace("href=\"{{help_href}}\"", "href=\"/x{{help_href}}\""),
+                "{{help_href}} may appear only as a quoted href value".into(),
+            ),
+            (
+                "a duplicate id".into(),
+                t.replace("<noscript>", "<p id=\"mg-stuck\">x</p><noscript>"),
+                "id \"mg-stuck\" must appear exactly once (found 2)".into(),
+            ),
+            (
+                "#mg-hold not a button".into(),
+                hold_div,
+                "<button id=\"mg-hold\"".into(),
+            ),
+            (
+                "#mg-hold without aria-describedby".into(),
+                t.replacen(" aria-describedby=\"mg-purpose\"", "", 1),
+                "<button id=\"mg-hold\"".into(),
+            ),
+            (
+                "#mg-ix not hidden".into(),
+                t.replace("<div id=\"mg-ix\" hidden>", "<div id=\"mg-ix\">"),
+                "<div id=\"mg-ix\" hidden>".into(),
+            ),
+            (
+                "#mg-progress without its role".into(),
+                t.replace("role=\"progressbar\" ", ""),
+                "mg-progress".into(),
+            ),
+            (
+                "#mg-alt-pow outside #mg-ix".into(),
+                cut(&t, "<button id=\"mg-alt-pow\"", "</button>").replace(
+                    "<noscript>",
+                    "<button id=\"mg-alt-pow\" type=\"button\">x</button><noscript>",
+                ),
+                "#mg-alt-pow must be inside #mg-ix".into(),
+            ),
+            (
+                "#mg-stuck outside <main>".into(),
+                cut(&t, "<p id=\"mg-stuck\">", "</p>")
+                    .replace("</main>", "</main><p id=\"mg-stuck\">x</p>"),
+                "#mg-stuck must be inside <main".into(),
+            ),
+            (
+                "#mg-hold without a progress layer".into(),
+                t.replace("<span class=\"mg-fill\" aria-hidden=\"true\"></span>", ""),
+                "aria-hidden=\"true\" progress layer".into(),
+            ),
+            (
+                "#mg-hold without a label".into(),
+                no_label,
+                "text label".into(),
+            ),
+            (
+                "an external URL".into(),
+                t.replace(
+                    "<noscript>",
+                    "<noscript>https://challenges.cloudflare.com/turnstile/v0/api.js",
+                ),
+                "http: or https:".into(),
+            ),
+        ];
+        for e in &V2_ELEMENTS {
+            cases.push((
+                format!("no #{}", e.id),
+                t.replace(&format!("id=\"{}\"", e.id), &format!("id=\"{}-x\"", e.id)),
+                format!("id \"{}\" must appear exactly once", e.id),
+            ));
+        }
+        for (name, mutated, needle) in cases {
+            assert_ne!(mutated, t, "{name}: the mutation changed nothing");
+            let errors = validate_template_version(mutated.as_bytes(), 2).join("; ");
+            assert!(errors.contains(&needle), "{name}: {errors}");
+        }
+    }
+
+    /// `contentRange` counts nested elements of the same name and ends at
+    /// the document end when unclosed.
+    #[test]
+    fn content_ranges() {
+        let html = "<div id=a><div>x</div><DIV>y</DIV></div><div>z";
+        let tags = scan_tags(html);
+        let a = &tags[0];
+        let (s, e) = content_range(html, a);
+        assert_eq!(&html[s..e], "<div>x</div><DIV>y</DIV>");
+        let last = tags.last().unwrap();
+        let (s, e) = content_range(html, last);
+        assert_eq!(&html[s..e], "z");
+        // `\b`: `<divx>` is not a `<div>`.
+        let html = "<div><divx></divx></div>";
+        let tags = scan_tags(html);
+        let (s, e) = content_range(html, &tags[0]);
+        assert_eq!(&html[s..e], "<divx></divx>");
+    }
+
     /// §2.4 item 3: the template checker never panics (10,000 xorshift
     /// inputs: random bytes, and local edits of the real template).
     #[test]
     fn random_templates_never_panic() {
-        let good = good().into_bytes();
+        random_templates_never_panic_for(good().into_bytes(), 1);
+        random_templates_never_panic_for(good_v2().into_bytes(), 2);
+    }
+
+    fn random_templates_never_panic_for(good: Vec<u8>, version: u32) {
         let mut s = 0x2545_f491_4f6c_dd1du64;
         let mut next = move || {
             s ^= s << 13;
@@ -1286,7 +1821,7 @@ mod tests {
                 let at = (r as usize) % t.len();
                 t[at] = ALPHABET[(r >> 32) as usize % ALPHABET.len()];
             }
-            if validate_template(&t).is_empty() {
+            if validate_template_version(&t, version).is_empty() {
                 let html = std::str::from_utf8(&t).unwrap();
                 assert!(Template::split(html).is_ok());
             }

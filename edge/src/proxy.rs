@@ -635,7 +635,13 @@ impl EdgeProxy {
                     .await;
             }
             RouteKind::SdkFile => {
-                let mut resp = mg_endpoints::sdk_file(&self.shared.sdk, &target.path, &method);
+                let inm: Vec<&str> = raw
+                    .iter()
+                    .filter(|(n, _)| n.eq_ignore_ascii_case("if-none-match"))
+                    .filter_map(|(_, v)| std::str::from_utf8(v).ok())
+                    .collect();
+                let mut resp =
+                    mg_endpoints::sdk_file(&self.shared.sdk, &target.path, &method, &inm);
                 if !session.is_body_empty() {
                     resp.close = true;
                 }
@@ -648,6 +654,13 @@ impl EdgeProxy {
                 ctx.target = target;
                 return self
                     .submit(session, ctx, &site, serving, &method, &raw, &removed)
+                    .await;
+            }
+            RouteKind::Renew => {
+                ctx.access_route = Some(ev::ROUTE_EDGE);
+                ctx.target = target;
+                return self
+                    .renew(session, ctx, &site, serving, &method, &raw, &removed)
                     .await;
             }
             RouteKind::Verify => {
@@ -721,7 +734,8 @@ impl EdgeProxy {
                     sensitivity: rm.route.sensitivity,
                     require_clearance: rm.require_clearance,
                     fail_closed: rm.fail_closed,
-                    ..Default::default()
+                    proof_required: rm.proof_required,
+                    min_level: rm.min_level,
                 };
                 ctx.route = Some(SelectedRoute {
                     env: env.name.clone(),
@@ -754,6 +768,9 @@ impl EdgeProxy {
                 );
                 facts.never_challenge = rm.never_challenge;
                 facts.verify = verify;
+                if verify {
+                    facts.verify_min = mg_endpoints::verify_min(&target.query);
+                }
                 let services = Services {
                     state: &self.shared.state,
                     k_pseudo: &self.shared.k_pseudo,
@@ -904,6 +921,7 @@ impl EdgeProxy {
             monitor,
             never_challenge: false,
             verify: false,
+            verify_min: None,
             profile: self.listener.profile,
             auth_method: ctx.auth_method,
             cf: ctx.cf.as_ref(),
@@ -932,11 +950,13 @@ impl EdgeProxy {
         let http_visitor =
             self.listener.profile == ListenerProfile::Cloudflare && !c.ctx.visitor_https;
         let route_class = c.ctx.route.as_ref().map_or("default", |r| r.name.as_str());
+        let cookies = crate::context::cookie_headers(c.raw);
         challenge::respond(
             &ChallengeRequest {
                 sealer: &c.site.sealer,
                 sdk: &self.shared.sdk,
-                cfg: &c.bundle.challenge,
+                bundle: c.bundle,
+                state: &self.shared.state,
                 site_id: &c.site.settings.id,
                 request_id: &c.ctx.request_id,
                 host: &c.ctx.host,
@@ -948,9 +968,13 @@ impl EdgeProxy {
                 navigation: is_navigation(&headers),
                 accept_language: crate::context::header(&headers, "accept-language"),
                 route_class,
+                route_id: c.ctx.route.as_ref().map_or("default", |r| r.id.as_str()),
                 ty: c.ty,
                 band: c.rec.risk.score.band(),
                 bind: &c.rec.bind,
+                client_ip: c.rec.ctx.net.ip,
+                a11y_pref: crate::interactive::a11y_pref(&cookies),
+                jkt: None,
                 now_ms: unix_now_ms(),
             },
             &OsRng,
@@ -982,35 +1006,8 @@ impl EdgeProxy {
         let Some(env) = bundle.env_for_host(&ctx.host) else {
             return self.no_environment(session, ctx, site_id).await;
         };
-        let route = edge_route(&env.name);
-        let built = {
-            let ssl_version = session
-                .digest()
-                .and_then(|d| d.ssl_digest.as_ref())
-                .map(|s| s.version.as_ref());
-            let http_version = http_version_str(session.req_header().version);
-            let facts = self.facts(
-                ctx,
-                ssl_version,
-                http_version,
-                site_id,
-                &route,
-                // Only the context is built here; no decision is executed.
-                bundle.monitor_only,
-                bundle,
-                method,
-                &ctx.target,
-                raw,
-                removed,
-            );
-            crate::context::build(&facts, &bundle.intel)
-        };
-        let bind = identity::bind_inputs(
-            &built.ua,
-            &built.ctx.net,
-            built.ctx.edge_tls.as_ref(),
-            bundle.clearance.ctp_shadow,
-        );
+        let (built, bind) =
+            self.endpoint_context(session, ctx, site_id, bundle, env, method, raw, removed);
         let submitted = {
             let s = mg_endpoints::Submit {
                 request_id: &ctx.request_id,
@@ -1049,6 +1046,112 @@ impl EdgeProxy {
 }
 
 impl EdgeProxy {
+    /// The request context and bindings of a `/__mg/c` or `/__mg/c/renew`
+    /// request (no decision is executed for them).
+    #[allow(clippy::too_many_arguments)]
+    fn endpoint_context(
+        &self,
+        session: &Session,
+        ctx: &EdgeCtx,
+        site_id: &str,
+        bundle: &BundleRuntime,
+        env: &crate::sites::EnvRuntime,
+        method: &str,
+        raw: &[(String, Vec<u8>)],
+        removed: &BTreeSet<String>,
+    ) -> (crate::context::Built, mg_challenge::BindInputs) {
+        let route = edge_route(&env.name);
+        let built = {
+            let ssl_version = session
+                .digest()
+                .and_then(|d| d.ssl_digest.as_ref())
+                .map(|s| s.version.as_ref());
+            let http_version = http_version_str(session.req_header().version);
+            let facts = self.facts(
+                ctx,
+                ssl_version,
+                http_version,
+                site_id,
+                &route,
+                // Only the context is built here; no decision is executed.
+                bundle.monitor_only,
+                bundle,
+                method,
+                &ctx.target,
+                raw,
+                removed,
+            );
+            crate::context::build(&facts, &bundle.intel)
+        };
+        let bind = identity::bind_inputs(
+            &built.ua,
+            &built.ctx.net,
+            built.ctx.edge_tls.as_ref(),
+            bundle.clearance.ctp_shadow,
+        );
+        (built, bind)
+    }
+
+    /// `/__mg/c/renew` (Phase 2 spec §7.4, §11.1): 404 without a schema 2
+    /// bundle (bootstrap, D-66), 405 for other methods, otherwise
+    /// `crate::renew::renew`.
+    #[allow(clippy::too_many_arguments)]
+    async fn renew(
+        &self,
+        session: &mut Session,
+        ctx: &mut EdgeCtx,
+        site: &Site,
+        serving: Serving<'_>,
+        method: &str,
+        raw: &[(String, Vec<u8>)],
+        removed: &BTreeSet<String>,
+    ) -> Result<bool> {
+        let bundle = match serving {
+            Serving::Active(b) if b.phase2() => b,
+            _ => return self.answer(session, EdgeResponse::not_found()).await,
+        };
+        if method != "POST" {
+            let resp = EdgeResponse::method_not_allowed(crate::renew::RENEW_ALLOW);
+            return self.answer(session, resp).await;
+        }
+        let site_id = site.settings.id.as_str();
+        let Some(env) = bundle.env_for_host(&ctx.host) else {
+            return self.no_environment(session, ctx, site_id).await;
+        };
+        let (built, bind) =
+            self.endpoint_context(session, ctx, site_id, bundle, env, method, raw, removed);
+        let renewed = {
+            let s = mg_endpoints::Submit {
+                request_id: &ctx.request_id,
+                now_ms: unix_now_ms(),
+                site_id,
+                sealer: &site.sealer,
+                sdk: &self.shared.sdk,
+                bundle,
+                env,
+                host: &ctx.host,
+                built: &built,
+                bind: &bind,
+                content_encoding: crate::context::received(raw, "content-encoding"),
+            };
+            crate::renew::renew(&self.shared.state, &OsRng, &s, &mut SessionBody(session)).await
+        };
+        if renewed.response.status == 503 {
+            metrics().internal_error(ctx.route_kind);
+        }
+        log::debug!(
+            "request_id={} renew result={} reason={}",
+            ctx.request_id,
+            renewed.result,
+            renewed.code.unwrap_or("-")
+        );
+        ctx.submit_net = Some(AccessNet {
+            asn: built.ctx.net.asn,
+            country: built.ctx.net.country.clone(),
+        });
+        self.answer(session, renewed.response).await
+    }
+
     /// `upstream_request_filter`: the origin-form target, the §9.9 origin
     /// headers and, with `origin_keys`, `MG-Origin-Auth` (I-38).
     fn origin_request(&self, upstream_request: &mut RequestHeader, ctx: &EdgeCtx) -> Result<()> {

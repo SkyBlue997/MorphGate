@@ -23,10 +23,14 @@ use crate::metrics::metrics;
 use crate::ratelimit::{self, Plan, Subject};
 use crate::sites::{BundleRuntime, EnvRuntime};
 use mg_challenge::BindInputs;
-use mg_core::policy::{CrawlerAction, CrawlerPolicy, EngineConfig, NamedLists, Rule, SitePolicy};
+use mg_core::policy::{
+    CrawlerAction, CrawlerPolicy, EngineConfig, NamedLists, Rule, SitePolicy, challenge_rank,
+    effective_challenge,
+};
 use mg_core::{
     Action, ChallengeType, Decision, DecisionCore, FamilyMode, RequestContext, RequestExtras,
     RiskAssessment, RouteInfo, RouteSensitivity, RuleHit, ScoringConfig, Signal, SignalFamily,
+    TokenLevel, TokenStatus,
 };
 use mg_edge_core::state::StateHandle;
 use mg_proto::v1 as pb;
@@ -80,8 +84,13 @@ pub fn scoring_config(s: &pb::ScoringConfig) -> ScoringConfig {
 }
 
 /// The engine settings: `theta_c` (the same value as the scorer's) and the
-/// crawler policy; interactive challenges do not exist in Phase 1 (D-08).
-pub fn engine_config(s: &pb::ScoringConfig, c: &pb::CrawlerPolicy) -> EngineConfig {
+/// crawler policy; `interactive_available` of Phase 2 spec §5.1 (without it
+/// every `interactive` runs as `pow`, D-08).
+pub fn engine_config(
+    s: &pb::ScoringConfig,
+    c: &pb::CrawlerPolicy,
+    interactive_available: bool,
+) -> EngineConfig {
     let action = |v: &str| match v {
         "block" => CrawlerAction::Block,
         _ => CrawlerAction::Allow,
@@ -96,18 +105,27 @@ pub fn engine_config(s: &pb::ScoringConfig, c: &pb::CrawlerPolicy) -> EngineConf
                 .collect::<BTreeMap<_, _>>(),
             default_action: action(&c.default_action),
         },
-        interactive_available: false,
+        interactive_available,
     }
 }
 
 /// The Decision Core of one environment (see the module documentation).
+/// `schema_version` is the bundle's (ruling I-48: D-20's suppression of
+/// limiter challenges applies from schema 2 on).
 pub fn build_core(
     rules: Vec<Rule>,
     lists: NamedLists,
     scoring: &pb::ScoringConfig,
     crawler: &pb::CrawlerPolicy,
+    schema_version: u32,
+    interactive_available: bool,
 ) -> DecisionCore {
-    let policy = SitePolicy::new(rules, lists, engine_config(scoring, crawler));
+    let policy = SitePolicy::new(
+        rules,
+        lists,
+        engine_config(scoring, crawler, interactive_available),
+    )
+    .with_schema_version(schema_version);
     DecisionCore::phase1(scoring_config(scoring), Box::new(policy))
 }
 
@@ -161,6 +179,11 @@ pub struct EnforceInput<'a> {
     pub never_challenge: bool,
     /// `GET /__mg/v` (I-39): nothing is forwarded.
     pub verify: bool,
+    /// `/__mg/v` only (D-58): the highest of the `ret` route's `min_level`,
+    /// the level of the request's valid clearance and the `min` parameter.
+    pub verify_floor: Option<ChallengeType>,
+    /// Phase 2 spec §5.1: without it `interactive` is issued as `pow`.
+    pub interactive_available: bool,
 }
 
 /// The §9.9 execution layer. Returns the decision to record (the engine's,
@@ -181,9 +204,13 @@ pub struct EnforceInput<'a> {
 ///   never forwarded: it is answered like BLOCK (fail closed).
 /// * The `/__mg/v` verify entry (I-39): an enforced BLOCK or RATE_LIMIT
 ///   stands; every other outcome (forwarded, monitor, `never_challenge`,
-///   425, a challenge of any type) becomes a `pow` challenge recorded as
+///   425, a challenge of any type) becomes a challenge recorded as
 ///   `rule_id = edge.verify` (429 without a `C` for an unknown client IP).
+///   Its type is the highest of `pow`, the decision's challenge type and
+///   [`EnforceInput::verify_floor`] (D-58), with `interactive` issued as
+///   `pow` when interactive challenges are not available.
 pub fn enforce(engine: Decision, input: &EnforceInput<'_>) -> (Decision, Enforcement) {
+    let decided = (engine.action == Action::Challenge).then_some(engine.challenge_type);
     let (d, enforcement) = enforce_route(engine, input);
     if !input.verify
         || matches!(
@@ -193,16 +220,40 @@ pub fn enforce(engine: Decision, input: &EnforceInput<'_>) -> (Decision, Enforce
     {
         return (d, enforcement);
     }
+    let ty =
+        [decided, input.verify_floor]
+            .into_iter()
+            .flatten()
+            .fold(ChallengeType::Pow, |a, b| {
+                if challenge_rank(b) > challenge_rank(a) {
+                    b
+                } else {
+                    a
+                }
+            });
+    let ty = effective_challenge(ty, input.interactive_available);
     let d = Decision {
         rule_id: Some(VERIFY_RULE.to_string()),
-        ..Decision::challenge(ChallengeType::Pow)
+        ..Decision::challenge(ty)
     };
     let enforcement = if input.client_ip_known {
-        Enforcement::Challenge(ChallengeType::Pow)
+        Enforcement::Challenge(ty)
     } else {
         Enforcement::ChallengeClientIpUnknown
     };
     (d, enforcement)
+}
+
+/// The challenge type that a clearance of `level` satisfies exactly: the
+/// verify entry never issues less than the request already holds (D-58).
+pub fn level_challenge(level: &TokenLevel) -> ChallengeType {
+    match level {
+        TokenLevel::Invisible => ChallengeType::Invisible,
+        TokenLevel::Pow => ChallengeType::Pow,
+        TokenLevel::Interactive | TokenLevel::InteractiveA11y | TokenLevel::InteractiveExt(_) => {
+            ChallengeType::Interactive
+        }
+    }
 }
 
 /// [`enforce`] for a request bound for the origin.
@@ -415,7 +466,16 @@ pub async fn evaluate(
     built.ctx.availability_mask = eval.availability_mask();
     let signals = eval.event_signals(built.ctx.upstream.profile);
 
-    // The execution layer (§9.9).
+    // The execution layer (§9.9). The verify entry's floor (D-58): the
+    // `ret` route's min_level, the valid clearance's level, `min`.
+    let token = &built.ctx.identity.token;
+    let held = (token.status == TokenStatus::Valid)
+        .then(|| token.level.as_ref().map(level_challenge))
+        .flatten();
+    let verify_floor = [facts.route.min_level, held, facts.verify_min]
+        .into_iter()
+        .flatten()
+        .max_by_key(|t| challenge_rank(*t));
     let (decision, enforcement) = enforce(
         eval.outcome.decision,
         &EnforceInput {
@@ -425,6 +485,8 @@ pub async fn evaluate(
             monitor: facts.monitor,
             never_challenge: facts.never_challenge,
             verify: facts.verify,
+            verify_floor,
+            interactive_available: bundle.interactive_available,
         },
     );
     DecisionRecord {
@@ -470,6 +532,8 @@ mod tests {
             monitor,
             never_challenge: false,
             verify: false,
+            verify_floor: None,
+            interactive_available: false,
         }
     }
 
@@ -767,7 +831,7 @@ mod tests {
             purposes: [("ai_training".to_string(), "block".to_string())].into(),
             default_action: "allow".into(),
         };
-        let e = engine_config(&pb_scoring, &crawler);
+        let e = engine_config(&pb_scoring, &crawler, false);
         assert_eq!(e.theta_c, 0.5, "the scorer's theta_c feeds the matrix");
         assert_eq!(e.crawler_policy.action("ai_training"), CrawlerAction::Block);
         assert_eq!(e.crawler_policy.action("search"), CrawlerAction::Allow);

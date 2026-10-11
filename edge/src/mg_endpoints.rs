@@ -12,6 +12,10 @@
 //! policy and `nosniff` ([`sdk_file`]); any other name is 404 (`no-store`),
 //! any other method 405 with `Allow: GET, HEAD`.
 //!
+//! `/__mg/s/mg.js` is the stable alias of the build (D-39, Phase 2 spec
+//! §11.1): the SDK file's bytes with `Cache-Control: public, max-age=300`,
+//! `ETag: "<build>"` and 304 for a matching `If-None-Match`.
+//!
 //! # `GET /__mg/v?ret=<path>`
 //!
 //! A script whose fetch got the JSON challenge sends the page there with
@@ -39,7 +43,7 @@
 //! | 6 | PoW at the sealed difficulty on `C` exactly as received | `ic.pow` |
 //! | 7 | `ret` valid and `ret_hash(ret)` sealed | `ic.ret` |
 //! | 8 | `auto.webdriver == true`; `env.ua.userAgent` not a prefix of `User-Agent` | `ic.automation_flag` / `ic.ua_mismatch` |
-//! | 9 | round trip 2: `mg_nonce_issue` (nonce + issuance quotas) | `ic.nonce_reused`; 429 `ic.issue_quota`; replay store unavailable: 429 `ic.replay_unavailable` on a `fail_closed` route, otherwise issued with `ic.replay_unchecked` |
+//! | 9 | round trip 2: `mg_nonce_issue` v2 (nonce + issuance quotas) | `ic.nonce_reused`; 429 `ic.issue_quota`; replay store unavailable: 429 `ic.replay_unavailable` on a `fail_closed` route, otherwise issued with `ic.replay_unchecked` |
 //! | 10 | mint the clearance (`sub` / `sst` carried over per §6.5; `ruc: true` after `ic.replay_unchecked`, I-30) | success: 303 + cookie (form) or 200 JSON + cookie (fetch); RNG failure: 503 |
 //!
 //! A failure from step 5 on attaches a new `C` (D-27, I-10): type `pow`, the
@@ -49,6 +53,27 @@
 //! `ic.pow`, `ic.ret`, `ic.automation_flag`, `ic.ua_mismatch`,
 //! `ic.nonce_reused`) are counted in `mg.c.fail` and `mg.c.fail.prefix`
 //! asynchronously ([`counts_as_failure`]).
+//!
+//! ## Phase 2 (docs/impl/phase2-spec.md §7.5, WP-E2a)
+//!
+//! A v2 submission (`v = 2`, see [`crate::submission`]) runs the order of
+//! §7.5: round trip 1 also checks both tiers of `mg.a11y.issue` and reads
+//! the near-line session verdict of the carried clearance; after opening
+//! `C`, an interactive `C` without `interactive_available` fails with a
+//! `pow` `C` (4a, not counted); then the provider (5: in `C.providers`;
+//! `pow_a11y` over its quota fails with `ix.a11y_quota`, not counted, no
+//! nonce consumed), the server-side time window (6, `ic.too_fast`), the
+//! bindings with the session key's `jkt` (7, `ic.bind_jkt`; a bound `C`
+//! refuses v1), the signature (8, `ic.sig`), PoW v1 or v2 (9), `ret` (10),
+//! the environment and the hard checks of §7.7 (11), the nonce with the
+//! quotas, `mg.a11y.issue` for `pow_a11y` (12), the score (14: `enforce`
+//! only) and the token (15): the level by provider, v2 with `cnf.jkt` and
+//! `lat` in schema 2 (v1 in schema 1, D-66), `__Host-mg_st` after
+//! `__Host-mg_clr` in schema 2, `__Host-mg_a11y` set by `pow_a11y` and
+//! deleted by `self_hold`. A failure from 4a on attaches the `C` of
+//! `next_challenge_after_failure` (D-50), bound to the key once the
+//! signature verified. The nonce of an interactive `C` is kept until the
+//! `C` can no longer be renewed (`crate::renew::interactive_nonce_ttl_ms`).
 //!
 //! Answers follow the submission's encoding: a form navigation gets HTML
 //! (the failed challenge page, or the short 429 page), a fetch gets JSON.
@@ -63,9 +88,9 @@
 //!
 //! # The replay store (§9.7 rules 3-5)
 //!
-//! `mg_edge_core::state::StateHandle::nonce_issue` checks the local replay set
+//! `mg_edge_core::state::StateHandle::nonce_issue_v2` checks the local replay set
 //! first, then Valkey, and decides whether the local set alone is
-//! authoritative. When it is not ([`NonceResult::Unavailable`]), the route
+//! authoritative. When it is not (`NonceResultV2::Unavailable`), the route
 //! the `C` belongs to decides ([`replay_fail_closed`]): the route of the
 //! request host's environment named `claims.route_class` (inside the AEAD,
 //! so trusted), OR the route the `ret` path selects for a GET; a route that
@@ -75,9 +100,10 @@
 //! client is challenged again, and that `C` belongs to the `fail_closed`
 //! route, so its submission is 429 until the replay store is back.
 
-use crate::challenge::{self, IssueRequest, Issued, fallback_ret, pow_bits};
+use crate::challenge::{self, IssueError, IssueRequest, Issued, fallback_ret, pow_bits};
 use crate::context::{self, Built};
 use crate::enforce::{EdgeResponse, IMMUTABLE, JAVASCRIPT, is_navigation};
+use crate::interactive::{self, Gate};
 use crate::metrics::metrics;
 use crate::pages::{self, Page, PageState};
 use crate::sdk::SdkDir;
@@ -88,17 +114,22 @@ use crate::submission::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use mg_challenge::{
-    BindInputs, ClearanceBind, MintParams, Rng, Sealer, TokenError, check_challenge_bind,
-    check_clearance_bind, clearance_cookies, pow_verify, ret_hash, reusable_session,
-    set_cookie_value, validate_ret, verify_ignoring_expiry,
+    BindInputs, ClearanceBind, ClearanceClaims, MintParams, MintV2Params, POW_ALG_V2, Rng, Sealer,
+    TokenError, check_challenge_bind, check_clearance_bind, clearance_cookies, mint_v2, pow_verify,
+    pow_verify_v2, ret_hash, reusable_session, reusable_session_v2, set_cookie_value,
+    status_set_cookie_value, ui_params, validate_ret, verify_ignoring_expiry,
 };
 use mg_core::gcra::GcraOutcome;
+use mg_core::providers::IxOutcome;
 use mg_core::{
-    BindResult, ChallengeResult, ChallengeType, Net, RiskBand, SealedChallengeClaims, TokenLevel,
-    VerdictOutcome,
+    BindResult, ChallengeResult, ChallengeType, InteractionInput, IxMode, IxTelemetry, Net,
+    ProviderId, RiskBand, SealedChallengeClaims, TokenLevel, VerdictOutcome, assess_interaction,
+    min_elapsed_ms, next_challenge_after_failure,
 };
 use mg_edge_core::state::builtin::ClientDims;
-use mg_edge_core::state::{LimitCheck, NonceIssue, NonceResult, RoundTrip1, StateHandle};
+use mg_edge_core::state::{
+    LimitCheck, NonceIssueV2, NonceResultV2, RoundTrip1, StateHandle, parse_verdict, verdict_key,
+};
 use std::fmt;
 use std::time::Duration;
 
@@ -136,12 +167,32 @@ pub mod reason {
     pub const NONCE_REUSED: &str = "ic.nonce_reused";
     pub const REPLAY_UNAVAILABLE: &str = "ic.replay_unavailable";
     pub const REPLAY_UNCHECKED: &str = "ic.replay_unchecked";
+    // Phase 2 (docs/impl/phase2-spec.md §7.4, §7.5).
+    pub const INTERACTIVE_UNAVAILABLE: &str = "ic.interactive_unavailable";
+    pub const PROVIDER_NOT_OFFERED: &str = "ic.provider_not_offered";
+    pub const PROVIDER_UNAVAILABLE: &str = "ic.provider_unavailable";
+    pub const A11Y_QUOTA: &str = "ic.a11y_quota";
+    pub const TOO_FAST: &str = mg_core::providers::reason::TOO_FAST;
+    pub const BIND_JKT: &str = "ic.bind_jkt";
+    pub const SIG: &str = "ic.sig";
+    pub const IX_MODE: &str = mg_core::providers::reason::IX_MODE;
+    pub const NO_TRUSTED_INPUT: &str = mg_core::providers::reason::NO_TRUSTED_INPUT;
+    pub const HOLD_SHORT: &str = mg_core::providers::reason::HOLD_SHORT;
+    pub const HOLD_LONG: &str = mg_core::providers::reason::HOLD_LONG;
+    pub const SCORE_HIGH: &str = mg_core::providers::reason::SCORE_HIGH;
+    pub const SCORE_BLOCK: &str = mg_core::providers::reason::SCORE_BLOCK;
+    pub const RENEW_CAP: &str = "ic.renew_cap";
 }
 
+/// `Retry-After` of `ic.score_block` (enforce scoring, §7.8).
+pub const SCORE_BLOCK_RETRY_S: u32 = 60;
+
 /// Whether a failure with `code` is counted in `mg.c.fail` and
-/// `mg.c.fail.prefix` (§9.8, D-28). An expired `C` (a sleeping tab), a
-/// missing client IP, quotas, rate limits, `Early-Data` and an unavailable
-/// replay store are not the client's failure.
+/// `mg.c.fail.prefix` (§9.8, D-28; Phase 2 spec §7.5). An expired `C` (a
+/// sleeping tab), a missing client IP, quotas, rate limits, `Early-Data`,
+/// an unavailable replay store, `ic.interactive_unavailable`,
+/// `ic.renew_cap`, the provider's own unavailability and `ic.a11y_quota`
+/// are not the client's failure.
 pub fn counts_as_failure(code: &str) -> bool {
     use reason::*;
     matches!(
@@ -155,19 +206,62 @@ pub fn counts_as_failure(code: &str) -> bool {
             | AUTOMATION_FLAG
             | UA_MISMATCH
             | NONCE_REUSED
+            | PROVIDER_NOT_OFFERED
+            | TOO_FAST
+            | BIND_JKT
+            | SIG
+            | IX_MODE
+            | HOLD_SHORT
+            | HOLD_LONG
+            | NO_TRUSTED_INPUT
+            | SCORE_HIGH
     )
 }
 
 // ---------------------------------------------------------------------------
 // /__mg/s/<file>
 
+/// Whether an `If-None-Match` value (a comma-separated list of entity tags,
+/// or `*`) matches `etag` by the weak comparison of RFC 9110 §13.1.2.
+pub fn if_none_match(value: &str, etag: &str) -> bool {
+    value
+        .split(',')
+        .map(str::trim)
+        .any(|tag| tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag)
+}
+
 /// The answer to `method /__mg/s/<name>` (see the module documentation);
-/// `path` is the raw request path.
-pub fn sdk_file(sdk: &SdkDir, path: &str, method: &str) -> EdgeResponse {
+/// `path` is the raw request path (the query string is not part of it, so
+/// it is ignored), `if_none_match` the request's `If-None-Match` values.
+///
+/// `/__mg/s/mg.js` is the stable alias of the current build (D-39, Phase 2
+/// spec §11.1): the bytes of `manifest.sdk`, `Cache-Control: public,
+/// max-age=300`, `ETag: "<build>"`, and 304 when `If-None-Match` matches.
+pub fn sdk_file(
+    sdk: &SdkDir,
+    path: &str,
+    method: &str,
+    if_none_match_values: &[&str],
+) -> EdgeResponse {
     if method != "GET" && method != "HEAD" {
         return EdgeResponse::method_not_allowed(SDK_ALLOW);
     }
     let name = path.strip_prefix(crate::routes::SDK_PREFIX).unwrap_or("");
+    if name == crate::sdk::ALIAS {
+        let Some(bytes) = sdk.sdk_bytes() else {
+            return EdgeResponse::not_found();
+        };
+        let etag = sdk.etag();
+        let fresh = if_none_match_values.iter().any(|v| if_none_match(v, &etag));
+        let mut r = if fresh {
+            EdgeResponse::new(304, JAVASCRIPT, Bytes::new())
+        } else {
+            EdgeResponse::new(200, JAVASCRIPT, bytes.clone())
+        };
+        r.cache_control = crate::sdk::ALIAS_CACHE_CONTROL;
+        r.close = false;
+        return r.with("ETag", etag);
+    }
     match sdk
         .files
         .get(name)
@@ -199,6 +293,19 @@ pub fn verify_ret(query: &str, fallback: &str) -> String {
     percent_decode(value)
         .filter(|ret| ret.bytes().all(|b| matches!(b, 0x21..=0x7e)) && validate_ret(ret).is_ok())
         .unwrap_or_else(|| fallback.to_owned())
+}
+
+/// The `min` parameter of `/__mg/v?<query>` (Phase 2 spec §7.10, D-58):
+/// `interactive` when exactly one `min` parameter says so; anything else
+/// (absent, repeated, another value) is ignored.
+pub fn verify_min(query: &str) -> Option<ChallengeType> {
+    let mut values = query
+        .split('&')
+        .filter_map(|pair| pair.strip_prefix("min="));
+    match (values.next(), values.next()) {
+        (Some("interactive"), None) => Some(ChallengeType::Interactive),
+        _ => None,
+    }
 }
 
 /// `%XX` decoding of an ASCII string; `None` for a malformed escape or a
@@ -287,6 +394,8 @@ pub struct Telemetry {
     pub solve_ms: Option<u32>,
     pub env: Option<EnvSummary>,
     pub auto: Option<AutomationSummary>,
+    /// `t.ix` of a v2 submission (§7.6).
+    pub ix: Option<IxTelemetry>,
 }
 
 impl fmt::Debug for Telemetry {
@@ -296,6 +405,7 @@ impl fmt::Debug for Telemetry {
             .field("solve_ms", &self.solve_ms)
             .field("env", &self.env.is_some())
             .field("auto", &self.auto)
+            .field("ix", &self.ix.is_some())
             .finish()
     }
 }
@@ -314,6 +424,9 @@ pub struct SubmitRecord {
     pub telemetry: Option<Telemetry>,
     /// The band and difficulty of the new `C` attached to a failure.
     pub reissued: Option<(RiskBand, u32)>,
+    /// The `provider` label of `mg_challenge_total`: `none`, or the
+    /// submitted provider of an interactive `C`.
+    pub provider: &'static str,
 }
 
 impl SubmitRecord {
@@ -331,6 +444,7 @@ impl SubmitRecord {
             result: "failed",
             telemetry: None,
             reissued: None,
+            provider: challenge::PROVIDER_NONE,
         }
     }
 
@@ -510,19 +624,37 @@ pub fn new_challenge_ret<'a>(
     }
 }
 
-/// The `(sub, sst)` a new token carries over (§6.5): from the first
-/// `__Host-mg_clr` candidate that verifies for this site and environment
-/// (expired allowed), is not bound to another browser or prefix, and whose
-/// session is at most `session_max_s` old.
-fn reused_session(s: &Submit<'_>, now_s: i64) -> Option<(String, i64)> {
+/// The clearance the request carries, for the session carry-over of §6.5
+/// (Phase 2 spec §6.8): the first `__Host-mg_clr` candidate that verifies
+/// for this site and environment, expiry ignored.
+fn previous_clearance(s: &Submit<'_>, now_s: i64) -> Option<ClearanceClaims> {
     let cookies: Vec<&str> = s.built.cookies.iter().map(String::as_str).collect();
     clearance_cookies(&cookies).into_iter().find_map(|token| {
-        let prev =
-            verify_ignoring_expiry(&s.bundle.token_keys, s.site_id, &s.env.name, token, now_s)
-                .ok()?;
-        let check = check_clearance_bind(&prev, s.bind);
-        reusable_session(&prev, &check, now_s, s.bundle.clearance.session_max_s)
+        verify_ignoring_expiry(&s.bundle.token_keys, s.site_id, &s.env.name, token, now_s).ok()
     })
+}
+
+/// The `(sub, sst)` a new token carries over (§6.5; Phase 2 spec §6.8): not
+/// bound to another browser or prefix, at most `session_max_s` old; in a
+/// schema 2 bundle also with the same session key (or none before) and no
+/// active near-line session verdict (`flagged`).
+fn reused_session(
+    s: &Submit<'_>,
+    prev: Option<&ClearanceClaims>,
+    now_s: i64,
+    jkt: Option<&str>,
+    flagged: bool,
+) -> Option<(String, i64)> {
+    let prev = prev?;
+    let check = check_clearance_bind(prev, s.bind);
+    let max = s.bundle.clearance.session_max_s;
+    if !s.bundle.phase2() {
+        return reusable_session(prev, &check, now_s, max);
+    }
+    if flagged {
+        return None;
+    }
+    reusable_session_v2(prev, &check, now_s, max, jkt)
 }
 
 /// A mutable run of the flow over one submission.
@@ -544,9 +676,20 @@ struct Flow<'a, 's> {
     /// When [`submit`] started (monotonic: the wall clock is read once, by
     /// the caller).
     started: std::time::Instant,
-    /// Unix ms that steps 4-10 judge by: `Submit::now_ms` advanced to the
+    /// Unix ms that steps 4-15 judge by: `Submit::now_ms` advanced to the
     /// end of the body read (see [`Flow::clock`]).
     now_ms: i64,
+    /// The thumbprint of the submission's session key once its signature
+    /// verified (step 8): bound into the token and into a new `C`.
+    jkt: Option<String>,
+    /// `mg.a11y.issue` is over its limit (round trip 1, §7.9).
+    a11y_exceeded: bool,
+    /// The new `C` attached to this failure shows `ix.a11y_quota`.
+    a11y_quota_reissue: bool,
+    /// The clearance the request carries (session carry-over).
+    previous: Option<ClearanceClaims>,
+    /// Its `sub` has an active near-line session verdict (§6.8).
+    session_flagged: bool,
 }
 
 impl<'s> Flow<'_, 's> {
@@ -567,11 +710,12 @@ impl<'s> Flow<'_, 's> {
         }
     }
 
-    /// Steps 0-10; `Ok(response)` on success.
+    /// Steps 0-15; `Ok(response)` on success.
     async fn run(&mut self, body: &mut dyn BodySource) -> Result<EdgeResponse, Stop> {
         let s = self.s;
         let site = s.site_id;
-        let limits = &s.bundle.challenge_limits;
+        let bundle = s.bundle;
+        let limits = &bundle.challenge_limits;
 
         // 0. Client IP (D-23): never a C or a token without one.
         let Some(ip) = s.built.ctx.net.ip else {
@@ -588,17 +732,34 @@ impl<'s> Flow<'_, 's> {
             return Err(Stop::TooEarly);
         }
 
-        // 2 / 2b. Round trip 1.
-        let checks = limits.submit_round_trip(site, &self.dims());
-        let got = self
+        // 2 / 2b. Round trip 1: the challenge limiters, in schema 2 also
+        //    both tiers of mg.a11y.issue (check only, whatever `p` turns out
+        //    to be) and the session verdict of the carried clearance (§6.8).
+        self.previous = previous_clearance(s, s.now_ms.div_euclid(1000));
+        let mut checks = limits.submit_round_trip(site, &self.dims());
+        let base = checks.len();
+        if let Some(ix) = &bundle.interactive {
+            checks.extend(interactive::a11y_checks(site, ix, &self.dims(), false));
+        }
+        let verdict_keys: Vec<String> = match (&self.previous, bundle.phase2()) {
+            (Some(prev), true) => vec![verdict_key(site, "session", &prev.sub)],
+            _ => Vec::new(),
+        };
+        let rt1 = self
             .state
             .round_trip1(RoundTrip1 {
-                verdict_keys: Vec::new(),
+                verdict_keys,
                 limits: checks.clone(),
             })
-            .await
-            .limits;
-        let outcomes = outcomes_for(&checks, got);
+            .await;
+        let now_for_verdicts = self.clock();
+        self.session_flagged = rt1
+            .verdicts
+            .iter()
+            .flatten()
+            .filter_map(|raw| parse_verdict(raw))
+            .any(|v| v.is_active(now_for_verdicts));
+        let outcomes = outcomes_for(&checks, rt1.limits);
         count_exceeded(&checks, &outcomes);
         // submit_round_trip order: submit, fail, fail.prefix, issue.ipp[, issue.asn].
         if outcomes.iter().take(3).any(|o| !o.allowed) {
@@ -607,12 +768,13 @@ impl<'s> Flow<'_, 's> {
                 retry_after_s: retry_after_s(outcomes.iter().take(3)),
             });
         }
-        if outcomes.iter().skip(3).any(|o| !o.allowed) {
+        if outcomes.iter().take(base).skip(3).any(|o| !o.allowed) {
             return Err(Stop::Limited {
                 code: reason::ISSUE_QUOTA,
-                retry_after_s: retry_after_s(outcomes.iter().skip(3)),
+                retry_after_s: retry_after_s(outcomes.iter().take(base).skip(3)),
             });
         }
+        self.a11y_exceeded = outcomes.iter().skip(base).any(|o| !o.allowed);
 
         // 3. The body.
         let body_fail = || {
@@ -655,6 +817,7 @@ impl<'s> Flow<'_, 's> {
             solve_ms: None,
             env: parsed.env.as_ref().map(EnvSummary::for_telemetry),
             auto: parsed.auto,
+            ix: parsed.v2.as_ref().and_then(|v| v.ix.clone()),
         });
         self.sub = Some(parsed);
         self.now_ms = self.clock();
@@ -672,9 +835,13 @@ impl<'s> Flow<'_, 's> {
                 reissue: false,
             })?;
         let solve_ms = u32::try_from(now_ms.saturating_sub(opened.iat_ms).max(0)).ok();
-        self.record.feedback.route_id = Some(opened.route_class.clone());
-        self.record.feedback.risk_band = Some(opened.risk_band);
-        self.record.feedback.solve_ms = solve_ms;
+        let fb = &mut self.record.feedback;
+        fb.route_id = Some(opened.route_class.clone());
+        fb.risk_band = Some(opened.risk_band);
+        fb.solve_ms = solve_ms;
+        fb.attempt_no = opened.attempt_no;
+        fb.renew_no = opened.renew_no;
+        fb.bound = opened.bind.jkt.is_some();
         if let Some(t) = &mut self.record.telemetry {
             t.solve_ms = solve_ms;
         }
@@ -688,8 +855,64 @@ impl<'s> Flow<'_, 's> {
                 reissue: true,
             })
         };
+        let interactive = claims.challenge_type == ChallengeType::Interactive;
 
-        // 5. Bindings.
+        // 4a. An interactive C while interactive challenges are unavailable
+        //     (§5.1): a pow C, nothing of InteractiveConfig is read.
+        if interactive && !bundle.interactive_available {
+            return fail(reason::INTERACTIVE_UNAVAILABLE);
+        }
+        let ix_cfg = if interactive {
+            match &bundle.interactive {
+                Some(cfg) => Some(cfg),
+                None => return fail(reason::INTERACTIVE_UNAVAILABLE),
+            }
+        } else {
+            None
+        };
+        let v2 = sub.v2.as_ref();
+
+        // 5. The provider (interactive).
+        let mut provider = None;
+        if let (Some(cfg), Some(v2)) = (ix_cfg, v2) {
+            let p =
+                v2.p.parse::<ProviderId>()
+                    .ok()
+                    .filter(|p| claims.providers.contains(p));
+            let Some(p) = p else {
+                return fail(reason::PROVIDER_NOT_OFFERED);
+            };
+            self.record.provider = p.as_str();
+            match p {
+                ProviderId::SelfHold => {}
+                ProviderId::PowA11y => {
+                    if self.a11y_exceeded {
+                        self.a11y_quota_reissue = true;
+                        return fail(reason::A11Y_QUOTA);
+                    }
+                }
+                // External providers are verified by WP-E2c; until then a
+                // C never offers one, and nothing is counted against the
+                // visitor.
+                _ => return fail(reason::PROVIDER_UNAVAILABLE),
+            }
+            provider = Some((p, cfg));
+        }
+
+        // 6. The server-side time window (§7.7).
+        let ui = ui_params(claims.ui_seed);
+        let elapsed_ms =
+            u32::try_from(now_ms.saturating_sub(claims.iat_ms).max(0)).unwrap_or(u32::MAX);
+        if let (Some((_, cfg)), Some(v2)) = (provider, v2) {
+            let mode = v2.ix.as_ref().map_or(IxMode::PowOnly, |t| t.mode);
+            let min = min_elapsed_ms(mode, ui.required_hold_ms, cfg.min_pow_ms, cfg.a11y_min_ms);
+            if elapsed_ms < min {
+                return fail(reason::TOO_FAST);
+            }
+        }
+
+        // 7. Bindings; a C bound to a session key needs a v2 submission
+        //    signed with that key (D-41).
         let check = check_challenge_bind(&claims.bind, s.bind);
         if check.uah != BindResult::Match {
             return fail(reason::BIND_UAH);
@@ -703,19 +926,57 @@ impl<'s> Flow<'_, 's> {
                 .push(reason::BIND_IPP_SOFT.to_owned()),
             _ => return fail(reason::BIND_IPP),
         }
+        let key = match v2 {
+            None => {
+                if claims.bind.jkt.is_some() {
+                    return fail(reason::BIND_JKT);
+                }
+                None
+            }
+            Some(v2) => {
+                // I-45: a jwk that is not the §6.5 shape is ic.sig.
+                let Some(key) = submission::session_key(&v2.jwk) else {
+                    return fail(reason::SIG);
+                };
+                if claims.bind.jkt.is_some() && !interactive::jkt_matches(claims, key.thumbprint())
+                {
+                    return fail(reason::BIND_JKT);
+                }
+                Some(key)
+            }
+        };
 
-        // 6. PoW on C exactly as received (I-18).
-        let difficulty = claims.pow.as_ref().map_or(u32::MAX, |p| p.difficulty);
-        if !pow_verify(&sub.c, difficulty, sub.counter) {
+        // 8. v2: the submission signature (§6.6).
+        if let Some(key) = &key {
+            if !submission::submission_signature_ok(sub, key) {
+                return fail(reason::SIG);
+            }
+            self.jkt = Some(key.thumbprint().to_owned());
+        }
+
+        // 9. PoW on C exactly as received (I-18): v1 or v2 by the sealed
+        //    algorithm; v2 at the difficulty of the submitted provider.
+        let pow = claims.pow.clone().unwrap_or_default();
+        let solved = if pow.alg == POW_ALG_V2 {
+            let difficulty = match provider {
+                Some((ProviderId::PowA11y, _)) => pow.a11y_difficulty,
+                _ => pow.difficulty,
+            };
+            usize::try_from(pow.k).is_ok_and(|k| k == sub.counters.len())
+                && pow_verify_v2(&sub.c, difficulty, &sub.counters)
+        } else {
+            sub.counters.len() == 1 && pow_verify(&sub.c, pow.difficulty, sub.counter())
+        };
+        if !solved {
             return fail(reason::POW);
         }
 
-        // 7. Return path.
+        // 10. Return path.
         if validate_ret(&sub.ret).is_err() || ret_hash(&sub.ret).as_slice() != claims.ret_hash {
             return fail(reason::RET);
         }
 
-        // 8. Basic environment.
+        // 11. Basic environment, then (interactive) the hard checks of §7.7.
         if sub.auto.is_some_and(|a| a.webdriver == Some(true)) {
             return fail(reason::AUTOMATION_FLAG);
         }
@@ -726,21 +987,58 @@ impl<'s> Flow<'_, 's> {
         {
             return fail(reason::UA_MISMATCH);
         }
+        let assessment = match (provider, v2) {
+            (Some((p, cfg)), Some(v2)) => {
+                let input = InteractionInput {
+                    provider: p,
+                    telemetry: v2.ix.as_ref(),
+                    required_hold_ms: ui.required_hold_ms,
+                    elapsed_ms,
+                    pow_bits: if p == ProviderId::PowA11y {
+                        pow.a11y_difficulty
+                    } else {
+                        pow.difficulty
+                    },
+                    pow_k: pow.k,
+                    risk_band: claims.risk_band,
+                    mode: cfg.scoring,
+                };
+                let a = assess_interaction(&input);
+                self.record.feedback.ix = Some(a.summary(&input));
+                if let Some(code) = a.hard_failure {
+                    return fail(code);
+                }
+                Some((a, cfg))
+            }
+            _ => None,
+        };
 
-        // 9. Round trip 2: the nonce and the issuance quotas (D-37).
-        let quota_checks = limits.issuance(site, &self.dims());
-        let ttl_ms = claims
-            .exp_ms
-            .saturating_sub(now_ms)
-            .saturating_add(NONCE_TTL_SLACK_MS)
-            .max(1);
+        // 12. Round trip 2: the nonce and the issuance quotas (D-37), with
+        //     mg.a11y.issue for pow_a11y (§7.9).
+        let mut quota_checks = limits.issuance(site, &self.dims());
+        if let Some((ProviderId::PowA11y, cfg)) = provider {
+            quota_checks.extend(interactive::a11y_checks(site, cfg, &self.dims(), true));
+        }
+        // An interactive C's nonce outlives its renewal window
+        // (crate::renew::interactive_nonce_ttl_ms).
+        let ttl_ms = if interactive {
+            crate::renew::interactive_nonce_ttl_ms(claims, now_ms)
+        } else {
+            let ttl = claims
+                .exp_ms
+                .saturating_sub(now_ms)
+                .saturating_add(NONCE_TTL_SLACK_MS)
+                .max(1);
+            u64::try_from(ttl).unwrap_or(1)
+        };
         let nonce = self
             .state
-            .nonce_issue(
-                NonceIssue {
+            .nonce_issue_v2(
+                NonceIssueV2 {
                     site: site.to_owned(),
                     nonce: claims.nonce,
-                    ttl_ms: u64::try_from(ttl_ms).unwrap_or(1),
+                    ttl_ms,
+                    replay: None,
                     limits: quota_checks.clone(),
                 },
                 now_ms,
@@ -749,10 +1047,12 @@ impl<'s> Flow<'_, 's> {
             .await;
         let mut replay_unchecked = false;
         let quotas = match nonce {
-            NonceResult::Reused => return fail(reason::NONCE_REUSED),
-            NonceResult::Fresh { limits } => limits,
-            NonceResult::Unavailable { limits } => {
-                if replay_fail_closed(s.bundle, s.env, s.host, &claims.route_class, &sub.ret) {
+            NonceResultV2::Reused | NonceResultV2::TokenReused => {
+                return fail(reason::NONCE_REUSED);
+            }
+            NonceResultV2::Fresh { limits } => limits,
+            NonceResultV2::Unavailable { limits } => {
+                if replay_fail_closed(bundle, s.env, s.host, &claims.route_class, &sub.ret) {
                     return Err(Stop::Limited {
                         code: reason::REPLAY_UNAVAILABLE,
                         retry_after_s: RETRY_S,
@@ -775,36 +1075,71 @@ impl<'s> Flow<'_, 's> {
             });
         }
 
-        // 10. The clearance.
-        let (lvl, ttl_s) = if claims.challenge_type == ChallengeType::Invisible {
-            (TokenLevel::Invisible, s.bundle.clearance.ttl_invisible_s)
-        } else {
-            (TokenLevel::Pow, s.bundle.clearance.ttl_pow_s)
+        // 13. (Turnstile's siteverify: WP-E2c.)
+        // 14. The score (§7.8): only `enforce` decides with it.
+        if let Some((a, cfg)) = &assessment {
+            metrics()
+                .interactive_score
+                .with_label_values(&[self.record.provider, cfg.scoring.eval_mode().as_str()])
+                .observe(f64::from(a.score));
+            match a.outcome {
+                IxOutcome::Pass => {}
+                IxOutcome::Retry => return fail(reason::SCORE_HIGH),
+                IxOutcome::Block => {
+                    return Err(Stop::Limited {
+                        code: reason::SCORE_BLOCK,
+                        retry_after_s: SCORE_BLOCK_RETRY_S,
+                    });
+                }
+            }
+        }
+
+        // 15. The clearance: the level by provider, v2 with `cnf.jkt` and
+        //     `lat` in schema 2 (D-46, D-66), the status cookie, and the
+        //     accessibility preference (§9.5).
+        let lvl = match (claims.challenge_type, provider) {
+            (ChallengeType::Invisible, _) => TokenLevel::Invisible,
+            (ChallengeType::Interactive, Some((ProviderId::PowA11y, _))) => {
+                TokenLevel::InteractiveA11y
+            }
+            (ChallengeType::Interactive, _) => TokenLevel::Interactive,
+            _ => TokenLevel::Pow,
         };
-        let ttl_s = ttl_s.clamp(1, mg_challenge::MAX_TOKEN_LIFETIME_S as u32);
+        let ttl_s = bundle.ttl_for(&lvl);
         let Some(bind) = ClearanceBind::from_inputs(s.bind) else {
             // Unreachable: the client IP is known (step 0).
             return Err(Stop::Unavailable);
         };
         let now_s = now_ms.div_euclid(1000);
-        let session = reused_session(s, now_s);
-        let minted = mg_challenge::mint(
-            &s.bundle.token_keys,
+        let session = reused_session(
+            s,
+            self.previous.as_ref(),
+            now_s,
+            self.jkt.as_deref(),
+            self.session_flagged,
+        );
+        let minted = mint_v2(
+            &bundle.token_keys,
             site,
-            &MintParams {
-                env: &s.env.name,
-                session: session.as_ref().map(|(sub, sst)| (sub.as_str(), *sst)),
-                lvl,
-                now_s,
-                ttl_s,
-                bind,
-                rb: claims.risk_band,
-                replay_unchecked,
+            &MintV2Params {
+                base: MintParams {
+                    env: &s.env.name,
+                    session: session.as_ref().map(|(sub, sst)| (sub.as_str(), *sst)),
+                    lvl,
+                    now_s,
+                    ttl_s,
+                    bind,
+                    rb: claims.risk_band,
+                    replay_unchecked,
+                },
+                cnf_jkt: self.jkt.as_deref(),
+                lat: None,
+                allow_v2: bundle.phase2(),
             },
             self.rng,
         );
-        let token = match minted {
-            Ok((token, _)) => token,
+        let (token, minted) = match minted {
+            Ok(t) => t,
             Err(e) => {
                 if e == TokenError::Rng {
                     log::error!(
@@ -823,48 +1158,117 @@ impl<'s> Flow<'_, 's> {
         let cookie = set_cookie_value(&token, ttl_s);
         let mut resp = match self.answer {
             Answer::Page => pages::submit_redirect(&sub.ret, cookie),
-            Answer::Json => pages::submit_ok_json(&sub.ret, cookie),
+            Answer::Json => pages::submit_ok_json(&sub.ret, cookie, now_ms),
         };
+        if bundle.phase2() {
+            resp = resp.with("Set-Cookie", status_set_cookie_value(&minted, ttl_s));
+        }
+        match provider {
+            Some((ProviderId::PowA11y, _)) => {
+                resp = resp.with("Set-Cookie", interactive::a11y_set_cookie());
+            }
+            Some((ProviderId::SelfHold, _)) if interactive::has_a11y_cookie(&s.built.cookies) => {
+                resp = resp.with("Set-Cookie", interactive::a11y_delete_cookie());
+            }
+            _ => {}
+        }
         resp.close = !self.body_done;
         Ok(resp)
     }
 
-    /// The new `C` of a failure from step 5 on (D-27, I-10).
+    /// The new `C` of a failure from step 4a on (§5.3, D-50; Phase 1: D-27,
+    /// I-10): type, band and attempt by `next_challenge_after_failure`; an
+    /// interactive one with a new `ui_seed` and the providers selected
+    /// again, bound to the submission's key once its signature verified.
     fn reissue(&self) -> Result<Issued, Stop> {
         let (Some(claims), Some(sub)) = (&self.claims, &self.sub) else {
             return Err(Stop::Unavailable);
         };
         let s = self.s;
-        let cfg = &s.bundle.challenge;
-        let band = claims.risk_band.after_failure();
-        let ty = ChallengeType::Pow;
-        let bits = challenge::difficulty(&pow_bits(cfg), ty, band);
-        let ret = new_challenge_ret(&claims.ret_hash, &sub.ret, fallback_ret(cfg));
-        let issued = challenge::issue(
-            &IssueRequest {
-                sealer: s.sealer,
-                host: s.host,
-                route_class: &claims.route_class,
-                ty,
-                band,
-                bits,
-                ttl_s: cfg.ttl_s,
-                ret,
-                bind: s.bind,
-                now_ms: self.now_ms,
-            },
-            self.rng,
+        let bundle = s.bundle;
+        let cfg = &bundle.challenge;
+        let (ty, band, attempt_no) = next_challenge_after_failure(
+            claims.challenge_type,
+            claims.risk_band,
+            claims.attempt_no,
+            bundle.interactive_available,
         );
-        if issued.is_ok() {
-            challenge::count(ty, "issued");
-        }
-        issued.map_err(|e| {
+        let ret = new_challenge_ret(&claims.ret_hash, &sub.ret, fallback_ret(cfg));
+        let unavailable = |e: IssueError| {
             log::error!(
                 "request_id={} new challenge after a failure not issued: {e:?}",
                 s.request_id
             );
             Stop::Unavailable
-        })
+        };
+        let issued = match (ty, &bundle.interactive) {
+            (ChallengeType::Interactive, Some(ix)) => {
+                let ip = s.built.ctx.net.ip.ok_or(Stop::Unavailable)?;
+                let now_us = u64::try_from(self.now_ms).unwrap_or(0).saturating_mul(1000);
+                if let Gate::Limited { retry_after_s } =
+                    interactive::issue_gate(self.state, s.site_id, ix, ip, now_us)
+                {
+                    return Err(Stop::Limited {
+                        code: reason::RATE_LIMITED,
+                        retry_after_s,
+                    });
+                }
+                challenge::issue_interactive(
+                    &interactive::Seal {
+                        sealer: s.sealer,
+                        host: s.host,
+                        route_class: &claims.route_class,
+                        band,
+                        attempt_no,
+                        renew_no: 0,
+                        providers: interactive::providers(
+                            ix,
+                            s.host,
+                            &claims.route_class,
+                            attempt_no,
+                            interactive::a11y_pref(&s.built.cookies),
+                        ),
+                        ui_seed: None,
+                        pow: interactive::pow_params(ix, band),
+                        ret_hash: ret_hash(ret),
+                        bind: s.bind,
+                        jkt: self.jkt.as_deref(),
+                        now_ms: self.now_ms,
+                    },
+                    ix,
+                    ret,
+                    self.a11y_quota_reissue,
+                    self.rng,
+                )
+                .map_err(unavailable)?
+            }
+            _ => {
+                let ty = if ty == ChallengeType::Invisible {
+                    ty
+                } else {
+                    ChallengeType::Pow
+                };
+                challenge::issue(
+                    &IssueRequest {
+                        sealer: s.sealer,
+                        host: s.host,
+                        route_class: &claims.route_class,
+                        ty,
+                        band,
+                        bits: challenge::difficulty(&pow_bits(cfg), ty, band),
+                        ttl_s: cfg.ttl_s,
+                        ret,
+                        bind: s.bind,
+                        jkt: self.jkt.as_deref(),
+                        now_ms: self.now_ms,
+                    },
+                    self.rng,
+                )
+                .map_err(unavailable)?
+            }
+        };
+        challenge::count_issued(&issued, "reissued");
+        Ok(issued)
     }
 
     /// The return path shown on a failed page without a new `C`: the
@@ -929,6 +1333,12 @@ impl<'s> Flow<'_, 's> {
                 let new = if reissue {
                     match self.reissue() {
                         Ok(new) => Some(new),
+                        Err(Stop::Limited { retry_after_s, .. }) => {
+                            let mut r =
+                                EdgeResponse::rate_limited(s.request_id, retry_after_s, navigation);
+                            r.close = !self.body_done;
+                            return r;
+                        }
                         // The RNG failed (logged): 503, the record as above.
                         Err(_) => return EdgeResponse::internal_unavailable(),
                     }
@@ -945,15 +1355,17 @@ impl<'s> Flow<'_, 's> {
                         pages::challenge_page(
                             s.sdk,
                             &Page {
-                                lang: pages::page_lang(context::header(
-                                    &s.built.headers,
-                                    "accept-language",
-                                )),
+                                lang: pages::page_lang(
+                                    context::header(&s.built.headers, "accept-language"),
+                                    s.bundle.default_lang,
+                                ),
                                 nonce: &nonce,
                                 request_id: s.request_id,
                                 ret: &ret,
                                 state: PageState::Failed,
                                 challenge: new.as_ref().map(Issued::shown),
+                                help_href: &s.bundle.help_path,
+                                privacy_href: &s.bundle.privacy_path,
                             },
                         )
                     }
@@ -993,13 +1405,22 @@ pub async fn submit(
         body_done: false,
         started: std::time::Instant::now(),
         now_ms: s.now_ms,
+        jkt: None,
+        a11y_exceeded: false,
+        a11y_quota_reissue: false,
+        previous: None,
+        session_flagged: false,
     };
     let response = match flow.run(body).await {
         Ok(resp) => resp,
         Err(stop) => flow.stopped(stop),
     };
     let record = flow.record;
-    challenge::count(record.feedback.challenge_type, record.result);
+    challenge::count(
+        record.feedback.challenge_type,
+        record.provider,
+        record.result,
+    );
     Submitted { response, record }
 }
 

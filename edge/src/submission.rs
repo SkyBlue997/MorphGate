@@ -23,11 +23,27 @@
 //!   to 256 bytes and arrays to 16 items. Anything else in them makes that
 //!   part absent, never the submission invalid (§10.3, §9.11).
 //!
+//! Phase 2 (docs/impl/phase2-spec.md §7.4, §7.5, WP-E2a):
+//!
+//! * **Submission v2** (`v = 2`): `type` `invisible` | `pow` |
+//!   `interactive`; `p` (the provider, interactive only; empty or absent
+//!   otherwise); `pp` a string of at most 4096 bytes; `t` a string of at most
+//!   2048 bytes holding a JSON object (`env`, `auto`, `ix`, parsed by
+//!   `mg_edge_core::events::telemetry_v2`, the single implementation of
+//!   §15.2; a `t` that is not an object fails the submission); 1-8
+//!   `pow.counters`; `ts` an integer `0..2^53`; `jwk` an object and `sig` a
+//!   string, both required (I-45: their content is checked later, `ic.sig`).
+//!   Top-level `env` / `auto` are ignored in v2.
+//! * **Renewal** (`POST /__mg/c/renew`, [`parse_renew`]): `{"v": 2, "c",
+//!   "jwk", "ts", "sig"}` under the same JSON rules.
+//!
 //! Every failure is the reason `ic.body`; the caller answers with the uniform
 //! failure. Nothing here logs or keeps the submitted values beyond the typed
 //! result.
 
-use mg_core::ChallengeType;
+use mg_challenge::{SessionKey, SubmissionFields, renew_message, submission_message};
+use mg_core::{ChallengeType, IxTelemetry};
+use mg_edge_core::events::{ChallengeTelemetry, T_MAX_BYTES};
 use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -42,6 +58,16 @@ pub const MAX_DEPTH: usize = 16;
 pub const MAX_C: usize = 1024;
 /// `counters[0] < 2^53` (a JavaScript safe integer, §6.3).
 pub const MAX_COUNTER: u64 = 1 << 53;
+/// Most `pow.counters` of a v2 submission (PoW v2 sub-puzzles).
+pub const MAX_COUNTERS: usize = 8;
+/// Longest `pp` (bytes), Phase 2 spec §7.5.
+pub const MAX_PP: usize = 4096;
+/// Longest `t` (bytes), Phase 2 spec §7.5.
+pub const MAX_T: usize = T_MAX_BYTES;
+/// Longest `sig` accepted before verification (86 characters when valid).
+pub const MAX_SIG: usize = 256;
+/// Largest `ts` of a v2 submission or a renewal (exclusive): `2^53`.
+pub const MAX_TS: u64 = 1 << 53;
 /// String cap of the typed `env` (§9.11).
 pub const MAX_ENV_STRING: usize = 256;
 /// Array cap of the typed `env` (§9.11).
@@ -276,27 +302,77 @@ pub fn strict_json(text: &str) -> Result<Value, BodyError> {
 // ---------------------------------------------------------------------------
 // The typed submission
 
-/// A decoded submission (§10.3).
+/// A decoded submission (§10.3; v2: Phase 2 spec §7.5).
 #[derive(Clone, PartialEq)]
 pub struct Submission {
-    /// `invisible` or `pow`: the type the `aad` is computed with.
+    /// 1 (Phase 1) or 2.
+    pub v: u8,
+    /// `invisible`, `pow` or (v2) `interactive`: the type the `aad` is
+    /// computed with.
     pub ty: ChallengeType,
     /// `C` exactly as received (the PoW prefix hashes it, I-18).
     pub c: String,
-    pub counter: u64,
+    /// v1: exactly one; v2: 1-8.
+    pub counters: Vec<u64>,
     pub ret: String,
-    /// Client clock (ms); a feature only.
+    /// Client clock (ms); a feature only (v2: an integer, signed).
     pub ts: f64,
     pub build: String,
+    /// v1: the top-level `env` / `auto`; v2: those of `t`.
     pub env: Option<EnvSummary>,
     pub auto: Option<AutomationSummary>,
+    /// v2 only (empty in v1).
+    pub v2: Option<SubmissionV2>,
+}
+
+/// The v2 members of a submission (Phase 2 spec §7.5).
+#[derive(Clone, PartialEq)]
+pub struct SubmissionV2 {
+    /// The provider id (interactive; empty otherwise).
+    pub p: String,
+    /// The provider's token (Turnstile) or empty.
+    pub pp: String,
+    /// `t` as received (its UTF-8 bytes are signed).
+    pub t: String,
+    /// `ts` as the integer that is signed.
+    pub ts: u64,
+    /// The `jwk` object, re-serialized (its content is checked at step 8).
+    pub jwk: String,
+    pub sig: String,
+    /// `t.ix` (§7.6), when present and valid.
+    pub ix: Option<IxTelemetry>,
+    /// `t.ix` was present but did not fit §7.6 (it was dropped).
+    pub ix_rejected: bool,
+}
+
+impl fmt::Debug for SubmissionV2 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never the key, the signature, the provider token or the telemetry
+        // (§2.4 item 10).
+        f.debug_struct("SubmissionV2")
+            .field("p", &self.p)
+            .field("pp_len", &self.pp.len())
+            .field("t_len", &self.t.len())
+            .field("ix", &self.ix.is_some())
+            .field("ix_rejected", &self.ix_rejected)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Submission {
+    /// `counters[0]` (v1 has exactly one).
+    pub fn counter(&self) -> u64 {
+        self.counters.first().copied().unwrap_or(u64::MAX)
+    }
 }
 
 impl fmt::Debug for Submission {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Never C (§2.4 item 5), nor the return path (it may carry tokens).
         f.debug_struct("Submission")
+            .field("v", &self.v)
             .field("ty", &self.ty)
+            .field("p", &self.v2.as_ref().map(|v| v.p.as_str()))
             .field("c_len", &self.c.len())
             .field("build", &self.build)
             .field("env", &self.env.is_some())
@@ -317,29 +393,36 @@ pub fn parse_submission(text: &str) -> Result<Submission, BodyError> {
         return Err(BodyError::Json);
     };
     let field = |name: &'static str| BodyError::Field(name);
-    if top.get("v").and_then(Value::as_u64) != Some(1) {
-        return Err(field("v"));
-    }
+    let v = match top.get("v").and_then(Value::as_u64) {
+        Some(1) => 1u8,
+        Some(2) => 2,
+        _ => return Err(field("v")),
+    };
     let ty = match top.get("type").and_then(Value::as_str) {
         Some("invisible") => ChallengeType::Invisible,
         Some("pow") => ChallengeType::Pow,
+        Some("interactive") if v == 2 => ChallengeType::Interactive,
         _ => return Err(field("type")),
     };
     let c = match top.remove("c") {
         Some(Value::String(c)) if c.len() <= MAX_C => c,
         _ => return Err(field("c")),
     };
-    let counter = match top
+    let counters: Vec<u64> = match top
         .get("pow")
         .and_then(Value::as_object)
         .and_then(|p| p.get("counters"))
         .and_then(Value::as_array)
-        .map(Vec::as_slice)
     {
-        Some([n]) => n
-            .as_u64()
-            .filter(|n| *n < MAX_COUNTER)
-            .ok_or(field("pow.counters"))?,
+        Some(list)
+            if (v == 1 && list.len() == 1)
+                || (v == 2 && (1..=MAX_COUNTERS).contains(&list.len())) =>
+        {
+            list.iter()
+                .map(|n| n.as_u64().filter(|n| *n < MAX_COUNTER))
+                .collect::<Option<_>>()
+                .ok_or(field("pow.counters"))?
+        }
         _ => return Err(field("pow.counters")),
     };
     let ret = match top.remove("ret") {
@@ -351,18 +434,164 @@ pub fn parse_submission(text: &str) -> Result<Submission, BodyError> {
         Some(Value::String(b)) if is_build(&b) => b,
         _ => return Err(field("build")),
     };
-    let env = top.remove("env").and_then(EnvSummary::from_value);
-    let auto = top.remove("auto").and_then(AutomationSummary::from_value);
+    if v == 1 {
+        let env = top.remove("env").and_then(EnvSummary::from_value);
+        let auto = top.remove("auto").and_then(AutomationSummary::from_value);
+        return Ok(Submission {
+            v,
+            ty,
+            c,
+            counters,
+            ret,
+            ts,
+            build,
+            env,
+            auto,
+            v2: None,
+        });
+    }
+    let ts_int = top
+        .get("ts")
+        .and_then(Value::as_u64)
+        .filter(|t| *t < MAX_TS)
+        .ok_or(field("ts"))?;
+    let string =
+        |top: &mut Map<String, Value>, name: &'static str, max: usize| match top.remove(name) {
+            None => Ok(String::new()),
+            Some(Value::String(s)) if s.len() <= max => Ok(s),
+            Some(_) => Err(field(name)),
+        };
+    let p = string(&mut top, "p", 32)?;
+    if (ty == ChallengeType::Interactive) == p.is_empty() {
+        return Err(field("p"));
+    }
+    let pp = string(&mut top, "pp", MAX_PP)?;
+    let t = string(&mut top, "t", MAX_T)?;
+    let jwk = match top.remove("jwk") {
+        Some(j @ Value::Object(_)) => serde_json::to_string(&j).map_err(|_| field("jwk"))?,
+        _ => return Err(field("jwk")),
+    };
+    let sig = match top.remove("sig") {
+        Some(Value::String(s)) if s.len() <= MAX_SIG => s,
+        _ => return Err(field("sig")),
+    };
+    // `t`: one JSON object; its parts as in §15.2.
+    let (env, auto, ix, ix_rejected) = if t.is_empty() {
+        (None, None, None, false)
+    } else {
+        let tel = ChallengeTelemetry::parse(&t).map_err(|_| field("t"))?;
+        let Value::Object(mut parts) = strict_json(&t).map_err(|_| field("t"))? else {
+            return Err(field("t"));
+        };
+        (
+            parts.remove("env").and_then(EnvSummary::from_value),
+            parts.remove("auto").and_then(AutomationSummary::from_value),
+            tel.ix,
+            tel.ix_rejected,
+        )
+    };
     Ok(Submission {
+        v,
         ty,
         c,
-        counter,
+        counters,
         ret,
         ts,
         build,
         env,
         auto,
+        v2: Some(SubmissionV2 {
+            p,
+            pp,
+            t,
+            ts: ts_int,
+            jwk,
+            sig,
+            ix,
+            ix_rejected,
+        }),
     })
+}
+
+/// The session key of a v2 submission or a renewal (`jwk`, Phase 2 spec
+/// §6.5); `None` when it is not exactly the four members of a P-256 key
+/// (I-45: `ic.sig`).
+pub fn session_key(jwk: &str) -> Option<SessionKey> {
+    SessionKey::from_jwk_json(jwk.as_bytes()).ok()
+}
+
+/// Whether `key` signed the v2 submission `sub` (`mg-sub-v2`, Phase 2 spec
+/// §6.6); always false for a v1 submission.
+pub fn submission_signature_ok(sub: &Submission, key: &SessionKey) -> bool {
+    let Some(v2) = &sub.v2 else {
+        return false;
+    };
+    let msg = submission_message(&SubmissionFields {
+        c: &sub.c,
+        ty: sub.ty.as_str(),
+        p: &v2.p,
+        pp: &v2.pp,
+        t: &v2.t,
+        counters: &sub.counters,
+        ret: &sub.ret,
+        ts: v2.ts,
+        build: &sub.build,
+    });
+    key.verify_es256(&msg, &v2.sig)
+}
+
+/// Whether `key` signed the renewal `r` (`mg-renew-v1`, Phase 2 spec §6.6).
+pub fn renew_signature_ok(r: &Renewal, key: &SessionKey) -> bool {
+    key.verify_es256(&renew_message(&r.c, r.ts), &r.sig)
+}
+
+/// A decoded renewal (`POST /__mg/c/renew`, Phase 2 spec §7.4).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Renewal {
+    /// `C` exactly as received.
+    pub c: String,
+    /// The `jwk` object, re-serialized (checked at step 5 / 6).
+    pub jwk: String,
+    pub ts: u64,
+    pub sig: String,
+}
+
+impl fmt::Debug for Renewal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Renewal")
+            .field("c_len", &self.c.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Parses a renewal body: `{"v": 2, "c", "jwk", "ts", "sig"}` under the
+/// JSON rules of §10.3 (unknown top-level fields ignored).
+pub fn parse_renew(text: &str) -> Result<Renewal, BodyError> {
+    let Value::Object(mut top) = strict_json(text)? else {
+        return Err(BodyError::Json);
+    };
+    let field = |name: &'static str| BodyError::Field(name);
+    if top.get("v").and_then(Value::as_u64) != Some(2) {
+        return Err(field("v"));
+    }
+    let c = match top.remove("c") {
+        Some(Value::String(c)) if c.len() <= MAX_C => c,
+        _ => return Err(field("c")),
+    };
+    let ts = top
+        .get("ts")
+        .and_then(Value::as_u64)
+        .filter(|t| *t < MAX_TS)
+        .ok_or(field("ts"))?;
+    let jwk = match top.remove("jwk") {
+        Some(j @ Value::Object(_)) => serde_json::to_string(&j).map_err(|_| field("jwk"))?,
+        _ => return Err(field("jwk")),
+    };
+    let sig = match top.remove("sig") {
+        Some(Value::String(s)) if s.len() <= MAX_SIG => s,
+        _ => return Err(field("sig")),
+    };
+    Ok(Renewal { c, jwk, ts, sig })
 }
 
 // ---------------------------------------------------------------------------
@@ -671,7 +900,7 @@ mod tests {
         let s = parse_submission(&body(r#","extra":{"x":[1,2]}"#)).unwrap();
         assert_eq!(s.ty, ChallengeType::Pow);
         assert_eq!(s.c, C);
-        assert_eq!(s.counter, 38467);
+        assert_eq!(s.counters, vec![38467]);
         assert_eq!(s.ret, "/account/login");
         assert_eq!(s.build, "0123456789abcdef");
         assert!(s.env.is_none() && s.auto.is_none());
@@ -728,7 +957,7 @@ mod tests {
             "trailing data"
         );
         let top = parse_submission(&ok.replace("[38467]", "[9007199254740991]")).unwrap();
-        assert_eq!(top.counter, MAX_COUNTER - 1);
+        assert_eq!(top.counter(), MAX_COUNTER - 1);
     }
 
     /// §10.3: a repeated key anywhere and nesting deeper than 16 are `ic.body`.
@@ -858,5 +1087,114 @@ mod tests {
                 let _ = media_kind(text);
             }
         }
+    }
+
+    /// Phase 2 spec §2.4 item 9: the v2 and renewal parsers and the
+    /// signature checks never panic (10,000 xorshift edits of the shared
+    /// valid samples, and random bytes).
+    #[test]
+    fn random_v2_bodies_never_panic() {
+        let dir = crate::test_support::repo("testdata/phase2/samples/submissions/valid");
+        let seeds: Vec<Vec<u8>> = ["interactive-self-hold.json", "pow.json", "renew.json"]
+            .iter()
+            .map(|f| std::fs::read(dir.join(f)).unwrap())
+            .collect();
+        let mut s = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        const ALPHABET: &[u8] = b"{}[]\",:0123456789aFx\\ -_.\xff\xc3";
+        for i in 0..10_000 {
+            let mut t = if i % 7 == 0 {
+                let len = (next() % 512) as usize;
+                (0..len).map(|_| (next() >> 16) as u8).collect()
+            } else {
+                seeds[i % seeds.len()].clone()
+            };
+            for _ in 0..(1 + next() % 4) {
+                if t.is_empty() {
+                    break;
+                }
+                let r = next();
+                let at = (r as usize) % t.len();
+                t[at] = ALPHABET[(r >> 40) as usize % ALPHABET.len()];
+            }
+            let Ok(text) = std::str::from_utf8(&t) else {
+                continue;
+            };
+            if let Ok(sub) = parse_submission(text)
+                && let Some(key) = sub.v2.as_ref().and_then(|v| session_key(&v.jwk))
+            {
+                let _ = submission_signature_ok(&sub, &key);
+            }
+            if let Ok(r) = parse_renew(text)
+                && let Some(key) = session_key(&r.jwk)
+            {
+                let _ = renew_signature_ok(&r, &key);
+            }
+        }
+    }
+
+    /// The shared samples of `testdata/phase2/samples/submissions/` (Phase 2
+    /// spec §7.4, §7.5, I-45): every `ok` body parses and its signature
+    /// verifies, every `ic.body` body is refused by the parser, every
+    /// `ic.sig` body parses but its key or signature does not verify.
+    #[test]
+    fn phase2_submission_samples() {
+        let dir = crate::test_support::repo("testdata/phase2/samples/submissions");
+        let cases: Value =
+            serde_json::from_slice(&std::fs::read(dir.join("cases.json")).unwrap()).unwrap();
+        let mut seen = 0;
+        for case in cases["cases"].as_array().unwrap() {
+            let file = case["file"].as_str().unwrap();
+            let expect = case["expect"].as_str().unwrap();
+            let renew = case["endpoint"] == "/__mg/c/renew";
+            let bytes = std::fs::read(dir.join(file)).unwrap();
+            if bytes.len() > MAX_BODY {
+                assert_eq!(expect, "ic.body", "{file}");
+                seen += 1;
+                continue;
+            }
+            let text = String::from_utf8(bytes).unwrap();
+            let text = text.strip_suffix('\n').unwrap_or(&text);
+            let verified = if renew {
+                parse_renew(text)
+                    .map(|r| session_key(&r.jwk).is_some_and(|k| renew_signature_ok(&r, &k)))
+            } else {
+                parse_submission(text).map(|s| {
+                    let jwk = s.v2.as_ref().map(|v| v.jwk.clone()).unwrap_or_default();
+                    session_key(&jwk).is_some_and(|k| submission_signature_ok(&s, &k))
+                })
+            };
+            match expect {
+                "ok" => assert_eq!(verified, Ok(true), "{file}"),
+                "ic.sig" => assert_eq!(verified, Ok(false), "{file}"),
+                "ic.body" => assert!(verified.is_err(), "{file}: {verified:?}"),
+                other => panic!("{file}: unknown expectation {other}"),
+            }
+            seen += 1;
+        }
+        assert!(seen >= 30, "{seen}");
+        // The parsed parts of a valid interactive submission.
+        let text = std::fs::read_to_string(dir.join("valid/interactive-self-hold.json")).unwrap();
+        let s = parse_submission(text.trim_end()).unwrap();
+        let v2 = s.v2.as_ref().unwrap();
+        assert_eq!(
+            (s.v, s.ty, v2.p.as_str()),
+            (2, ChallengeType::Interactive, "self_hold")
+        );
+        assert_eq!(s.counters.len(), 8);
+        assert_eq!(
+            v2.ix.as_ref().map(|ix| ix.mode),
+            Some(mg_core::IxMode::Hold)
+        );
+        let text = format!("{s:?}");
+        assert!(
+            !text.contains(&v2.sig) && !text.contains("rrXA79"),
+            "{text}"
+        );
     }
 }

@@ -32,6 +32,18 @@
 //! (`RiskBand::after_failure`: `very_high` stays `very_high`), with that
 //! band's difficulty ([`crate::mg_endpoints`]).
 //!
+//! # Interactive challenges (Phase 2 spec §7.1-§7.3, WP-E2a)
+//!
+//! With `interactive_available` (§5.1) a CHALLENGE of type `interactive`
+//! is issued as one ([`issued_type`]): `crate::interactive::seal` with the
+//! providers of §5.4 (attempt 1; `__Host-mg_a11y` moves `pow_a11y` first),
+//! after the in-process limiter `mg.ix.issue` (429 + `Retry-After` when the
+//! ip entity is over it). The page carries the plain parameters in
+//! `{{ix}}`, the JSON challenge in `ix`; the page language falls back to
+//! `challenge.default_lang`, and `{{help_href}}` / `{{privacy_href}}` are
+//! the bundle's paths. Without `interactive_available`, `interactive` is
+//! issued as `pow` (D-08).
+//!
 //! # Return path (§9.9)
 //!
 //! GET / HEAD: the raw `path[?query]` when it passes `validate_ret` (at
@@ -39,18 +51,23 @@
 //! other method, the bundle's `fallback_ret`.
 
 use crate::enforce::EdgeResponse;
+use crate::interactive::{self, Gate};
 use crate::metrics::metrics;
 use crate::pages::{self, Page, PageState, Shown};
 use crate::routes::RouteKind;
 use crate::sdk::SdkDir;
+use crate::sites::BundleRuntime;
 use mg_challenge::{
-    BindInputs, POW_ALG, Rng, SealError, Sealer, epoch_kid, epoch_no, random_nonce, ret_hash,
-    validate_ret,
+    BindInputs, POW_ALG, Rng, SealError, Sealer, bind_hash, epoch_kid, epoch_no, random_nonce,
+    ret_hash, validate_ret,
 };
 use mg_core::{ChallengeBind, ChallengeType, PowParams, RiskBand, SealedChallengeClaims};
+use mg_edge_core::state::StateHandle;
 use mg_proto::v1::ChallengeConfig;
 use mg_proto::v1::challenge_config::PowBits;
+use serde_json::Value;
 use std::fmt;
+use std::net::IpAddr;
 
 /// Shortest and longest `C` lifetime (§8.2 `challenge.ttl_s`, §6.1).
 pub const MIN_TTL_S: u32 = 10;
@@ -72,11 +89,13 @@ pub fn pow_bits(cfg: &ChallengeConfig) -> PowBits {
     cfg.pow_bits.unwrap_or(DEFAULT_POW_BITS)
 }
 
-/// The type a `C` is issued as: `invisible` stays, everything else is
-/// `pow` (D-08: no interactive challenge in Phase 1).
-pub fn issued_type(t: ChallengeType) -> ChallengeType {
+/// The type a `C` is issued as: `invisible` stays, `interactive` stays when
+/// interactive challenges are available (Phase 2 spec §5.1), everything
+/// else is `pow` (D-08).
+pub fn issued_type(t: ChallengeType, interactive_available: bool) -> ChallengeType {
     match t {
         ChallengeType::Invisible => ChallengeType::Invisible,
+        ChallengeType::Interactive if interactive_available => ChallengeType::Interactive,
         _ => ChallengeType::Pow,
     }
 }
@@ -138,6 +157,9 @@ pub struct IssueRequest<'a> {
     pub ret: &'a str,
     /// The current request's bindings; `ipp` must be present (D-23).
     pub bind: &'a BindInputs,
+    /// The thumbprint of a session key the request proved with a valid
+    /// `MG-Proof` (D-41; set by WP-E2b), sealed as `bind.jkt`.
+    pub jkt: Option<&'a str>,
     pub now_ms: i64,
 }
 
@@ -155,13 +177,22 @@ impl fmt::Debug for IssueRequest<'_> {
 }
 
 /// An issued challenge. `Debug` never prints `C` (§2.4 item 5).
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub struct Issued {
     pub c: String,
     pub ty: ChallengeType,
+    /// The sealed difficulty (`self_hold`'s for an interactive `C`).
     pub bits: u32,
     pub band: RiskBand,
+    /// The return path (empty for a renewal, which only knows its hash).
     pub ret: String,
+    /// The plain parameters of an interactive `C` (§7.2).
+    pub ix: Option<Value>,
+    /// The `provider` label of `mg_challenge_total`: `none`, or the first
+    /// provider of an interactive `C`.
+    pub provider: &'static str,
+    /// `attempt_no` of the `C`.
+    pub attempt_no: u32,
 }
 
 impl fmt::Debug for Issued {
@@ -182,6 +213,7 @@ impl Issued {
             c: &self.c,
             ty: self.ty,
             bits: self.bits,
+            ix: self.ix.as_ref(),
         }
     }
 }
@@ -198,6 +230,15 @@ pub enum IssueError {
 
 /// Builds and seals the claims of a new `C` (§6.2).
 pub fn issue(req: &IssueRequest<'_>, rng: &dyn Rng) -> Result<Issued, IssueError> {
+    seal_basic(req, ret_hash(req.ret), rng)
+}
+
+/// [`issue`] with the return path's hash given.
+fn seal_basic(
+    req: &IssueRequest<'_>,
+    ret_hash: [u8; 16],
+    rng: &dyn Rng,
+) -> Result<Issued, IssueError> {
     let nonce = random_nonce(rng).map_err(|_| IssueError::Rng)?;
     let ttl_ms = i64::from(req.ttl_s.clamp(MIN_TTL_S, MAX_TTL_S)) * 1000;
     let hash = |h: Option<[u8; 16]>| h.map(|h| h.to_vec());
@@ -219,13 +260,13 @@ pub fn issue(req: &IssueRequest<'_>, rng: &dyn Rng) -> Result<Issued, IssueError
             difficulty: req.bits,
             ..Default::default()
         }),
-        ret_hash: ret_hash(req.ret).to_vec(),
+        ret_hash: ret_hash.to_vec(),
         bind: ChallengeBind {
             uah: Some(req.bind.uah.to_vec()),
             ipp: hash(req.bind.ipp),
             ipa: hash(req.bind.ipa),
             ctp: hash(req.bind.ctp),
-            jkt: None,
+            jkt: req.jkt.map(|j| bind_hash("jkt", j).to_vec()),
             tfp: None,
         },
         renew_no: 0,
@@ -243,14 +284,88 @@ pub fn issue(req: &IssueRequest<'_>, rng: &dyn Rng) -> Result<Issued, IssueError
         bits: req.bits,
         band: req.band,
         ret: req.ret.to_owned(),
+        ix: None,
+        provider: PROVIDER_NONE,
+        attempt_no: 0,
     })
 }
 
-/// Counts `mg_challenge_total{type, provider="none", result}`.
-pub fn count(ty: ChallengeType, result: &str) {
+/// A `pow` `C` whose return path is only known as its hash (the `C`
+/// attached to a failed renewal while interactive challenges are
+/// unavailable, Phase 2 spec §7.4 step 4a): `pow_bits[band]`, the bundle's
+/// `ttl_s`.
+#[allow(clippy::too_many_arguments)]
+pub fn issue_with_ret_hash(
+    sealer: &Sealer,
+    host: &str,
+    route_class: &str,
+    band: RiskBand,
+    cfg: &ChallengeConfig,
+    ret_hash: [u8; 16],
+    bind: &BindInputs,
+    now_ms: i64,
+    rng: &dyn Rng,
+) -> Result<Issued, IssueError> {
+    let bits = difficulty(&pow_bits(cfg), ChallengeType::Pow, band);
+    seal_basic(
+        &IssueRequest {
+            sealer,
+            host,
+            route_class,
+            ty: ChallengeType::Pow,
+            band,
+            bits,
+            ttl_s: cfg.ttl_s,
+            ret: "",
+            bind,
+            jkt: None,
+            now_ms,
+        },
+        ret_hash,
+        rng,
+    )
+}
+
+/// An interactive `C` as [`Issued`]: sealed by `crate::interactive::seal`,
+/// with its `ix` (`a11y_quota` per §7.9).
+pub fn issue_interactive(
+    req: &interactive::Seal<'_>,
+    cfg: &crate::sites::InteractiveRuntime,
+    ret: &str,
+    a11y_quota: bool,
+    rng: &dyn Rng,
+) -> Result<Issued, IssueError> {
+    let (c, claims) = interactive::seal(req, rng)?;
+    Ok(Issued {
+        c,
+        ty: ChallengeType::Interactive,
+        bits: req.pow.difficulty,
+        band: req.band,
+        ret: ret.to_owned(),
+        ix: Some(interactive::ix_value(&claims, cfg, a11y_quota)),
+        provider: claims
+            .providers
+            .first()
+            .map_or(PROVIDER_NONE, |p| p.as_str()),
+        attempt_no: claims.attempt_no,
+    })
+}
+
+/// Counts `mg_challenge_total{type, provider, result}` (Phase 2 spec §15.5:
+/// `issued` for decisions and `/__mg/v`, `reissued` for the `C` attached to
+/// a failure, `renewed` for renewals).
+pub fn count_issued(issued: &Issued, result: &str) {
     metrics()
         .challenge
-        .with_label_values(&[ty.as_str(), PROVIDER_NONE, result])
+        .with_label_values(&[issued.ty.as_str(), issued.provider, result])
+        .inc();
+}
+
+/// Counts `mg_challenge_total{type, provider, result}`.
+pub fn count(ty: ChallengeType, provider: &str, result: &str) {
+    metrics()
+        .challenge
+        .with_label_values(&[ty.as_str(), provider, result])
         .inc();
 }
 
@@ -259,7 +374,9 @@ pub fn count(ty: ChallengeType, result: &str) {
 pub struct ChallengeRequest<'a> {
     pub sealer: &'a Sealer,
     pub sdk: &'a SdkDir,
-    pub cfg: &'a ChallengeConfig,
+    pub bundle: &'a BundleRuntime,
+    /// The in-process limiter `mg.ix.issue` lives here.
+    pub state: &'a StateHandle,
     pub site_id: &'a str,
     pub request_id: &'a str,
     /// §9.4-normalized.
@@ -276,11 +393,19 @@ pub struct ChallengeRequest<'a> {
     pub accept_language: Option<&'a str>,
     /// The selected route's name.
     pub route_class: &'a str,
+    /// The selected route's id (Turnstile's route list, §5.4).
+    pub route_id: &'a str,
     /// The decision's type.
     pub ty: ChallengeType,
     /// The pre-challenge risk band (`RiskAssessment.score.band()`).
     pub band: RiskBand,
     pub bind: &'a BindInputs,
+    /// The client IP (known here, D-23): the `mg.ix.issue` keys.
+    pub client_ip: Option<IpAddr>,
+    /// `__Host-mg_a11y=1` (§9.5).
+    pub a11y_pref: bool,
+    /// A session key the request proved (D-41, WP-E2b).
+    pub jkt: Option<&'a str>,
     pub now_ms: i64,
 }
 
@@ -306,6 +431,8 @@ pub enum ChallengeAnswer {
     HttpsRedirect,
     /// A `C` of this type and difficulty was issued.
     Issued { ty: ChallengeType, bits: u32 },
+    /// 429: `mg.ix.issue` (Phase 2 spec §7.1).
+    RateLimited,
     /// 503: the RNG failed, or the claims could not be sealed.
     Unavailable,
 }
@@ -315,6 +442,7 @@ impl fmt::Display for ChallengeAnswer {
         match self {
             Self::HttpsRedirect => f.write_str("https_redirect"),
             Self::Issued { ty, bits } => write!(f, "issued:{ty}/{bits}"),
+            Self::RateLimited => f.write_str("rate_limited"),
             Self::Unavailable => f.write_str("unavailable"),
         }
     }
@@ -345,24 +473,71 @@ pub fn respond(req: &ChallengeRequest<'_>, rng: &dyn Rng) -> (EdgeResponse, Chal
             ChallengeAnswer::HttpsRedirect,
         );
     }
-    let ty = issued_type(req.ty);
-    let bits = difficulty(&pow_bits(req.cfg), ty, req.band);
-    let ret = challenge_ret(req.method, req.path, req.query, fallback_ret(req.cfg));
-    let issued = issue(
-        &IssueRequest {
-            sealer: req.sealer,
-            host: req.host,
-            route_class: req.route_class,
-            ty,
-            band: req.band,
-            bits,
-            ttl_s: req.cfg.ttl_s,
-            ret: &ret,
-            bind: req.bind,
-            now_ms: req.now_ms,
-        },
-        rng,
-    );
+    let b = req.bundle;
+    let cfg = &b.challenge;
+    let ty = issued_type(req.ty, b.interactive_available);
+    let ret = challenge_ret(req.method, req.path, req.query, fallback_ret(cfg));
+    let issued = match (ty, &b.interactive) {
+        (ChallengeType::Interactive, Some(ix)) => {
+            let Some(ip) = req.client_ip else {
+                // Unreachable: the execution layer answers 429 first (D-23).
+                return unavailable();
+            };
+            let now_us = u64::try_from(req.now_ms).unwrap_or(0).saturating_mul(1000);
+            if let Gate::Limited { retry_after_s } =
+                interactive::issue_gate(req.state, req.site_id, ix, ip, now_us)
+            {
+                return (
+                    EdgeResponse::rate_limited(req.request_id, retry_after_s, req.navigation),
+                    ChallengeAnswer::RateLimited,
+                );
+            }
+            issue_interactive(
+                &interactive::Seal {
+                    sealer: req.sealer,
+                    host: req.host,
+                    route_class: req.route_class,
+                    band: req.band,
+                    attempt_no: 1,
+                    renew_no: 0,
+                    providers: interactive::providers(ix, req.host, req.route_id, 1, req.a11y_pref),
+                    ui_seed: None,
+                    pow: interactive::pow_params(ix, req.band),
+                    ret_hash: ret_hash(&ret),
+                    bind: req.bind,
+                    jkt: req.jkt,
+                    now_ms: req.now_ms,
+                },
+                ix,
+                &ret,
+                false,
+                rng,
+            )
+        }
+        _ => {
+            let ty = if ty == ChallengeType::Interactive {
+                ChallengeType::Pow
+            } else {
+                ty
+            };
+            issue(
+                &IssueRequest {
+                    sealer: req.sealer,
+                    host: req.host,
+                    route_class: req.route_class,
+                    ty,
+                    band: req.band,
+                    bits: difficulty(&pow_bits(cfg), ty, req.band),
+                    ttl_s: cfg.ttl_s,
+                    ret: &ret,
+                    bind: req.bind,
+                    jkt: req.jkt,
+                    now_ms: req.now_ms,
+                },
+                rng,
+            )
+        }
+    };
     let issued = match issued {
         Ok(i) => i,
         Err(e) => {
@@ -392,19 +567,27 @@ pub fn respond(req: &ChallengeRequest<'_>, rng: &dyn Rng) -> (EdgeResponse, Chal
         pages::challenge_page(
             req.sdk,
             &Page {
-                lang: pages::page_lang(req.accept_language),
+                lang: pages::page_lang(req.accept_language, b.default_lang),
                 nonce: &nonce,
                 request_id: req.request_id,
                 ret: &issued.ret,
                 state: PageState::Challenge,
                 challenge: Some(issued.shown()),
+                help_href: &b.help_path,
+                privacy_href: &b.privacy_path,
             },
         )
     } else {
         pages::challenge_json(req.request_id, issued.shown(), &issued.ret)
     };
-    count(ty, "issued");
-    (resp, ChallengeAnswer::Issued { ty, bits })
+    count_issued(&issued, "issued");
+    (
+        resp,
+        ChallengeAnswer::Issued {
+            ty: issued.ty,
+            bits: issued.bits,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -464,12 +647,24 @@ mod tests {
         assert_eq!(difficulty(&bits, ChallengeType::Pow, Medium), 16);
         assert_eq!(difficulty(&bits, ChallengeType::Pow, High), 18);
         assert_eq!(difficulty(&bits, ChallengeType::Pow, VeryHigh), 20);
-        assert_eq!(issued_type(ChallengeType::Interactive), ChallengeType::Pow);
         assert_eq!(
-            issued_type(ChallengeType::Invisible),
-            ChallengeType::Invisible
+            issued_type(ChallengeType::Interactive, false),
+            ChallengeType::Pow
         );
-        assert_eq!(issued_type(ChallengeType::Unspecified), ChallengeType::Pow);
+        assert_eq!(
+            issued_type(ChallengeType::Interactive, true),
+            ChallengeType::Interactive
+        );
+        for available in [false, true] {
+            assert_eq!(
+                issued_type(ChallengeType::Invisible, available),
+                ChallengeType::Invisible
+            );
+            assert_eq!(
+                issued_type(ChallengeType::Unspecified, available),
+                ChallengeType::Pow
+            );
+        }
         let absent = ChallengeConfig {
             pow_bits: None,
             ..cfg()
@@ -517,6 +712,7 @@ mod tests {
                 ttl_s: 90,
                 ret: "/account/login",
                 bind: &b,
+                jkt: None,
                 now_ms: NOW,
             },
             &crate::rng::OsRng,
@@ -559,6 +755,7 @@ mod tests {
                 ttl_s: 100_000,
                 ret: "/",
                 bind: &b,
+                jkt: None,
                 now_ms: NOW,
             },
             &crate::rng::OsRng,
@@ -581,6 +778,7 @@ mod tests {
             ttl_s: 120,
             ret: "/",
             bind: b,
+            jkt: None,
             now_ms: NOW,
         }
     }
@@ -619,13 +817,15 @@ mod tests {
     fn request<'a>(
         s: &'a Sealer,
         sdk: &'a SdkDir,
-        cfg: &'a ChallengeConfig,
+        bundle: &'a BundleRuntime,
+        state: &'a StateHandle,
         b: &'a BindInputs,
     ) -> ChallengeRequest<'a> {
         ChallengeRequest {
             sealer: s,
             sdk,
-            cfg,
+            bundle,
+            state,
             site_id: "blog",
             request_id: ID,
             host: "example.com",
@@ -637,17 +837,33 @@ mod tests {
             navigation: true,
             accept_language: Some("zh-CN,zh;q=0.9"),
             route_class: "members",
+            route_id: "members",
             ty: ChallengeType::Invisible,
             band: RiskBand::Medium,
             bind: b,
+            client_ip: Some("198.51.100.7".parse().unwrap()),
+            a11y_pref: false,
+            jkt: None,
             now_ms: NOW,
         }
     }
 
+    fn phase1_bundle() -> BundleRuntime {
+        crate::test_support::runtime(
+            &mg_edge_core::testkit::http::test_site_bundle("blog", &crate::test_support::HOSTS, 1),
+            false,
+        )
+    }
+
+    fn local_state() -> (mg_edge_core::state::StateService, StateHandle) {
+        mg_edge_core::state::StateService::new(mg_edge_core::state::StateConfig::local([3; 32]))
+    }
+
     #[test]
     fn answers() {
-        let (s, sdk, cfg, b) = (sealer(), sdk(), cfg(), bind());
-        let base = request(&s, &sdk, &cfg, &b);
+        let (s, sdk, bundle, b) = (sealer(), sdk(), phase1_bundle(), bind());
+        let (_svc, state) = local_state();
+        let base = request(&s, &sdk, &bundle, &state, &b);
 
         // Navigation: the page, with a C that opens for this host.
         let (r, a) = respond(&base, &crate::rng::OsRng);

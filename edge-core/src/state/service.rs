@@ -17,10 +17,10 @@ use super::valkey::{self, NonceV2Reply, RoundTrip1V2Reply, Scripts, StreamBatch}
 use super::verdicts::VerdictCache;
 use super::{
     FAILURE_QUEUE_CAPACITY, JTI_COUNTER_WINDOW_MS, JTI_IAT_SKEW_S, JTI_PER_KEY_LIMIT, JTI_TTL_S,
-    JtiOutcome, LimitCheck, MAX_NONCE_TTL_MS, NonceIssue, NonceIssueV2, NonceResult, NonceResultV2,
-    REQUEST_QUEUE_CAPACITY, RoundTrip1, RoundTrip1Result, RoundTrip1V2, RoundTrip1V2Result,
-    StateConfig, StateError, StateMode, TOKEN_REPLAY_TTL_MS, VERDICT_CACHE_CAPACITY,
-    VERDICT_CACHE_TTL_MS, metrics, nonce_key, replay_key, unix_now_ms, unix_now_us,
+    JtiOutcome, LimitCheck, MAX_NONCE_TTL_MS, NonceIssueV2, NonceResultV2, REQUEST_QUEUE_CAPACITY,
+    RoundTrip1, RoundTrip1Result, RoundTrip1V2, RoundTrip1V2Result, StateConfig, StateError,
+    StateMode, TOKEN_REPLAY_TTL_MS, VERDICT_CACHE_CAPACITY, VERDICT_CACHE_TTL_MS, metrics,
+    nonce_key, replay_key, unix_now_ms, unix_now_us,
 };
 
 /// Timeout of `xadd_batch` (not on the request path).
@@ -40,13 +40,6 @@ enum Job {
         limits: Vec<PreparedLimit>,
         deadline: Instant,
         reply: Reply<(Vec<Option<String>>, Vec<GcraOutcome>)>,
-    },
-    Nonce {
-        key: String,
-        ttl_ms: u64,
-        limits: Vec<PreparedLimit>,
-        deadline: Instant,
-        reply: Reply<Option<Vec<GcraOutcome>>>,
     },
     Xadd {
         maxlen: u64,
@@ -79,7 +72,6 @@ impl Job {
         // A dropped receiver means the proxy already gave up; nothing to do.
         match self {
             Job::RoundTrip1 { reply, .. } => drop(reply.send(Err(e))),
-            Job::Nonce { reply, .. } => drop(reply.send(Err(e))),
             Job::Xadd { reply, .. } => drop(reply.send(Err(e))),
             Job::RoundTrip1V2 { reply, .. } => drop(reply.send(Err(e))),
             Job::NonceV2 { reply, .. } => drop(reply.send(Err(e))),
@@ -89,7 +81,6 @@ impl Job {
     fn deadline(&self) -> Instant {
         match self {
             Job::RoundTrip1 { deadline, .. }
-            | Job::Nonce { deadline, .. }
             | Job::Xadd { deadline, .. }
             | Job::RoundTrip1V2 { deadline, .. }
             | Job::NonceV2 { deadline, .. } => *deadline,
@@ -393,20 +384,6 @@ async fn run_job(core: Arc<Core>, mut conn: ConnectionManager, generation: u64, 
             .await;
             let _ = reply.send(core.settle(generation, started, r));
         }
-        Job::Nonce {
-            key,
-            ttl_ms,
-            limits,
-            deadline,
-            reply,
-        } => {
-            let r = timeout_at(
-                deadline,
-                valkey::nonce_issue(&mut conn, &core.scripts, &key, ttl_ms, &limits),
-            )
-            .await;
-            let _ = reply.send(core.settle(generation, started, r));
-        }
         Job::RoundTrip1V2 {
             mget,
             limits,
@@ -631,65 +608,6 @@ impl StateHandle {
         }
     }
 
-    /// Round trip 2 of `POST /__mg/c` with the replay rules of §9.7:
-    ///
-    /// 1. the local replay set is checked and updated first, in every mode;
-    ///    a live entry means [`NonceResult::Reused`];
-    /// 2. with Valkey: `mg_nonce_issue` decides (`Reused` or `Fresh` with the
-    ///    quota outcomes);
-    /// 3. without a Valkey answer the quotas are counted in the local table
-    ///    (all-or-nothing), and the local check is authoritative only if
-    ///    `local_replay_authoritative`, the nonce was recorded, and the
-    ///    challenge was issued (`c_iat_ms`) after this process started and
-    ///    after the last time the local set was full (a nonce that could not
-    ///    be recorded then is unknown to the set); otherwise
-    ///    [`NonceResult::Unavailable`].
-    pub async fn nonce_issue(&self, req: NonceIssue, now_ms: i64, c_iat_ms: i64) -> NonceResult {
-        let deadline = Instant::now() + self.core.timeout;
-        let key = nonce_key(&req.site, &req.nonce);
-        let ttl_ms = req.ttl_ms.clamp(1, MAX_NONCE_TTL_MS);
-        let expiry_ms = now_ms.saturating_add(i64::try_from(ttl_ms).unwrap_or(i64::MAX));
-        let recorded = match self.core.nonces.insert(&key, expiry_ms, now_ms) {
-            NonceInsert::Exists => return NonceResult::Reused,
-            NonceInsert::Inserted => true,
-            NonceInsert::Full => false,
-        };
-        let limits = self.core.prepare(&req.limits);
-        if self.core.valkey_usable() {
-            let sent = limits.clone();
-            let r = self
-                .call(deadline, |reply| Job::Nonce {
-                    key,
-                    ttl_ms,
-                    limits: sent,
-                    deadline,
-                    reply,
-                })
-                .await;
-            match r {
-                Ok(None) => return NonceResult::Reused,
-                Ok(Some(outcomes)) => return NonceResult::Fresh { limits: outcomes },
-                Err(_) => {}
-            }
-        }
-        let now_us = u64::try_from(now_ms).unwrap_or(0).saturating_mul(1000);
-        let outcomes = self.core.gcra.check_all_or_nothing(&limits, now_us);
-        let after_overflow = self
-            .core
-            .nonces
-            .last_overflow_ms()
-            .is_none_or(|t| c_iat_ms > t);
-        if self.core.local_replay_authoritative
-            && recorded
-            && c_iat_ms >= self.core.process_start_ms
-            && after_overflow
-        {
-            NonceResult::Fresh { limits: outcomes }
-        } else {
-            NonceResult::Unavailable { limits: outcomes }
-        }
-    }
-
     /// Phase 2 round trip 1 (Phase 2 spec §9.2, §14.3): as
     /// [`StateHandle::round_trip1`], plus the `MG-Proof` `jti` check when
     /// `req.jti` is set (only for proofs that passed §6.7):
@@ -805,8 +723,8 @@ impl StateHandle {
     }
 
     /// Round trip 2 with `mg_nonce_issue` v2 (Phase 2 spec §14.2–§14.4),
-    /// for `POST /__mg/c` v2 and `POST /__mg/c/renew`. The rules of
-    /// [`StateHandle::nonce_issue`] apply, in the script's order:
+    /// for `POST /__mg/c` and `POST /__mg/c/renew`. The replay rules of
+    /// Phase 1 §9.7 apply, in the script's order:
     ///
     /// 1. the local nonce set, then (with `req.replay`) the local
     ///    provider-token set are checked and updated first, in every mode: a

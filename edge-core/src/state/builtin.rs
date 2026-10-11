@@ -185,7 +185,7 @@ impl ChallengeLimits {
         v
     }
 
-    /// Issuance quotas for [`super::NonceIssue::limits`] (round trip 2).
+    /// Issuance quotas for [`super::NonceIssueV2::limits`] (round trip 2).
     pub fn issuance(&self, site: &str, c: &ClientDims<'_>) -> Vec<LimitCheck> {
         let mut v = vec![self.issue_ipp(site, c, true)];
         v.extend(self.issue_asn(site, c, true));

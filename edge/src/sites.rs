@@ -21,11 +21,11 @@ mod convert;
 mod routing;
 
 pub use convert::{
-    BundleRuntime, EnvRuntime, Intel, LimiterDim, LimiterScope, LimiterSpec, RouteMode,
-    RouteRuntime, build_runtime, default_challenge, default_clearance, default_crawler_policy,
-    default_events, default_origin_headers, default_scoring,
+    BundleRuntime, EnvRuntime, Intel, InteractiveRuntime, LimiterDim, LimiterScope, LimiterSpec,
+    RouteMode, RouteRuntime, build_runtime, default_challenge, default_clearance,
+    default_crawler_policy, default_events, default_origin_headers, default_scoring,
 };
-pub use routing::{RouteMatch, select_env, select_route};
+pub use routing::{RouteMatch, higher_level, select_env, select_route};
 
 use crate::config::{BootstrapMode, EdgeConfig, IntelConfig, LkgInvalidMode, SiteConfig};
 use crate::creds::{OriginKeys, Secret};
@@ -175,6 +175,10 @@ pub struct SiteSettings {
     /// The rDNS cache of the site's crawler verifier (edge.toml `[intel]`,
     /// [`crawler_cache_config`]).
     pub crawler_cache: CacheConfig,
+    /// The `[sdk]` directory has a manifest v2 (Phase 2 spec §5.1, §12.2):
+    /// one input of `interactive_available`. Set at start-up, with the
+    /// directory (it never changes while the process runs).
+    pub sdk_manifest_v2: bool,
 }
 
 /// The crawler verifier's cache settings from `[intel]` (§7.3, §9.6):
@@ -209,6 +213,7 @@ impl SiteSettings {
             on_lkg_invalid: site.on_lkg_invalid,
             bootstrap_owner_zones: site.bootstrap_owner_zones.clone(),
             crawler_cache: crawler_cache_config(&cfg.intel),
+            sdk_manifest_v2: false,
         }
     }
 }
@@ -265,6 +270,14 @@ impl Site {
     /// `mg_site_state`.
     pub fn new(settings: SiteSettings, keys: SiteKeys, initial: SiteRuntime) -> Self {
         metrics().set_site_state(&settings.id, initial.state.as_str());
+        let available = initial
+            .bundle
+            .as_ref()
+            .is_some_and(|b| b.interactive_available);
+        metrics()
+            .interactive_available
+            .with_label_values(&[&settings.id])
+            .set(i64::from(available));
         let sealer = Sealer::new(&settings.id, keys.seal.clone());
         Self {
             settings,
@@ -279,9 +292,15 @@ impl Site {
         self.runtime.load_full()
     }
 
-    /// Swaps in `rt` and publishes `mg_site_state`.
+    /// Swaps in `rt` and publishes `mg_site_state` and
+    /// `mg_interactive_available` (Phase 2 spec §5.1).
     pub fn store(&self, rt: SiteRuntime) {
         metrics().set_site_state(&self.settings.id, rt.state.as_str());
+        let available = rt.bundle.as_ref().is_some_and(|b| b.interactive_available);
+        metrics()
+            .interactive_available
+            .with_label_values(&[&self.settings.id])
+            .set(i64::from(available));
         self.runtime.store(Arc::new(rt));
     }
 

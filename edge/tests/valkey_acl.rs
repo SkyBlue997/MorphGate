@@ -26,7 +26,7 @@ mod common;
 use common::valkey::Valkey;
 use mg_core::gcra::GcraParams;
 use mg_edge_core::state::{
-    EVENT_STREAM_KEY, LimitCheck, LimiterKey, MG_GCRA_LUA, NonceIssue, NonceResult, RoundTrip1,
+    EVENT_STREAM_KEY, LimitCheck, LimiterKey, MG_GCRA_LUA, NonceIssueV2, NonceResultV2, RoundTrip1,
     StateConfig, StateHandle, StateMode, StateService, entity_key, verdict_key,
 };
 use redis::Commands;
@@ -139,11 +139,12 @@ fn edge_acl_user_can_do_exactly_what_the_edge_needs() {
         assert_eq!(r.verdicts[0].as_deref(), Some(verdict));
         assert!(r.limits[0].allowed);
 
-        // Round trip 2: EVALSHA mg_nonce_issue (SET NX mg:n:*, mg:rl:*).
-        let nonce = NonceIssue {
+        // Round trip 2: EVALSHA mg_nonce_issue v2 (SET NX mg:n:*, mg:rl:*).
+        let nonce = NonceIssueV2 {
             site: site.clone(),
             nonce: [7; 16],
             ttl_ms: 60_000,
+            replay: None,
             limits: vec![LimitCheck {
                 key: LimiterKey::new(site.as_str(), "acl-issue", "ip_prefix=192.0.2.0/24"),
                 ..gcra.clone()
@@ -151,8 +152,8 @@ fn edge_acl_user_can_do_exactly_what_the_edge_needs() {
         };
         let now = 1_790_000_000_000;
         assert!(matches!(
-            handle.nonce_issue(nonce.clone(), now, now).await,
-            NonceResult::Fresh { .. }
+            handle.nonce_issue_v2(nonce.clone(), now, now).await,
+            NonceResultV2::Fresh { .. }
         ));
         // XADD mg:ev.
         handle
@@ -173,8 +174,8 @@ fn edge_acl_user_can_do_exactly_what_the_edge_needs() {
         let task2 = tokio::spawn(service2.run(stopped2));
         wait_valkey(&handle2).await;
         assert_eq!(
-            handle2.nonce_issue(nonce, now, now).await,
-            NonceResult::Reused
+            handle2.nonce_issue_v2(nonce, now, now).await,
+            NonceResultV2::Reused
         );
         stop.send_replace(true);
         stop2.send_replace(true);

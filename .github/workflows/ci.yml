@@ -347,5 +347,10 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_*.py'
           for f in scripts/*.sh; do bash -n "$f"; done
 
+      # testdata/phase2/gen/kat.mjs --check (ruling I-47) needs Node.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+
       - name: make docs-check
         run: make docs-check

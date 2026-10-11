@@ -111,6 +111,9 @@ pub struct Facts<'a> {
     /// `GET /__mg/v` (I-39): the facts describe a navigation to its `ret`,
     /// and every answer that is not an enforced denial is a `pow` challenge.
     pub verify: bool,
+    /// `/__mg/v?…&min=interactive` (Phase 2 spec D-58, §7.10): the lowest
+    /// type the verify entry issues on account of the `min` parameter.
+    pub verify_min: Option<mg_core::ChallengeType>,
     pub profile: ListenerProfile,
     /// `loopback` / `origin_mtls` / `secret_header` / `none` (§9.2).
     pub auth_method: &'a str,
@@ -706,6 +709,7 @@ mod tests {
                 monitor: false,
                 never_challenge: false,
                 verify: false,
+                verify_min: None,
                 profile,
                 auth_method: if cf.is_some() { "loopback" } else { "none" },
                 cf,

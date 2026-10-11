@@ -5,21 +5,17 @@
 
 use super::*;
 use crate::challenge::{IssueRequest, issue};
-use crate::config::{BootstrapMode, CredRef, ListenerProfile, LkgInvalidMode};
+use crate::config::ListenerProfile;
 use crate::context::{Facts, TlsInfo};
-use crate::creds::{CredResolver, read_secret};
 use crate::rng::OsRng;
-use crate::sites::{SiteKeys, SiteSettings, build_runtime};
-use mg_challenge::{RngError, SealKeys, pow_solve};
-use mg_core::{Channel, RouteInfo, RouteSensitivity, UpstreamProfileKind};
-use mg_edge_core::bundle::verify_bundle;
+use crate::test_support::keys;
+use mg_challenge::{RngError, pow_solve};
+use mg_core::{Channel, RouteInfo, RouteSensitivity};
 use mg_edge_core::state::{StateConfig, StateService};
-use mg_edge_core::testkit::http::{
-    OWNER_TEST_KID, OWNER_TEST_SEED, owner_test_keys, sign_test_bundle, test_site_bundle,
-};
+use mg_edge_core::testkit::http::test_site_bundle;
 use mg_proto::v1 as pb;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 const HOSTS: [&str; 3] = ["example.com", "www.example.com", "staging.example.com"];
@@ -30,10 +26,6 @@ const CHROME: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKi
 const FIREFOX: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0";
 const IP: &str = "198.51.100.7";
 const BUILD: &str = "1df90640e0c5fec4";
-
-fn repo(rel: &str) -> std::path::PathBuf {
-    crate::test_support::repo(rel)
-}
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -93,36 +85,10 @@ fn test_bundle() -> pb::SiteBundle {
     b
 }
 
-fn settings() -> SiteSettings {
-    SiteSettings {
-        id: "blog".into(),
-        hosts: HOSTS.iter().map(|h| (*h).to_string()).collect(),
-        listeners: vec!["cf-tunnel".into()],
-        listener_kinds: vec![("cf-tunnel".into(), UpstreamProfileKind::Cloudflare)],
-        origin: "127.0.0.1:9".parse().unwrap(),
-        bootstrap: BootstrapMode::Open,
-        on_lkg_invalid: LkgInvalidMode::Closed,
-        bootstrap_owner_zones: Vec::new(),
-        crawler_cache: mg_intel::CacheConfig::default(),
-    }
-}
-
-fn keys() -> SiteKeys {
-    let seal = std::fs::read(repo("testdata/phase1/keys/seal.root.json")).unwrap();
-    let token = CredRef::Path(repo("testdata/phase1/keys/token.keys.json"));
-    SiteKeys {
-        seal: SealKeys::from_key_file(&seal, "blog").unwrap(),
-        token_file: read_secret(&CredResolver::with_dir(None), &token, &mut |_| {}).unwrap(),
-        origin: None,
-    }
-}
-
-/// Converts `b` exactly as the Edge does (verify, then build the runtime).
+/// Converts `b` exactly as the Edge does (verify, then build the runtime),
+/// with the manifest v2 SDK directory of the fixture.
 fn runtime(b: &pb::SiteBundle) -> BundleRuntime {
-    let signed = sign_test_bundle(b, &OWNER_TEST_SEED, OWNER_TEST_KID);
-    let s = settings();
-    let vb = verify_bundle(&signed, &owner_test_keys(), "blog", &s.hosts).unwrap();
-    build_runtime(&s, &keys(), &vb, &BTreeMap::new()).unwrap()
+    crate::test_support::runtime(b, true)
 }
 
 /// One site with its state layer.
@@ -211,6 +177,7 @@ impl Req {
             monitor: false,
             never_challenge: false,
             verify: false,
+            verify_min: None,
             profile: ListenerProfile::DirectTls,
             auth_method: "none",
             cf: None,
@@ -305,6 +272,7 @@ fn challenge_for(
             ttl_s: 120,
             ret,
             bind: &bind,
+            jkt: None,
             now_ms: now,
         },
         &OsRng,
@@ -458,7 +426,7 @@ fn sdk_files_are_served_from_the_manifest_only() {
     let f = Fixture::new(&test_bundle());
     let path = format!("/__mg/s/{}", f.sdk.sdk);
     for method in ["GET", "HEAD"] {
-        let r = sdk_file(&f.sdk, &path, method);
+        let r = sdk_file(&f.sdk, &path, method, &[]);
         assert_eq!(r.status, 200);
         assert_eq!(r.body, f.sdk.files[&f.sdk.sdk]);
         assert!(!r.close);
@@ -471,7 +439,6 @@ fn sdk_files_are_served_from_the_manifest_only() {
     for name in [
         "challenge.html",
         "manifest.json",
-        "mg.js",
         "",
         "..",
         "../manifest.json",
@@ -480,14 +447,14 @@ fn sdk_files_are_served_from_the_manifest_only() {
         &format!("{}?v=1", f.sdk.sdk),
         &f.sdk.sdk.to_uppercase(),
     ] {
-        let r = sdk_file(&f.sdk, &format!("/__mg/s/{name}"), "GET");
+        let r = sdk_file(&f.sdk, &format!("/__mg/s/{name}"), "GET", &[]);
         assert_eq!(r.status, 404, "{name}");
         assert_eq!(
             r.header().unwrap().headers["cache-control"],
             "no-store, private"
         );
     }
-    let r = sdk_file(&f.sdk, &path, "POST");
+    let r = sdk_file(&f.sdk, &path, "POST", &[]);
     assert_eq!(r.status, 405);
     assert_eq!(header(&r, "Allow"), Some("GET, HEAD"));
 }
@@ -631,7 +598,14 @@ fn fetch_submission_succeeds() {
     );
     let r = &out.response;
     assert_eq!(r.status, 200, "{}", r.body_text());
-    assert_eq!(body_json(r), json!({"ok": true, "ret": "/members/a?x=1"}));
+    let v = body_json(r);
+    assert_eq!(
+        (v["ok"].as_bool(), v["ret"].as_str()),
+        (Some(true), Some("/members/a?x=1"))
+    );
+    // Phase 2 spec §7.5: the fetch answer carries the server clock.
+    assert_eq!(v["v"], 2);
+    assert!(v["now_ms"].as_i64().unwrap() >= now);
     let cookie = header(r, "Set-Cookie").unwrap();
     assert!(cookie.starts_with("__Host-mg_clr="), "{cookie}");
     assert!(cookie.ends_with("; Max-Age=1800; Path=/; Secure; HttpOnly; SameSite=Lax"));
@@ -899,7 +873,7 @@ fn unopenable_challenges() {
     assert_eq!(out.response.status, 403);
     assert_eq!(
         body_json(&out.response),
-        json!({"error": "mg_challenge_failed", "retry": true, "request_id": ID})
+        json!({"v": 2, "error": "mg_challenge_failed", "retry": true, "request_id": ID})
     );
     assert_eq!(out.record.reissued, None);
 
@@ -1176,7 +1150,7 @@ fn no_client_ip_and_early_data() {
     let v = body_json(&out.response);
     assert_eq!(
         v,
-        json!({"error": "mg_rate_limited", "retry_after": 5, "request_id": ID})
+        json!({"v": 2, "error": "mg_rate_limited", "retry_after": 5, "request_id": ID})
     );
     // Form navigations get the short page.
     let mut req = Req::form();
@@ -1186,7 +1160,10 @@ fn no_client_ip_and_early_data() {
 
     let out = run(&f, &Req::json().with("Early-Data", "1"), &mut Untouched);
     assert_eq!(out.response.status, 425);
-    assert_eq!(body_json(&out.response), json!({"error": "mg_too_early"}));
+    assert_eq!(
+        body_json(&out.response),
+        json!({"v": 2, "error": "mg_too_early"})
+    );
     assert_eq!(reasons(&out), ["ic.too_early"]);
 }
 
@@ -1505,6 +1482,7 @@ fn soft_ipp_mismatch() {
                 ttl_s: 120,
                 ret,
                 bind: &sealed_bind,
+                jkt: None,
                 now_ms: now,
             },
             &OsRng,
@@ -1633,3 +1611,5 @@ fn issuance_quota_used_up_after_round_trip_1() {
     assert_eq!(lost.record.feedback.route_id.as_deref(), Some("members"));
     assert!(lost.record.feedback.solve_ms.is_some());
 }
+
+mod v2;
