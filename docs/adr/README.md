@@ -13,7 +13,7 @@
 | [0005](0005-token-and-sealed-challenge-format.md) | 凭证用 PASETO v4，密封 Challenge 用 protobuf（prost）编码 + XChaCha20-Poly1305 | 已接受 | 2026-09-27（2026-09-28、2026-10-12 勘误） | [04](../04-challenge-and-tokens.md)、[09](../09-interactive-challenge.md) |
 | [0006](0006-policy-cel-ir.md) | 策略语言：CEL 语法，控制面编译为 IR，数据面只求值 IR | 已接受 | 2026-09-27（2026-09-28、2026-10-12 勘误） | [06](../06-policy-console-observability.md) |
 | [0007](0007-lean-deployment.md) | 精简部署：不用 Kafka / K8s，Valkey Streams + VictoriaLogs，Edge 拉取配置 | 已接受 | 2026-09-27（2026-09-28、2026-10-12 勘误） | [01](../01-architecture.md)、[02](../02-data-flow.md)、[07](../07-roadmap.md) |
-| [0008](0008-interactive-challenge-self-built.md) | 交互式 Challenge 自研（按住验证）+ 可插拔 Provider，Turnstile 仅用于非大陆访客 | 已接受 | 2026-09-27（2026-09-28、2026-10-12 勘误） | [09](../09-interactive-challenge.md)、[04](../04-challenge-and-tokens.md) |
+| [0008](0008-interactive-challenge-self-built.md) | 交互式 Challenge 自研（按住验证）+ 可插拔 Provider，Turnstile 仅用于非大陆访客（地区范围已由 2026-10-12 勘误改为所有者配置，D-70） | 已接受 | 2026-09-27（2026-09-28、2026-10-12 勘误） | [09](../09-interactive-challenge.md)、[04](../04-challenge-and-tokens.md) |
 | [0009](0009-ja4-only-licensing.md) | 只使用 JA4，JA4+ 放在默认关闭的 Cargo feature `ja4plus` 之后 | 已接受 | 2026-09-27 | [01](../01-architecture.md)、[03](../03-risk-scoring.md) |
 | [0010](0010-single-owner-model.md) | 单一所有者模型与个人版密钥保管 | 已接受 | 2026-09-27（2026-09-28、2026-10-12 勘误） | [01](../01-architecture.md)、[05](../05-ai-agent-policy.md)、[06](../06-policy-console-observability.md)、[10](../10-threat-model.md) |
 | [0011](0011-local-emergency-monitor-switch.md) | 本机应急开关 `force_monitor`，签名配置包放宽规则的唯一例外 | 已接受 | 2026-10-12 | [10](../10-threat-model.md)、[01](../01-architecture.md)、[ADR-0010](0010-single-owner-model.md) |
