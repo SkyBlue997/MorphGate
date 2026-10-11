@@ -66,6 +66,8 @@ pub struct BundleRuntime {
     pub schema_version: u32,
     /// The interactive settings; `Some` iff `schema_version = 2`.
     pub interactive: Option<InteractiveRuntime>,
+    /// The enabled Turnstile provider (Phase 2 spec §8.2; schema 2 only).
+    pub turnstile: Option<crate::turnstile::TurnstileRuntime>,
     /// Phase 2 spec §5.1: `schema_version = 2`, `challenge.interactive.enabled`
     /// and a manifest v2 SDK directory. `false`: `interactive` runs as `pow`.
     pub interactive_available: bool,
@@ -123,6 +125,7 @@ impl fmt::Debug for BundleRuntime {
             .field("sha256", &self.sha256_hex)
             .field("schema_version", &self.schema_version)
             .field("interactive_available", &self.interactive_available)
+            .field("turnstile", &self.turnstile.is_some())
             .field("monitor_only", &self.monitor_only)
             .field("has_enforce_route", &self.has_enforce_route)
             .field("upstream_kind", &self.upstream_kind)
@@ -485,6 +488,7 @@ pub fn build_runtime(
         }
         _ => None,
     };
+    let turnstile = crate::turnstile::TurnstileRuntime::from_bundle(b)?;
     // Phase 2 spec §5.1.
     let interactive_available =
         interactive.as_ref().is_some_and(|ix| ix.enabled) && settings.sdk_manifest_v2;
@@ -600,6 +604,7 @@ pub fn build_runtime(
         sha256_hex: vb.sha256_hex(),
         schema_version,
         interactive,
+        turnstile,
         interactive_available,
         default_lang,
         help_path,

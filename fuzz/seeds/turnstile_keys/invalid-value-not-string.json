@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "kind": "mg-turnstile-keys",
+  "site": "blog",
+  "values": [
+    42
+  ]
+}

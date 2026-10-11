@@ -102,5 +102,7 @@ pub use sealed::{
     aad, max_c_lifetime_ms, random_nonce,
 };
 pub use sig::{SubmissionFields, counters_text, renew_message, submission_message};
-pub use turnstile::{CDATA_LEN, idempotency_key, turnstile_cdata, turnstile_cdata_matches};
+pub use turnstile::{
+    CDATA_LEN, idempotency_key, turnstile_cdata, turnstile_cdata_for, turnstile_cdata_matches,
+};
 pub use ui::{MAX_HOLD_MS, MIN_HOLD_MS, UiParams, ui_params};

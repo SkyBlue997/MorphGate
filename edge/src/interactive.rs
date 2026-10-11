@@ -16,11 +16,15 @@
 //!   ([`two_tier`]) and the Valkey quota `mg.a11y.issue` ([`a11y_checks`]),
 //!   each with an ip entity tier and an ipp tier (D-67, §7.9);
 //! * [`a11y_pref`]: the `__Host-mg_a11y=1` cookie (§9.5), read only for the
-//!   provider order.
+//!   provider order;
+//! * [`Selecting`] / [`providers`] / [`turnstile_ok`]: the inputs of §5.4
+//!   (host, the `C`'s route and `redact_path`, the countries of §8.1, the
+//!   site's Turnstile offer, WP-E2c) and `ix.turnstile` ([`IxTurnstile`]).
 
 use crate::challenge::IssueError;
 use crate::metrics::metrics;
 use crate::sites::InteractiveRuntime;
+use crate::turnstile::{Countries, Offer};
 use mg_challenge::{
     BindInputs, POW_ALG_V2, Rng, SealError, Sealer, bind_hash, epoch_kid, epoch_no, random_nonce,
     ui_params,
@@ -29,7 +33,7 @@ use mg_core::gcra::{GcraOutcome, GcraParams};
 use mg_core::providers::MIN_ELAPSED_MARGIN_MS;
 use mg_core::{
     ChallengeBind, ChallengeType, IxMode, Net, PowParams, ProviderId, RiskBand,
-    SealedChallengeClaims, SelectionInput, min_elapsed_ms, select_providers,
+    SealedChallengeClaims, SelectionInput, min_elapsed_ms, select_providers, turnstile_eligible,
 };
 use mg_edge_core::state::builtin::ClientDims;
 use mg_edge_core::state::{LimitCheck, LimiterKey, StateHandle, dims};
@@ -114,26 +118,113 @@ pub fn pow_params(cfg: &InteractiveRuntime, band: RiskBand) -> PowParams {
     }
 }
 
-/// The providers of a new interactive `C` (§5.4). Phase 2's Turnstile is
-/// wired by WP-E2c; until then only the built-in providers are offered.
+/// The request-side inputs of §5.4 (everything but the attempt).
+#[derive(Debug, Clone, Copy)]
+pub struct Selecting<'a> {
+    /// The normalized request host.
+    pub host: &'a str,
+    /// The id of the `C`'s route (Turnstile's `route_ids`).
+    pub route_id: &'a str,
+    /// Any matched route has `redact_path`.
+    pub redact_path: bool,
+    /// §8.1.
+    pub countries: Countries<'a>,
+    /// `__Host-mg_a11y=1` (§9.5).
+    pub a11y_pref: bool,
+    /// The site's Turnstile; `None` without one, or when it is excluded
+    /// (the new `C` after an unavailable or shadow-failed verification,
+    /// §8.5).
+    pub turnstile: Option<Offer<'a>>,
+}
+
+impl<'a> Selecting<'a> {
+    /// Only the built-in providers.
+    pub fn builtin(host: &'a str, route_id: &'a str, a11y_pref: bool) -> Self {
+        Self {
+            host,
+            route_id,
+            redact_path: false,
+            countries: Countries::default(),
+            a11y_pref,
+            turnstile: None,
+        }
+    }
+
+    /// The same without Turnstile.
+    #[must_use]
+    pub fn without_turnstile(self) -> Self {
+        Self {
+            turnstile: None,
+            ..self
+        }
+    }
+
+    fn input(&self, cfg: &InteractiveRuntime, attempt_no: u32) -> SelectionInput<'a> {
+        SelectionInput {
+            country_geo: self.countries.geo,
+            country_cf: self.countries.cf,
+            route_id: self.route_id,
+            redact_path: self.redact_path,
+            host: self.host,
+            attempt_no,
+            escalate_after: cfg.escalate_after,
+            a11y_pref: self.a11y_pref,
+            turnstile: self.turnstile.map(|o| o.choice()),
+        }
+    }
+}
+
+/// The providers of a new interactive `C` (§5.4).
 pub fn providers(
     cfg: &InteractiveRuntime,
-    host: &str,
-    route_id: &str,
+    sel: &Selecting<'_>,
     attempt_no: u32,
-    a11y_pref: bool,
 ) -> Vec<ProviderId> {
-    select_providers(&SelectionInput {
-        country_geo: None,
-        country_cf: None,
-        route_id,
-        redact_path: false,
-        host,
-        attempt_no,
-        escalate_after: cfg.escalate_after,
-        a11y_pref,
-        turnstile: None,
-    })
+    select_providers(&sel.input(cfg, attempt_no))
+}
+
+/// §5.4 rule 2 for the current request: whether Turnstile may be offered
+/// (or, on a submission, verified) at all (§7.4 step 9, §7.5 step 5).
+pub fn turnstile_ok(cfg: &InteractiveRuntime, sel: &Selecting<'_>) -> bool {
+    turnstile_eligible(&sel.input(cfg, 1))
+}
+
+/// The §5.4 route inputs of a renewal or submission of a `C` whose
+/// `route_class` is `route_class`: the id of that route in `env`, and
+/// whether it, or (with `ret`) a route a GET of `ret`'s path matches, has
+/// `redact_path`. `None` when the bundle no longer has the route (Turnstile
+/// is then not offered).
+pub fn c_route<'e>(
+    bundle: &crate::sites::BundleRuntime,
+    env: &'e crate::sites::EnvRuntime,
+    host: &str,
+    route_class: &str,
+    ret: Option<&str>,
+) -> Option<(&'e str, bool)> {
+    let named = env.routes.iter().find(|r| r.name == route_class)?;
+    let mut redact = named.redact_path;
+    if let Some(ret) = ret {
+        let path = ret.split('?').next().unwrap_or(ret);
+        let fallback = crate::sites::RouteRuntime::fallback();
+        redact |= crate::sites::select_route(
+            env,
+            host,
+            "GET",
+            path,
+            bundle.case_insensitive_paths,
+            &fallback,
+        )
+        .redact_path;
+    }
+    Some((named.id.as_str(), redact))
+}
+
+/// `ix.turnstile`'s inputs (§7.2): the offer and the widget language.
+#[derive(Debug, Clone, Copy)]
+pub struct IxTurnstile<'a> {
+    pub offer: Offer<'a>,
+    /// `zh-cn` / `en` ([`crate::turnstile::widget_lang`]).
+    pub lang: &'static str,
 }
 
 /// What [`seal`] puts into an interactive `C`.
@@ -244,17 +335,19 @@ pub fn jkt_matches(claims: &SealedChallengeClaims, jkt: &str) -> bool {
 /// `offset` from `ui_params(ui_seed)`, `pow`, `attempt`, `exp_ms` and
 /// `bound` from the claims, `now_ms = C.iat`, `min_ms = hold_ms +
 /// min_pow_ms + 250`, `a11y_min_ms`, `a11y_first` (`providers[0] =
-/// pow_a11y`) and `a11y_quota` (`mg.a11y.issue` exceeded). At most 1024
-/// bytes serialized (no `turnstile` member before WP-E2c).
+/// pow_a11y`) and `a11y_quota` (`mg.a11y.issue` exceeded); `turnstile`
+/// (sitekey, action, `cdata`, lang) only when the `C` offers Turnstile. At
+/// most 1024 bytes serialized.
 pub fn ix_value(
     claims: &SealedChallengeClaims,
     cfg: &InteractiveRuntime,
     a11y_quota: bool,
+    turnstile: Option<&IxTurnstile<'_>>,
 ) -> Value {
     let ui = ui_params(claims.ui_seed);
     let pow = claims.pow.clone().unwrap_or_default();
     let providers: Vec<&str> = claims.providers.iter().map(|p| p.as_str()).collect();
-    json!({
+    let mut ix = json!({
         "v": 1,
         "providers": providers,
         "hold_ms": ui.required_hold_ms,
@@ -273,7 +366,13 @@ pub fn ix_value(
         "bound": claims.bind.jkt.is_some(),
         "a11y_first": claims.providers.first() == Some(&ProviderId::PowA11y),
         "a11y_quota": a11y_quota,
-    })
+    });
+    if let Some(t) = turnstile
+        && claims.providers.contains(&ProviderId::Turnstile)
+    {
+        ix["turnstile"] = crate::turnstile::ix_member(&t.offer, claims, t.lang);
+    }
+    ix
 }
 
 /// `min_ms` of [`ix_value`] for documentation and tests: the hold plus the
@@ -476,7 +575,7 @@ mod tests {
             band: RiskBand::High,
             attempt_no: 1,
             renew_no: 0,
-            providers: providers(&c, "example.com", "login", 1, false),
+            providers: providers(&c, &Selecting::builtin("example.com", "login", false), 1),
             ui_seed: None,
             pow: pow_params(&c, RiskBand::High),
             ret_hash: mg_challenge::ret_hash("/account/login"),
@@ -506,7 +605,7 @@ mod tests {
             &mg_challenge::testkit::TestSessionKey::from_label("b").thumbprint()
         ));
 
-        let ix = ix_value(&claims, &c, false);
+        let ix = ix_value(&claims, &c, false, None);
         let ui = ui_params(claims.ui_seed);
         assert_eq!(ix["v"], 1);
         assert_eq!(ix["providers"], json!(["self_hold", "pow_a11y"]));
@@ -547,18 +646,122 @@ mod tests {
     #[test]
     fn provider_order() {
         let c = cfg();
-        assert_eq!(
-            providers(&c, "example.com", "r", 1, false)[0],
-            ProviderId::SelfHold
-        );
-        assert_eq!(
-            providers(&c, "example.com", "r", 3, false)[0],
-            ProviderId::PowA11y
-        );
-        assert_eq!(
-            providers(&c, "example.com", "r", 1, true)[0],
-            ProviderId::PowA11y
-        );
+        let sel = |a11y| Selecting::builtin("example.com", "r", a11y);
+        assert_eq!(providers(&c, &sel(false), 1)[0], ProviderId::SelfHold);
+        assert_eq!(providers(&c, &sel(false), 3)[0], ProviderId::PowA11y);
+        assert_eq!(providers(&c, &sel(true), 1)[0], ProviderId::PowA11y);
+    }
+
+    /// §5.4 with the site's Turnstile (D-70): offered to CN and unknown
+    /// countries while `denied_countries` is empty; with a list, a match of
+    /// either source or an unknown country removes it; so do another host,
+    /// another route, a `redact_path` route, no usable secret and
+    /// `without_turnstile`. `escalate_after_fail` waits for the escalation.
+    #[test]
+    fn turnstile_selection() {
+        use crate::turnstile::{SiteTurnstile, TurnstileRuntime};
+        let c = cfg();
+        let mut b = mg_edge_core::testkit::http::test_site_bundle_v2("blog", &["example.com"], 1);
+        b.providers = vec![crate::turnstile::tests::provider()];
+        let mut ts = TurnstileRuntime::from_bundle(&b).unwrap().unwrap();
+        let keys = crate::test_support::keys().seal;
+        let site = SiteTurnstile::new("blog-sel", None);
+        let mk = |ts: &TurnstileRuntime, usable: bool| -> Vec<Vec<ProviderId>> {
+            let offer = Offer {
+                cfg: ts,
+                site: &site,
+                keys: &keys,
+                usable,
+            };
+            let base = Selecting {
+                host: "example.com",
+                route_id: "login",
+                redact_path: false,
+                countries: Countries::default(),
+                a11y_pref: false,
+                turnstile: Some(offer),
+            };
+            let cn = Countries {
+                geo: Some("CN"),
+                cf: None,
+            };
+            let mixed = Countries {
+                geo: Some("US"),
+                cf: Some("CN"),
+            };
+            let us = Countries {
+                geo: Some("US"),
+                cf: Some("US"),
+            };
+            vec![
+                providers(&c, &base, 1),
+                providers(
+                    &c,
+                    &Selecting {
+                        countries: cn,
+                        ..base
+                    },
+                    1,
+                ),
+                providers(
+                    &c,
+                    &Selecting {
+                        countries: mixed,
+                        ..base
+                    },
+                    1,
+                ),
+                providers(
+                    &c,
+                    &Selecting {
+                        countries: us,
+                        ..base
+                    },
+                    1,
+                ),
+                providers(
+                    &c,
+                    &Selecting {
+                        host: "staging.example.com",
+                        ..base
+                    },
+                    1,
+                ),
+                providers(
+                    &c,
+                    &Selecting {
+                        redact_path: true,
+                        ..base
+                    },
+                    1,
+                ),
+                providers(&c, &base.without_turnstile(), 1),
+                providers(&c, &base, 3),
+            ]
+        };
+        use ProviderId::{PowA11y as A, SelfHold as H, Turnstile as T};
+        let r = mk(&ts, true);
+        assert_eq!(r[0], vec![T, H, A], "unknown country, empty list");
+        assert_eq!(r[1], vec![T, H, A], "CN, empty list (D-70)");
+        assert_eq!(r[4], vec![H, A], "host not in hostnames");
+        assert_eq!(r[5], vec![H, A], "redact_path");
+        assert_eq!(r[6], vec![H, A], "excluded");
+        assert_eq!(r[7], vec![T, A, H], "escalated");
+        assert!(mk(&ts, false).iter().all(|p| !p.contains(&T)), "not usable");
+        ts.denied_countries = vec!["CN".into()];
+        let r = mk(&ts, true);
+        assert_eq!(r[0], vec![H, A], "unknown country with a list");
+        assert_eq!(r[1], vec![H, A], "CN by GeoLite2");
+        assert_eq!(r[2], vec![H, A], "CN by Cloudflare");
+        assert_eq!(r[3], vec![T, H, A], "US by both");
+        ts.denied_countries.clear();
+        ts.route_ids = vec!["members".into()];
+        assert_eq!(mk(&ts, true)[0], vec![H, A], "another route");
+        ts.route_ids.clear();
+        ts.selection = mg_core::Selection::EscalateAfterFail;
+        let r = mk(&ts, true);
+        assert_eq!(r[0], vec![H, A]);
+        assert_eq!(r[7], vec![T, A, H]);
     }
 
     #[test]

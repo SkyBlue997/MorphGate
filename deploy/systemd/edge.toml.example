@@ -98,6 +98,12 @@ seal_root  = "cred://mg-blog-seal-root"
 # every load and hourly, mg_site_forced_monitor{site} = 1, and --check-config
 # counts it as a warning. Deploy a monitor bundle, then remove it again.
 force_monitor = false
+# Optional (Phase 2 spec §8.2, §8.7): the site's Turnstile secret, an
+# mg-turnstile-keys file (mgctl turnstile secret import / rotate; current value
+# first, the previous one during a rotation). Required when the bundle enables
+# the Turnstile provider: without it --check-config fails, and a running Edge
+# keeps the provider disabled (no_secret). Add its LoadCredentialEncrypted=.
+# turnstile_keys = "cred://mg-turnstile-keys-blog"
 
 [bundle_client]                        # used for https:// bundle roots
 # ca_file = "/etc/morphgate/brain-ca.pem"
@@ -120,6 +126,8 @@ local_nonce_capacity = 200000
 # In-process MG-Proof jti set (Phase 2 spec §9.2), 1000..10000000: at least
 # the active session keys times each key's requests within 40 s.
 local_jti_capacity = 100000
+# In-process Turnstile token replay set (Phase 2 spec §14.4), 100..1000000.
+local_rp_capacity = 10000
 
 [events]
 # http:// only to loopback / private / 100.64.0.0/10 IP literals (events carry
@@ -146,3 +154,9 @@ rdns_concurrency = 16
 
 [sdk]
 dir = "/opt/morphgate/sdk"             # a copy of sdk/web/dist/sdk/
+
+[outbound]
+# Turnstile siteverify (Phase 2 spec §8.4): only this exact URL. A loopback
+# mock URL is accepted only with MG_EDGE_TEST_OUTBOUND=1 in the environment
+# (tests); otherwise the start and --check-config fail.
+turnstile_siteverify_url = "https://challenges.cloudflare.com/turnstile/v0/siteverify"

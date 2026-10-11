@@ -44,6 +44,22 @@ pub fn csp(nonce: &str) -> String {
     )
 }
 
+/// The CSP of a challenge page whose `C` offers Turnstile (Phase 2 spec
+/// §8.3): `script-src 'nonce-<N>' 'strict-dynamic'` (the SDK's nonce'd
+/// script loads `api.js`, which loads its own scripts) and `frame-src
+/// https://challenges.cloudflare.com` for the widget; everything else as
+/// [`csp`]. Only such pages name a third party (§2.4 item 12).
+pub fn csp_turnstile(nonce: &str) -> String {
+    format!(
+        "default-src 'none'; script-src 'nonce-{nonce}' 'strict-dynamic'; style-src 'nonce-{nonce}'; \
+         worker-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; \
+         base-uri 'none'; frame-ancestors 'none'; frame-src {TURNSTILE_ORIGIN}"
+    )
+}
+
+/// The origin of Turnstile's script and widget frame (§8.3).
+pub const TURNSTILE_ORIGIN: &str = "https://challenges.cloudflare.com";
+
 /// A fresh CSP nonce: 128 bits from the OS CSPRNG, base64 (§10.2).
 pub fn csp_nonce(rng: &dyn Rng) -> Result<String, RngError> {
     let mut raw = [0u8; 16];
@@ -159,7 +175,16 @@ pub fn challenge_page(sdk: &SdkDir, page: &Page<'_>) -> EdgeResponse {
         Placeholder::PrivacyHref => page.privacy_href,
     });
     let mut resp = EdgeResponse::new(403, HTML, html);
-    resp.csp = Some(csp(page.nonce));
+    // §8.3: only a page whose C offers Turnstile (its `ix.turnstile`).
+    let turnstile = page
+        .challenge
+        .and_then(|c| c.ix)
+        .is_some_and(|ix| ix.get("turnstile").is_some());
+    resp.csp = Some(if turnstile {
+        csp_turnstile(page.nonce)
+    } else {
+        csp(page.nonce)
+    });
     resp
 }
 
@@ -322,6 +347,55 @@ mod tests {
             assert_eq!(page_lang(Some("ja-JP,zh;q=0.8"), default), default);
             assert_eq!(page_lang(None, default), default);
         }
+    }
+
+    /// §8.3, §2.4 item 12: only a page whose `C` offers Turnstile gets
+    /// `strict-dynamic` and `frame-src https://challenges.cloudflare.com`;
+    /// interactive pages without it name no third party.
+    #[test]
+    fn turnstile_csp_only_where_offered() {
+        let nonce = "q83vEjRWeJq83vEjRWeJqw==";
+        let page = |ix: &Value| {
+            challenge_page(
+                &sdk(),
+                &Page {
+                    lang: "en",
+                    nonce,
+                    request_id: ID,
+                    ret: "/",
+                    state: PageState::Challenge,
+                    challenge: Some(Shown {
+                        c: "AAEC",
+                        ty: ChallengeType::Interactive,
+                        bits: 8,
+                        ix: Some(ix),
+                    }),
+                    help_href: "/",
+                    privacy_href: "/",
+                },
+            )
+        };
+        let csp_of = |r: &EdgeResponse| {
+            r.header().unwrap().headers["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .to_owned()
+        };
+        let plain = page(&json!({"v": 1, "providers": ["self_hold", "pow_a11y"]}));
+        let p = csp_of(&plain);
+        assert_eq!(p, csp(nonce));
+        assert!(!p.contains("strict-dynamic") && !p.contains("cloudflare"));
+        assert!(!plain.body_text().contains("challenges.cloudflare.com"));
+        let offered = page(
+            &json!({"v": 1, "providers": ["turnstile", "self_hold", "pow_a11y"],
+            "turnstile": {"sitekey": "k", "action": "login", "cdata": "c", "lang": "en"}}),
+        );
+        let p = csp_of(&offered);
+        assert_eq!(p, csp_turnstile(nonce));
+        assert!(p.contains(&format!("script-src 'nonce-{nonce}' 'strict-dynamic';")));
+        assert!(p.ends_with("frame-src https://challenges.cloudflare.com"));
+        assert!(p.contains("connect-src 'self';"), "connect-src unchanged");
+        assert!(p.contains(&format!("style-src 'nonce-{nonce}';")));
     }
 
     #[test]

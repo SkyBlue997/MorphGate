@@ -9,7 +9,9 @@
 //!   credential) is readable by group or others.
 //! * [`PseudoKey`] (`pseudo.key.json`), [`UpstreamKeys`]
 //!   (`upstream-keys.json`) and [`OriginKeys`] (`origin-keys.json`) are the
-//!   §12.7 formats no other crate parses;
+//!   §12.7 formats no other crate parses; [`parse_turnstile_keys`] reads the
+//!   Phase 2 `mg-turnstile-keys` file (Phase 2 spec §8.7) into
+//!   `mg_edge_core::outbound::TurnstileSecrets`;
 //!   `token.keys.json` and `seal.root.json` go to `mg-challenge`, owner public
 //!   keys to `mg_edge_core::bundle::OwnerKeys`.
 //!
@@ -321,6 +323,66 @@ impl fmt::Debug for UpstreamKeys {
         f.debug_struct("UpstreamKeys")
             .field("values", &self.values.len())
             .finish()
+    }
+}
+
+/// `kind` of the Turnstile secret file (Phase 2 spec §8.7).
+pub const TURNSTILE_KEYS_KIND: &str = "mg-turnstile-keys";
+
+/// Parses an `mg-turnstile-keys` file for site `site` (Phase 2 spec §8.7):
+/// a JSON object with exactly `v = 1`, `kind = "mg-turnstile-keys"`, `site`
+/// equal to the `[[sites]] id`, and `values`: 1-2 secrets of 1-256 visible
+/// ASCII characters, the current one first. Unknown, duplicate, missing and
+/// `null` members are errors (the size cap of 64 KiB is [`read_secret`]'s).
+/// Errors never quote a value.
+pub fn parse_turnstile_keys(
+    json: &[u8],
+    site: &str,
+) -> Result<mg_edge_core::outbound::TurnstileSecrets, String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct File {
+        v: u32,
+        kind: String,
+        site: String,
+        values: Vec<String>,
+    }
+    let mut f: File = parse_object(json)?;
+    let checked = (|| {
+        check_header(f.v, &f.kind, TURNSTILE_KEYS_KIND)?;
+        if f.site != site {
+            return Err(format!(
+                "site does not match the [[sites]] id {site:?} (the file belongs to another site)"
+            ));
+        }
+        if !(1..=2).contains(&f.values.len()) {
+            return Err(format!(
+                "values has {} entries, expected 1-2",
+                f.values.len()
+            ));
+        }
+        for (i, v) in f.values.iter().enumerate() {
+            if v.is_empty()
+                || v.len() > mg_edge_core::outbound::MAX_SECRET_CHARS
+                || !v.bytes().all(|b| b.is_ascii_graphic())
+            {
+                return Err(format!(
+                    "values[{i}] is not 1-{} visible ASCII characters",
+                    mg_edge_core::outbound::MAX_SECRET_CHARS
+                ));
+            }
+        }
+        Ok(())
+    })();
+    match checked {
+        Ok(()) => mg_edge_core::outbound::TurnstileSecrets::new(std::mem::take(&mut f.values))
+            .map_err(|e| e.to_string()),
+        Err(e) => {
+            for v in &mut f.values {
+                v.zeroize();
+            }
+            Err(e)
+        }
     }
 }
 
@@ -680,6 +742,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Phase 2 spec §8.7: the shared `mg-turnstile-keys` samples (valid,
+    /// invalid, another site), an oversized file, and nothing of a value in
+    /// an error or `Debug`.
+    #[test]
+    fn turnstile_keys_samples() {
+        let dir = crate::test_support::repo("testdata/phase2/samples/keys");
+        let cases: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("cases.json")).unwrap()).unwrap();
+        let site = cases["site"].as_str().unwrap();
+        for c in cases["valid"].as_array().unwrap() {
+            let bytes = std::fs::read(dir.join(c["file"].as_str().unwrap())).unwrap();
+            let k =
+                parse_turnstile_keys(&bytes, site).unwrap_or_else(|e| panic!("{}: {e}", c["file"]));
+            let n = c["values"].as_u64().unwrap() as usize;
+            assert_eq!(usize::from(k.previous().is_some()) + 1, n, "{}", c["file"]);
+            assert!(!format!("{k:?}").contains(k.current()));
+            // Another site never gets them.
+            assert!(parse_turnstile_keys(&bytes, "shop").is_err());
+        }
+        let two = std::fs::read(dir.join("valid/two-values.json")).unwrap();
+        let k = parse_turnstile_keys(&two, site).unwrap();
+        assert_eq!(k.current(), "0x4AAAAAAAkat-test-secret-current-00000000");
+        assert_eq!(
+            k.previous(),
+            Some("0x4AAAAAAAkat-test-secret-previous-0000000")
+        );
+        for c in cases["invalid"].as_array().unwrap() {
+            let file = c["file"].as_str().unwrap();
+            let bytes = std::fs::read(dir.join(file)).unwrap();
+            let e = parse_turnstile_keys(&bytes, site).unwrap_err();
+            assert!(!e.contains("secret-"), "{file}: {e}");
+        }
+        // The 64 KiB cap is read_secret's (I-14).
+        let big = dir.join("valid/one-value.json");
+        let tmp = std::env::temp_dir().join(format!("mg-ts-keys-{}", std::process::id()));
+        let mut bytes = std::fs::read(&big).unwrap();
+        bytes.extend(std::iter::repeat_n(b' ', 64 * 1024));
+        std::fs::write(&tmp, &bytes).unwrap();
+        let r = read_secret(
+            &CredResolver::with_dir(None),
+            &CredRef::Path(tmp.clone()),
+            &mut |_| {},
+        );
+        assert!(matches!(r, Err(CredError::TooLarge { .. })), "{r:?}");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
     /// §2.4 item 3: parsers never panic on arbitrary input.
     #[test]
     fn random_input_never_panics() {
@@ -694,9 +803,13 @@ mod tests {
             sample("pseudo.key.json"),
             sample("upstream-keys.rotated.json"),
             sample("origin-keys.rotated.json"),
+            std::fs::read(crate::test_support::repo(
+                "testdata/phase2/samples/keys/valid/two-values.json",
+            ))
+            .unwrap(),
         ];
-        for i in 0..10_000 {
-            let mut input = seeds[i % 3].clone();
+        for i in 0..20_000 {
+            let mut input = seeds[i % seeds.len()].clone();
             let edits = (next() % 8) as usize;
             for _ in 0..edits {
                 if input.is_empty() {
@@ -714,6 +827,7 @@ mod tests {
             let _ = PseudoKey::parse(&input);
             let _ = UpstreamKeys::parse(&input);
             let _ = OriginKeys::parse(&input);
+            let _ = parse_turnstile_keys(&input, "blog");
             let _ = is_rfc3339(&String::from_utf8_lossy(&input));
         }
     }

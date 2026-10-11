@@ -14,8 +14,7 @@
 # Edit before use:
 #   - MgInteractiveUnavailable: list the sites whose bundle enables
 #     interactive challenges in the `site=~` matcher;
-#   - MgValkeyMemory needs redis_exporter (or valkey_exporter) metrics;
-#   - the Turnstile rule (mg_provider_verify_total) belongs to WP-E2c.
+#   - MgValkeyMemory needs redis_exporter (or valkey_exporter) metrics.
 # edge/tests/alerts.rs checks that every mg_* series used here is one that
 # mg-edge serves, with those labels.
 
@@ -90,6 +89,26 @@ groups:
           severity: warning
         annotations:
           summary: "More than 5 % of MG-Proof verifications failed in the last hour: visitors loop on proof: required routes (§9.1)"
+
+      - alert: MgTurnstileUnavailable
+        # §8.5, §8.6: visitors offered Turnstile fall back to self_hold.
+        expr: |
+          sum(increase(mg_provider_verify_total{provider="turnstile", outcome=~"unavailable|misconfigured"}[1h]))
+            / sum(increase(mg_provider_verify_total{provider="turnstile"}[1h])) > 0.05
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5 % of Turnstile verifications were unavailable or misconfigured in the last hour (§8.5): check siteverify reachability and the secret"
+
+      - alert: MgTurnstileDisabled
+        # §8.2, §8.6: no secret, or siteverify rejected it; stays until the
+        # bundle version or the credential changes.
+        expr: max by (site) (mg_provider_state{provider="turnstile", state="disabled"}) == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Turnstile is disabled on {{ $labels.site }} (no turnstile_keys, or the secret was rejected): rotate or import the secret and reload (§8.7)"
 
       - alert: MgHumanFriction
         # Request level (§20): an upper bound, /__mg/v counts twice.

@@ -500,11 +500,19 @@ seal_root = "cred://mg-blog-seal-root"
 
     /// `mg-edge --check-config` for `config`.
     pub fn check(&self, config: &Path) -> std::process::Output {
+        self.check_env(config, &[])
+    }
+
+    /// [`Self::check`] with extra environment variables (the inherited
+    /// `MG_EDGE_TEST_OUTBOUND` is always removed first).
+    pub fn check_env(&self, config: &Path, envs: &[(&str, &str)]) -> std::process::Output {
         Command::new(EDGE_BIN)
             .arg("--check-config")
             .arg("--config")
             .arg(config)
             .env("CREDENTIALS_DIRECTORY", &self.creds)
+            .env_remove("MG_EDGE_TEST_OUTBOUND")
+            .envs(envs.iter().copied())
             .output()
             .unwrap()
     }
@@ -516,6 +524,12 @@ seal_root = "cred://mg-blog-seal-root"
 
     /// [`Self::spawn`] with `RUST_LOG` set to `rust_log`.
     pub fn spawn_logging(&self, config: &Path, rust_log: &str) -> Edge {
+        self.spawn_env(config, rust_log, &[])
+    }
+
+    /// [`Self::spawn_logging`] with extra environment variables (the
+    /// inherited `MG_EDGE_TEST_OUTBOUND` is always removed first).
+    pub fn spawn_env(&self, config: &Path, rust_log: &str, envs: &[(&str, &str)]) -> Edge {
         let log = self
             .dir
             .join(format!("edge-{}.log", SEQ.fetch_add(1, Ordering::Relaxed)));
@@ -524,6 +538,8 @@ seal_root = "cred://mg-blog-seal-root"
             .arg(config)
             .env("CREDENTIALS_DIRECTORY", &self.creds)
             .env("RUST_LOG", rust_log)
+            .env_remove("MG_EDGE_TEST_OUTBOUND")
+            .envs(envs.iter().copied())
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(&log).unwrap())
             .spawn()

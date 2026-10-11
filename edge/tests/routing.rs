@@ -161,6 +161,7 @@ fn runtime(b: &SiteBundle) -> BundleRuntime {
         seal: mg_challenge::SealKeys::from_key_file(&seal, "blog").unwrap(),
         token_file: read_secret(&resolver, &token, &mut |_| {}).unwrap(),
         origin: None,
+        turnstile: None,
     };
     let signed = common::sign(b);
     let vb = verify_bundle(&signed, &owner_test_keys(), "blog", &settings.hosts).unwrap();

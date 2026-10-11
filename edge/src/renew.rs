@@ -26,6 +26,12 @@
 //! interactive `C` is kept until the `C` can no longer be opened for a
 //! renewal ([`interactive_nonce_ttl_ms`]).
 //!
+//! Turnstile (WP-E2c, §5.4 rule 2): a renewed `C` keeps Turnstile only while
+//! the current request still qualifies for it (usable, host, the `C`'s
+//! route without `redact_path`, countries); a new chain (step 8) and the
+//! escalated `C` of a failure select again for the current request. A `C`
+//! that keeps Turnstile carries `ix.turnstile` with its new nonce's `cData`.
+//!
 //! The results are counted in `mg_challenge_renew_total{result}`.
 
 use crate::challenge::{self, IssueError, Issued};
@@ -40,8 +46,7 @@ use crate::pages;
 use crate::submission::{self, MAX_BODY, MediaKind, media_kind};
 use mg_challenge::{RENEW_MAX_EXPIRED_MS, RenewOpenError, Rng, check_challenge_bind};
 use mg_core::{
-    BindResult, ChallengeType, Net, ProviderId, SealedChallengeClaims,
-    next_challenge_after_failure, turnstile_eligible,
+    BindResult, ChallengeType, Net, ProviderId, SealedChallengeClaims, next_challenge_after_failure,
 };
 use mg_edge_core::state::builtin::ClientDims;
 use mg_edge_core::state::{NonceIssueV2, NonceResultV2, StateHandle};
@@ -177,6 +182,36 @@ impl Flow<'_, '_> {
             asn: self.s.built.ctx.net.asn,
             asn_available: self.s.bundle.intel.has_asn(),
         }
+    }
+
+    /// The §5.4 inputs of a `C` continuing `old` on this request (WP-E2c):
+    /// `old`'s route (a renewal knows `ret` only as a hash), the request's
+    /// countries and cookie, and the site's Turnstile.
+    fn selecting<'f>(&'f self, old: &'f SealedChallengeClaims) -> interactive::Selecting<'f> {
+        let s = self.s;
+        let route = interactive::c_route(s.bundle, s.env, s.host, &old.route_class, None);
+        interactive::Selecting {
+            host: s.host,
+            route_id: route.map_or("", |r| r.0),
+            redact_path: route.is_some_and(|r| r.1),
+            countries: crate::turnstile::Countries::of(&s.built.ctx.net),
+            a11y_pref: interactive::a11y_pref(&s.built.cookies),
+            turnstile: if route.is_some() { s.turnstile } else { None },
+        }
+    }
+
+    /// `ix.turnstile`'s inputs for a `C` selected with `sel`.
+    fn ix_turnstile<'t>(
+        &self,
+        sel: &interactive::Selecting<'t>,
+    ) -> Option<interactive::IxTurnstile<'t>> {
+        let s = self.s;
+        let lang = crate::turnstile::widget_lang(pages::page_lang(
+            context::header(&s.built.headers, "accept-language"),
+            s.bundle.default_lang,
+        ));
+        sel.turnstile
+            .map(|offer| interactive::IxTurnstile { offer, lang })
     }
 
     async fn run(&mut self, body: &mut dyn BodySource) -> Result<Issued, Stop> {
@@ -385,34 +420,22 @@ impl Flow<'_, '_> {
         let Some(cfg) = &s.bundle.interactive else {
             return Err(IssueError::Rng);
         };
-        // Phase 2 offers no external provider before WP-E2c, so §5.4 rule 2
-        // removes any (there is no Turnstile configuration to be eligible
-        // for).
-        let providers = if renew_no == 0 {
-            interactive::providers(
-                cfg,
-                s.host,
-                &old.route_class,
-                old.attempt_no,
-                interactive::a11y_pref(&s.built.cookies),
-            )
+        // §7.4: a new chain selects again for this request; a renewal keeps
+        // the providers but drops Turnstile once this request no longer
+        // passes §5.4 rule 2 (D-70: countries only with denied_countries).
+        let sel = self.selecting(old);
+        let providers: Vec<ProviderId> = if renew_no == 0 {
+            interactive::providers(cfg, &sel, old.attempt_no)
         } else {
-            let eligible = |p: &ProviderId| {
-                !p.is_external()
-                    || turnstile_eligible(&mg_core::SelectionInput {
-                        country_geo: None,
-                        country_cf: None,
-                        route_id: &old.route_class,
-                        redact_path: false,
-                        host: s.host,
-                        attempt_no: old.attempt_no,
-                        escalate_after: cfg.escalate_after,
-                        a11y_pref: false,
-                        turnstile: None,
-                    })
-            };
-            old.providers.iter().copied().filter(eligible).collect()
+            let ts_ok = interactive::turnstile_ok(cfg, &sel);
+            old.providers
+                .iter()
+                .copied()
+                .filter(|p| *p != ProviderId::Turnstile || ts_ok)
+                .filter(|p| !p.is_external() || *p == ProviderId::Turnstile)
+                .collect()
         };
+        let ix_ts = self.ix_turnstile(&sel);
         let mut ret_hash = [0u8; 16];
         if old.ret_hash.len() == 16 {
             ret_hash.copy_from_slice(&old.ret_hash);
@@ -436,6 +459,7 @@ impl Flow<'_, '_> {
             cfg,
             "",
             false,
+            ix_ts.as_ref(),
             self.rng,
         )
     }
@@ -457,6 +481,8 @@ impl Flow<'_, '_> {
         if old.ret_hash.len() == 16 {
             ret_hash.copy_from_slice(&old.ret_hash);
         }
+        let sel = self.selecting(old);
+        let ix_ts = self.ix_turnstile(&sel);
         let issued = match (ty, &bundle.interactive) {
             (ChallengeType::Interactive, Some(cfg)) => challenge::issue_interactive(
                 &interactive::Seal {
@@ -466,13 +492,7 @@ impl Flow<'_, '_> {
                     band,
                     attempt_no,
                     renew_no: 0,
-                    providers: interactive::providers(
-                        cfg,
-                        s.host,
-                        &old.route_class,
-                        attempt_no,
-                        interactive::a11y_pref(&s.built.cookies),
-                    ),
+                    providers: interactive::providers(cfg, &sel, attempt_no),
                     ui_seed: None,
                     pow: interactive::pow_params(cfg, band),
                     ret_hash,
@@ -483,6 +503,7 @@ impl Flow<'_, '_> {
                 cfg,
                 "",
                 false,
+                ix_ts.as_ref(),
                 self.rng,
             ),
             _ => challenge::issue_with_ret_hash(
