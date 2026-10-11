@@ -9,8 +9,8 @@
 
 use mg_core::{Action, BotClass, BoxFuture};
 use mg_edge_core::events::{
-    DecisionEntry, DropSink, EventClass, EventQueues, EventRecord, EventSink, EventsConfig,
-    FINAL_FLUSH_BUDGET, Sink, StreamEntry, StreamWriter,
+    DecisionEntry, DecisionEntryV2, DropSink, EventClass, EventQueues, EventRecord, EventSink,
+    EventsConfig, FINAL_FLUSH_BUDGET, Sink, StreamEntry, StreamWriter,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -60,21 +60,24 @@ impl StreamWriter for Writer {
 }
 
 fn entry(rid: &str) -> StreamEntry {
-    StreamEntry::decision(&DecisionEntry {
-        site: "blog",
-        ts_ms: 1,
-        request_id: rid,
-        session: None,
-        route: "default",
-        action: Action::Allow,
-        dry_run: false,
-        class: BotClass::Unknown,
-        score: 0,
-        ipk: None,
-        pfk: None,
-        asn: None,
-        status: None,
-    })
+    StreamEntry::decision_v2(&DecisionEntryV2::new(
+        DecisionEntry {
+            site: "blog",
+            ts_ms: 1,
+            request_id: rid,
+            session: None,
+            route: "default",
+            action: Action::Allow,
+            dry_run: false,
+            class: BotClass::Unknown,
+            score: 0,
+            ipk: None,
+            pfk: None,
+            asn: None,
+            status: None,
+        },
+        "GET",
+    ))
 }
 
 fn record(class: EventClass, rid: &str) -> EventRecord {

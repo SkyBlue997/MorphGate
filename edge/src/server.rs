@@ -102,6 +102,11 @@ pub fn build(startup: Startup, run: RunOptions) -> Server {
     // Runtime-free handles (§9.1.1 item 1); the services run them later.
     let (state_service, state) = StateService::new(startup.state.clone());
     let (queues, flusher) = EventQueues::new(&cfg.events);
+    // Phase 2 spec §9.7, §10.1: the shutdown drain (its default comes from
+    // the grace period).
+    let drain = std::time::Duration::from_millis(cfg.shutdown_drain_ms());
+    let flusher = flusher.with_shutdown_drain(drain);
+    let inflight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     if let Err(e) = queues
         .metrics()
         .register(pingora_prometheus::prometheus::default_registry())
@@ -129,6 +134,7 @@ pub fn build(startup: Startup, run: RunOptions) -> Server {
         sdk: Arc::clone(&startup.sdk),
         rdns: Arc::new(rdns),
         telemetry_dedup: crate::telemetry::Dedup::default(),
+        inflight: Arc::clone(&inflight),
     });
 
     for l in &startup.listeners {
@@ -180,7 +186,7 @@ pub fn build(startup: Startup, run: RunOptions) -> Server {
         .then(|| Arc::new(shared.state.clone()) as Arc<dyn StreamWriter>);
     server.add_service(background_service(
         "mg-events",
-        EventsBackground::new(flusher, cfg.events.clone(), stream),
+        EventsBackground::new(flusher, cfg.events.clone(), stream, inflight, drain),
     ));
     server.add_service(background_service("mg-rdns", rdns_service));
     server

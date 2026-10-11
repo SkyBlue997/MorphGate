@@ -376,6 +376,44 @@ impl Sites {
 mod tests {
     use super::*;
 
+    /// Phase 2 spec §13.1 `bt`: the built-in baits (with
+    /// `scanner_baits_builtin`) and the extra globs, case-insensitively on
+    /// the fully decoded path; none in schema 1.
+    #[test]
+    fn scanner_baits() {
+        let mut b = mg_edge_core::testkit::http::test_site_bundle_v2(
+            "blog",
+            &crate::test_support::HOSTS,
+            1,
+        );
+        let e = b.events.as_mut().unwrap();
+        e.scanner_baits_builtin = true;
+        e.scanner_baits = vec!["/Hidden/**".into()];
+        let rt = crate::test_support::runtime(&b, true);
+        for bait in [
+            "/.env",
+            "/.ENV.local",
+            "/wp-admin/x",
+            "/%2Egit/config",
+            "/a/../.git/HEAD",
+            "/hnap1",
+            "/hidden/a",
+            "/HIDDEN/b",
+        ] {
+            assert!(rt.is_bait(bait), "{bait}");
+        }
+        for page in ["/", "/page", "/wp-admin", "/.envy", "/hidden"] {
+            assert!(!rt.is_bait(page), "{page}");
+        }
+        let e = b.events.as_mut().unwrap();
+        e.scanner_baits_builtin = false;
+        let rt = crate::test_support::runtime(&b, true);
+        assert!(!rt.is_bait("/.env") && rt.is_bait("/hidden/x"));
+        let b1 =
+            mg_edge_core::testkit::http::test_site_bundle("blog", &crate::test_support::HOSTS, 1);
+        assert!(!crate::test_support::runtime(&b1, true).is_bait("/.env"));
+    }
+
     /// I-17: an in-flight mark outlives the whole rDNS job.
     #[test]
     fn crawler_cache_follows_intel() {

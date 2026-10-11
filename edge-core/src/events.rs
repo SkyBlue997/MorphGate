@@ -79,10 +79,9 @@ pub use encode::{
 };
 pub use queue::{DropSink, EventMetrics, EventQueues, FINAL_FLUSH_BUDGET, Flusher};
 pub use stream::{
-    ContentClass, DecisionEntry, DecisionEntryV2, FeedbackEntry, FeedbackEntryV2, FeedbackOutcome,
-    IpFamily, PATH_HASH_DOMAIN, ProofResult, STREAM_ENTRY_VERSION, STREAM_ENTRY_VERSION_V2,
-    STREAM_KEY, STREAM_METHOD_MAX_BYTES, STREAM_UA_FAMILY_MAX_BYTES, StreamEntry, StreamWriter,
-    path_hash,
+    ContentClass, DecisionEntry, DecisionEntryV2, FeedbackEntryV2, FeedbackOutcome, IpFamily,
+    PATH_HASH_DOMAIN, ProofResult, STREAM_ENTRY_VERSION, STREAM_ENTRY_VERSION_V2, STREAM_KEY,
+    STREAM_METHOD_MAX_BYTES, STREAM_UA_FAMILY_MAX_BYTES, StreamEntry, StreamWriter, path_hash,
 };
 pub use telemetry::{
     AUTOMATION_SCHEMA_VERSION, Brand, ENV_SCHEMA_VERSION, TELEMETRY_MAX_ARRAY_ITEMS,

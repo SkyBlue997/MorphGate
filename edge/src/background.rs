@@ -28,6 +28,7 @@ use mg_edge_core::state::StateService;
 use pingora::server::ShutdownWatch;
 use pingora::services::background::BackgroundService;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -160,6 +161,10 @@ pub struct EventsBackground {
     flusher: Mutex<Option<Flusher>>,
     cfg: EventsConfig,
     stream: Option<Arc<dyn StreamWriter>>,
+    /// The proxies' requests in flight (I-52).
+    inflight: Arc<AtomicUsize>,
+    /// The shutdown drain (Phase 2 spec §9.7).
+    drain: Duration,
 }
 
 impl fmt::Debug for EventsBackground {
@@ -172,12 +177,21 @@ impl fmt::Debug for EventsBackground {
 }
 
 impl EventsBackground {
-    /// `stream`: the `mg:ev` writer, `None` without Valkey.
-    pub fn new(flusher: Flusher, cfg: EventsConfig, stream: Option<Arc<dyn StreamWriter>>) -> Self {
+    /// `stream`: the `mg:ev` writer, `None` without Valkey; `inflight`: the
+    /// proxies' request count; `drain`: the shutdown drain.
+    pub fn new(
+        flusher: Flusher,
+        cfg: EventsConfig,
+        stream: Option<Arc<dyn StreamWriter>>,
+        inflight: Arc<AtomicUsize>,
+        drain: Duration,
+    ) -> Self {
         Self {
             flusher: Mutex::new(Some(flusher)),
             cfg,
             stream,
+            inflight,
+            drain,
         }
     }
 }
@@ -196,9 +210,40 @@ impl BackgroundService for EventsBackground {
                 None
             }
         };
+        // Ruling I-52: the flusher's drain ends as soon as everything handed
+        // to it was delivered, so it hears of the shutdown only once the
+        // proxies have finished their requests (or the drain time is up).
+        let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+        let inflight = Arc::clone(&self.inflight);
+        let drain = self.drain;
+        tokio::spawn(async move {
+            gate_after_requests(shutdown, &inflight, drain).await;
+            let _ = gate_tx.send(true);
+        });
         flusher
-            .run(vl, self.cfg.file.clone(), self.stream.clone(), shutdown)
+            .run(vl, self.cfg.file.clone(), self.stream.clone(), gate_rx)
             .await;
+    }
+}
+
+/// How often the shutdown gate looks at the in-flight count.
+const INFLIGHT_POLL: Duration = Duration::from_millis(5);
+
+/// Returns once Pingora's shutdown has started and then either no request
+/// is in flight or `drain` has passed (I-52, Phase 2 spec §9.7).
+pub async fn gate_after_requests(
+    mut shutdown: ShutdownWatch,
+    inflight: &AtomicUsize,
+    drain: Duration,
+) {
+    while !*shutdown.borrow() {
+        if shutdown.changed().await.is_err() {
+            break;
+        }
+    }
+    let deadline = tokio::time::Instant::now() + drain;
+    while inflight.load(Ordering::Acquire) > 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(INFLIGHT_POLL).await;
     }
 }
 
@@ -277,5 +322,41 @@ impl BackgroundService for RdnsBackground {
         receiver.set_running(false);
         drop(receiver);
         tasks.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// I-52: the gate opens only after the shutdown signal, then once the
+    /// requests in flight are done, or when the drain time is up.
+    #[tokio::test]
+    async fn shutdown_gate_waits_for_requests() {
+        let inflight = Arc::new(AtomicUsize::new(1));
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let count = Arc::clone(&inflight);
+        let gate = tokio::spawn(async move {
+            gate_after_requests(rx, &count, Duration::from_secs(5)).await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!gate.is_finished(), "no shutdown yet");
+        tx.send(true).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!gate.is_finished(), "a request is still in flight");
+        inflight.store(0, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(1), gate)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The drain time bounds the wait.
+        let stuck = AtomicUsize::new(3);
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        tx.send(true).unwrap();
+        let started = std::time::Instant::now();
+        gate_after_requests(rx, &stuck, Duration::from_millis(100)).await;
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

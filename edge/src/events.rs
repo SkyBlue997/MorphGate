@@ -49,12 +49,13 @@ use crate::mg_endpoints::SubmitRecord;
 use crate::proxy::DecisionSummary;
 use mg_core::policy::RuleMode;
 use mg_core::{
-    Action, Decision, DecisionEvent, HitOutcome, Net, RequestContext, RiskAssessment,
-    RouteSensitivity, VerdictOutcome,
+    Action, ChallengeResult, Decision, DecisionEvent, HitOutcome, Net, RequestContext,
+    RiskAssessment, RouteSensitivity, VerdictOutcome,
 };
 use mg_edge_core::events::{
-    DecisionEntry, EventClass, EventRecord, FeedbackEntry, SampleInputs, Sink, StreamEntry,
-    access_path, decision_sample_rate, envelope, redacted_path, sample_keep, sampling_exempt,
+    ContentClass, DecisionEntry, DecisionEntryV2, EventClass, EventRecord, FeedbackEntryV2,
+    FeedbackOutcome, IpFamily, ProofResult, SampleInputs, Sink, StreamEntry, access_path,
+    decision_sample_rate, envelope, redacted_path, sample_keep, sampling_exempt,
 };
 use mg_edge_core::request::OversizeKind;
 use mg_edge_core::state::entity_key;
@@ -90,8 +91,11 @@ pub struct Finished<'a> {
     pub method: &'a str,
     /// Normalized host (§9.4).
     pub host: &'a str,
-    /// Request path without the query.
+    /// Request path without the query (`/…` for one over 8 KiB answered
+    /// before route selection, Phase 2 spec §9.7).
     pub path: &'a str,
+    /// The length of a path recorded as `/…` (§9.7 item 1).
+    pub path_len: Option<usize>,
     /// The environment serving the host, when a bundle is in effect.
     pub env: Option<&'a str>,
     /// HTTP status sent to the client; `None` if no response was sent.
@@ -104,8 +108,68 @@ pub struct Finished<'a> {
     pub cf_ray: Option<&'a str>,
     /// The bundle's `events` (or the §8.3 defaults without a bundle).
     pub cfg: &'a EventConfig,
-    /// `K_pseudo` for `ipk` / `pfk`. Never written.
+    /// `K_pseudo` for `ipk` / `pfk` / `ph`. Never written.
     pub k_pseudo: &'a [u8; 32],
+    /// The class of the origin response's `Content-Type` (`ct`, Phase 2
+    /// spec §13.1, §15.3); `None` when the Edge answered itself.
+    pub content: Option<ContentClass>,
+    /// The request facts of the `mg:ev` v2 decision entry.
+    pub stream: StreamFacts<'a>,
+}
+
+/// What a `mg:ev` v2 decision entry needs beyond the decision (Phase 2 spec
+/// §13.1), computed by the proxy.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StreamFacts<'a> {
+    /// `ph`: `path_hash` of the `rfc3986_view` path (lower-cased on
+    /// `case_insensitive_paths` sites), or of `/<route>` for a `redact_path`
+    /// route.
+    pub path_hash: Option<&'a str>,
+    /// `bt`: the path is a scanner bait.
+    pub bait: bool,
+    /// `xs`: a cross-site / same-site subresource request.
+    pub cross_site: bool,
+    /// `uf`: the User-Agent family (no version).
+    pub ua_family: Option<&'a str>,
+}
+
+/// `xs` of §13.1: `Sec-Fetch-Site` `cross-site` or `same-site`, and
+/// `Sec-Fetch-Mode` not `navigate`. `headers` is the sorted `req.headers`
+/// list or any `(lower-case name, value)` list.
+pub fn cross_site(site: Option<&str>, mode: Option<&str>) -> bool {
+    let site = site.map(str::trim);
+    matches!(site, Some(s) if s.eq_ignore_ascii_case("cross-site") || s.eq_ignore_ascii_case("same-site"))
+        && !mode.is_some_and(|m| m.trim().eq_ignore_ascii_case("navigate"))
+}
+
+/// The built-in scanner baits of Phase 2 spec §13.1 (route-path globs,
+/// matched case-insensitively against the fully decoded path view).
+pub const BUILTIN_SCANNER_BAITS: [&str; 18] = [
+    "/.env",
+    "/.env.*",
+    "/.git/**",
+    "/.svn/**",
+    "/.hg/**",
+    "/.DS_Store",
+    "/wp-login.php",
+    "/wp-admin/**",
+    "/xmlrpc.php",
+    "/phpmyadmin/**",
+    "/pma/**",
+    "/server-status",
+    "/actuator/**",
+    "/vendor/phpunit/**",
+    "/cgi-bin/**",
+    "/.aws/**",
+    "/boaform/**",
+    "/HNAP1",
+];
+
+/// The `mg:ev` facts of an evaluated request that the record holds.
+#[derive(Debug, Clone, Copy, Default)]
+struct DecisionFacts {
+    token: bool,
+    proof: ProofResult,
 }
 
 impl std::fmt::Debug for Finished<'_> {
@@ -161,23 +225,40 @@ fn decision_msg(d: &Decision, route: &str, score: u8) -> String {
     )
 }
 
-/// The `mg:ev` decision entry (§13.6).
-fn decision_entry(f: &Finished<'_>, e: &DecisionEvent, route: &str) -> StreamEntry {
+/// The `mg:ev` v2 decision entry (Phase 2 spec §13.1).
+fn decision_entry(
+    f: &Finished<'_>,
+    e: &DecisionEvent,
+    route: &str,
+    d: DecisionFacts,
+) -> StreamEntry {
     let (ipk, pfk) = ipk_pfk(f.k_pseudo, f.client_ip);
-    StreamEntry::decision(&DecisionEntry {
-        site: f.site,
-        ts_ms: f.ts_ms,
-        request_id: f.request_id,
-        session: e.ctx.session_id.as_deref(),
-        route,
-        action: e.decision.action,
-        dry_run: e.decision.dry_run,
-        class: e.risk.bot_class,
-        score: e.risk.score.get(),
-        ipk: ipk.as_deref(),
-        pfk: pfk.as_deref(),
-        asn: e.ctx.net.asn,
-        status: f.status,
+    StreamEntry::decision_v2(&DecisionEntryV2 {
+        base: DecisionEntry {
+            site: f.site,
+            ts_ms: f.ts_ms,
+            request_id: f.request_id,
+            session: e.ctx.session_id.as_deref(),
+            route,
+            action: e.decision.action,
+            dry_run: e.decision.dry_run,
+            class: e.risk.bot_class,
+            score: e.risk.score.get(),
+            ipk: ipk.as_deref(),
+            pfk: pfk.as_deref(),
+            asn: e.ctx.net.asn,
+            status: f.status,
+        },
+        method: f.method,
+        path_hash: f.stream.path_hash,
+        content: f.content,
+        bait: f.stream.bait,
+        cross_site: f.stream.cross_site,
+        token: d.token,
+        proof: d.proof,
+        ua_family: f.stream.ua_family,
+        family: f.client_ip.map(IpFamily::of),
+        challenge_type: Some(e.decision.challenge_type),
     })
 }
 
@@ -189,16 +270,22 @@ fn decision_record(
     inputs: &SampleInputs,
     route: &str,
     extra: Map<String, Value>,
+    d: DecisionFacts,
+    force: bool,
 ) -> Option<EventRecord> {
-    let exempt = sampling_exempt(inputs);
+    let exempt = force || sampling_exempt(inputs);
     let class = if exempt {
         EventClass::Priority
     } else {
         EventClass::Sampled
     };
-    let rate = decision_sample_rate(inputs, f.cfg.allow_sample_rate);
+    let rate = if force {
+        1.0
+    } else {
+        decision_sample_rate(inputs, f.cfg.allow_sample_rate)
+    };
     event.sample_rate = rate;
-    let entry = f.cfg.stream.then(|| decision_entry(f, &event, route));
+    let entry = f.cfg.stream.then(|| decision_entry(f, &event, route, d));
     if !sample_keep(rate, sample_draw(f.request_id)) {
         return entry.map(|e| EventRecord::stream_only(class, e));
     }
@@ -245,6 +332,10 @@ pub fn evaluated(
     let replay_unchecked = rec.token_replay_unchecked;
     let proof_required = rec.proof_required_applied();
     let forced_monitor = rec.forced_monitor;
+    let d = DecisionFacts {
+        token: rec.ctx.identity.token.status == mg_core::TokenStatus::Valid,
+        proof: rec.proof.stream(),
+    };
     let mut ctx = rec.ctx;
     if redact {
         ctx.http.path = redacted_path(&route);
@@ -279,7 +370,9 @@ pub fn evaluated(
     if forced_monitor {
         extra.insert("forced_monitor".into(), Value::Bool(true));
     }
-    decision_record(f, event, &inputs, &route, extra)
+    // D-62: a decision with a replay-unchecked (`ruc`) clearance is always
+    // written, whatever `allow_sample_rate` says.
+    decision_record(f, event, &inputs, &route, extra, d, replay_unchecked)
 }
 
 /// What the Edge knows about a request it forwarded unevaluated.
@@ -346,7 +439,18 @@ pub fn unevaluated(f: &Finished<'_>, u: &Unevaluated<'_>) -> Option<EventRecord>
     if let Some(kind) = u.oversize {
         extra.insert("oversize".into(), Value::from(kind.as_str()));
     }
-    decision_record(f, event, &inputs, "-", extra)
+    if let Some(len) = f.path_len {
+        extra.insert("path_len".into(), Value::from(len));
+    }
+    decision_record(
+        f,
+        event,
+        &inputs,
+        "-",
+        extra,
+        DecisionFacts::default(),
+        false,
+    )
 }
 
 /// The `kind=access` record (§13.4), when `events.access_log` is on.
@@ -357,6 +461,19 @@ pub fn access(
     decision: Option<AccessDecision>,
     redact_route: Option<&str>,
     net: &AccessNet,
+) -> Option<EventRecord> {
+    access_with_session(f, route, decision, redact_route, net, None)
+}
+
+/// [`access`] with the `sub` of the request's valid clearance (Phase 2
+/// spec §15.3: `sess`, omitted without one).
+pub fn access_with_session(
+    f: &Finished<'_>,
+    route: &str,
+    decision: Option<AccessDecision>,
+    redact_route: Option<&str>,
+    net: &AccessNet,
+    session: Option<&str>,
 ) -> Option<EventRecord> {
     if !f.cfg.access_log {
         return None;
@@ -382,6 +499,9 @@ pub fn access(
     put("method", method.into());
     put("host", f.host.into());
     put("path", path.as_ref().into());
+    if let Some(len) = f.path_len {
+        put("path_len", len.into());
+    }
     if let Some(s) = f.status {
         put("status", s.into());
     }
@@ -398,6 +518,12 @@ pub fn access(
     }
     if let Some(country) = &net.country {
         put("country", country.as_str().into());
+    }
+    if let Some(sess) = session {
+        put("sess", sess.into());
+    }
+    if let Some(ct) = f.content {
+        put("ct", ct.as_str().into());
     }
     put("bytes_out", f.bytes_out.into());
     put(
@@ -419,26 +545,24 @@ pub fn submission(f: &Finished<'_>, sub: &SubmitRecord, asn: Option<u32>) -> Vec
     let fb = &sub.feedback;
     let outcome = fb.outcome.unwrap_or(VerdictOutcome::Fail);
     let route = fb.route_id.as_deref().unwrap_or("-");
+    // Phase 2 spec §15.1: `challenge <outcome> <type>/<provider> route=…`.
     let msg = format!(
-        "challenge {} {} route={route}",
+        "challenge {} {}/{} route={route}",
         outcome.as_str(),
-        fb.challenge_type.as_str()
+        fb.challenge_type.as_str(),
+        fb.provider_id.map_or("none", |p| p.as_str())
     );
     let body = serde_json::to_value(fb).unwrap_or(Value::Null);
     let line = envelope("feedback", f.site, f.ts_ms, &msg, body);
     let mut feedback = EventRecord::new(EventClass::Priority, Sink::Main, line);
     if f.cfg.stream {
-        let (_, pfk) = ipk_pfk(f.k_pseudo, f.client_ip);
-        feedback = feedback.with_stream(StreamEntry::feedback(&FeedbackEntry {
-            site: f.site,
-            ts_ms: f.ts_ms,
-            request_id: f.request_id,
-            route: fb.route_id.as_deref().unwrap_or(""),
-            outcome,
-            challenge_type: fb.challenge_type,
-            pfk: pfk.as_deref(),
+        feedback = feedback.with_stream(feedback_entry(
+            f,
+            fb,
+            outcome.into(),
             asn,
-        }));
+            sub.session.as_deref(),
+        ));
     }
     let mut out = vec![feedback];
     // I-32, Phase 2 spec §15.2: a telemetry line exists only when the
@@ -475,6 +599,68 @@ pub fn submission(f: &Finished<'_>, sub: &SubmitRecord, asn: Option<u32>) -> Vec
         out.push(EventRecord::new(EventClass::Sampled, Sink::Short, line));
     }
     out
+}
+
+/// The `mg:ev` v2 feedback entry (Phase 2 spec §13.1): `p` for an
+/// interactive challenge, `sess` / `lvl` of the issued clearance.
+fn feedback_entry(
+    f: &Finished<'_>,
+    fb: &ChallengeResult,
+    outcome: FeedbackOutcome,
+    asn: Option<u32>,
+    session: Option<&str>,
+) -> StreamEntry {
+    let (ipk, pfk) = ipk_pfk(f.k_pseudo, f.client_ip);
+    StreamEntry::feedback_v2(&FeedbackEntryV2 {
+        site: f.site,
+        ts_ms: f.ts_ms,
+        request_id: f.request_id,
+        route: fb.route_id.as_deref().unwrap_or(""),
+        outcome,
+        challenge_type: fb.challenge_type,
+        pfk: pfk.as_deref(),
+        asn,
+        provider: fb.provider_id,
+        ipk: ipk.as_deref(),
+        session,
+        level: fb.lvl,
+    })
+}
+
+/// The `kind=feedback` record of a renewal (Phase 2 spec §15.1): only a
+/// counted failure (`outcome = fail`) or a bound `C` renewed from another
+/// prefix (`outcome = renew_rebind`), both with `renew: true`, and its
+/// `mg:ev` v2 entry.
+pub fn renewal(
+    f: &Finished<'_>,
+    r: &crate::renew::RenewFeedback,
+    asn: Option<u32>,
+) -> Option<EventRecord> {
+    let fb = &r.feedback;
+    let outcome = if r.rebind {
+        FeedbackOutcome::RenewRebind
+    } else {
+        FeedbackOutcome::Verdict(VerdictOutcome::Fail)
+    };
+    let route = fb.route_id.as_deref().unwrap_or("-");
+    let provider = fb.provider_id.map_or("none", |p| p.as_str());
+    let msg = format!(
+        "challenge {} {}/{provider} route={route}",
+        outcome.as_str(),
+        fb.challenge_type.as_str()
+    );
+    let mut body = match serde_json::to_value(fb) {
+        Ok(Value::Object(o)) => o,
+        _ => Map::new(),
+    };
+    body.insert("outcome".into(), outcome.as_str().into());
+    body.insert("renew".into(), Value::Bool(true));
+    let line = envelope("feedback", f.site, f.ts_ms, &msg, Value::Object(body));
+    let mut record = EventRecord::new(EventClass::Priority, Sink::Main, line);
+    if f.cfg.stream {
+        record = record.with_stream(feedback_entry(f, fb, outcome, asn, None));
+    }
+    Some(record)
 }
 
 /// The records of one `POST /__mg/r` (Phase 2 spec §15.3, §15.2): the
@@ -551,6 +737,7 @@ mod tests {
             method: "GET",
             host: "example.com",
             path,
+            path_len: None,
             env: Some("production"),
             status: Some(403),
             bytes_out: 1234,
@@ -559,6 +746,13 @@ mod tests {
             cf_ray: Some("8f00aa11bb22cc33-HKG"),
             cfg,
             k_pseudo: &K,
+            content: Some(ContentClass::Html),
+            stream: StreamFacts {
+                path_hash: Some("0123456789abcdef"),
+                bait: false,
+                cross_site: false,
+                ua_family: Some("chrome"),
+            },
         }
     }
 
@@ -846,7 +1040,7 @@ mod tests {
             "request_id": RID, "cf_ray": "8f00aa11bb22cc33-HKG", "method": "GET",
             "host": "example.com", "path": "/account/login", "status": 403,
             "action": "challenge", "dry_run": false, "route": "login",
-            "ip_prefix": "203.0.113.0/24", "asn": 64500, "country": "HK",
+            "ip_prefix": "203.0.113.0/24", "asn": 64500, "country": "HK", "ct": "h",
             "bytes_out": 1234, "latency_ms": 12});
         assert_eq!(v, want);
         assert!(!r.line.contains(IP));
@@ -991,6 +1185,7 @@ mod tests {
             }),
             reissued: None,
             provider: "none",
+            session: None,
         }
     }
 
@@ -1007,7 +1202,7 @@ mod tests {
         assert_eq!((fb.class, fb.target), (EventClass::Priority, Sink::Main));
         let v = json(&fb.line);
         assert_eq!(v["kind"], "feedback");
-        assert_eq!(v["msg"], "challenge pass pow route=login");
+        assert_eq!(v["msg"], "challenge pass pow/none route=login");
         assert_eq!(v["outcome"], "pass");
         assert_eq!(v["type"], "pow");
         assert_eq!(v["solve_ms"], 312);
@@ -1052,5 +1247,121 @@ mod tests {
         let out = submission(&f, &no_env, None);
         assert_eq!(out.len(), 1, "feedback only");
         assert!(json(&out[0].line)["kind"] == "feedback");
+    }
+
+    /// Phase 2 spec §13.1: the decision entry is v2 with the request facts;
+    /// §15.3: `sess` on the access record; D-62: a `ruc` clearance forces
+    /// the decision event (P0, `sample_rate` 1).
+    #[test]
+    fn v2_entries_sess_and_ruc() {
+        let c = cfg(0.0, true, true);
+        let mut f = finished(&c, "/a");
+        f.stream.bait = true;
+        f.stream.cross_site = true;
+        let mut rec = record(Action::Challenge, RouteSensitivity::Low);
+        rec.decision.challenge_type = ChallengeType::Interactive;
+        rec.ctx.identity.token.status = mg_core::TokenStatus::Valid;
+        rec.proof = crate::proof::ProofOutcome::Valid;
+        let r = evaluated(&f, rec, false, None).unwrap();
+        let e = r.stream.unwrap();
+        for (k, v) in [
+            ("v", "2"),
+            ("m", "GET"),
+            ("ph", "0123456789abcdef"),
+            ("ct", "h"),
+            ("bt", "1"),
+            ("xs", "1"),
+            ("tk", "1"),
+            ("pf", "v"),
+            ("uf", "chrome"),
+            ("fam", "4"),
+            ("ctype", "interactive"),
+        ] {
+            assert_eq!(e.get(k), Some(v), "{k}");
+        }
+        // A sampled-out allow decision is kept when its clearance has ruc.
+        let mut ruc = record(Action::Allow, RouteSensitivity::Low);
+        ruc.token_replay_unchecked = true;
+        let r = evaluated(&f, ruc, false, None).unwrap();
+        assert_eq!(r.class, EventClass::Priority);
+        assert_eq!(json(&r.line)["sample_rate"], 1.0);
+        assert!(
+            evaluated(
+                &f,
+                record(Action::Allow, RouteSensitivity::Low),
+                false,
+                None
+            )
+            .unwrap()
+            .line
+            .is_empty()
+        );
+        let net = AccessNet::default();
+        let v = json(
+            &access_with_session(&f, "r", None, None, &net, Some("SUB"))
+                .unwrap()
+                .line,
+        );
+        assert_eq!(v["sess"], "SUB");
+        assert!(
+            json(&access(&f, "r", None, None, &net).unwrap().line)
+                .get("sess")
+                .is_none()
+        );
+    }
+
+    /// Phase 2 spec §15.1: a renewal's feedback (counted failure / rebind)
+    /// with `renew: true` and its `mg:ev` v2 entry.
+    #[test]
+    fn renewal_feedback_records() {
+        let c = cfg(0.0, true, true);
+        let f = finished(&c, "/__mg/c/renew");
+        let fb = ChallengeResult {
+            request_id: RID.into(),
+            site_id: "blog".into(),
+            route_id: Some("members".into()),
+            challenge_type: ChallengeType::Interactive,
+            provider_id: Some(mg_core::ProviderId::SelfHold),
+            outcome: Some(VerdictOutcome::Fail),
+            attempt_no: 1,
+            renew_no: 2,
+            bound: true,
+            reason_codes: vec!["ic.sig".into()],
+            ..ChallengeResult::default()
+        };
+        let r = renewal(
+            &f,
+            &crate::renew::RenewFeedback {
+                feedback: fb.clone(),
+                rebind: false,
+            },
+            Some(64500),
+        )
+        .unwrap();
+        let v = json(&r.line);
+        assert_eq!(v["kind"], "feedback");
+        assert_eq!(v["renew"], true);
+        assert_eq!(v["outcome"], "fail");
+        assert_eq!(v["renew_no"], 2);
+        assert_eq!(
+            v["msg"],
+            "challenge fail interactive/self_hold route=members"
+        );
+        let e = r.stream.unwrap();
+        assert_eq!(
+            (e.get("v"), e.get("outcome"), e.get("p")),
+            (Some("2"), Some("fail"), Some("self_hold"))
+        );
+        let r = renewal(
+            &f,
+            &crate::renew::RenewFeedback {
+                feedback: fb,
+                rebind: true,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(json(&r.line)["outcome"], "renew_rebind");
+        assert_eq!(r.stream.unwrap().get("outcome"), Some("renew_rebind"));
     }
 }

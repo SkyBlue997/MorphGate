@@ -100,11 +100,15 @@ fn enforce_rejects_every_cap() {
         env.origin.seen().is_empty(),
         "nothing oversize reaches the origin"
     );
+    // Phase 2 spec §22: an unparsable request target is `bad_target`.
+    let r = send(&env, "GET ftp://example.com/x HTTP/1.1\r\n");
+    assert_eq!(r.status, 400, "{}", r.head);
     let m = edge.metrics_text();
     for (reason, n) in [
         ("uri_too_long", 2),
         ("header_too_large", 4),
         ("bad_method", 1),
+        ("bad_target", 1),
     ] {
         let series =
             format!("mg_protocol_rejected_total{{listener=\"cf-tunnel\",reason=\"{reason}\"}}");

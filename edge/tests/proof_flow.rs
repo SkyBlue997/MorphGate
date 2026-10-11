@@ -883,3 +883,17 @@ fn force_monitor() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// §10.1: `--check-config` warns when the bundle asks for `mg:ev` while the
+/// Edge runs in local mode.
+#[test]
+fn check_config_warns_about_a_stream_in_local_mode() {
+    let env = TestEnv::new("proof-stream-warning");
+    let mut b = bundle(1);
+    b.events.as_mut().unwrap().stream = true;
+    env.write_lkg("blog", &sign(&b));
+    let out = env.check(&env.write_config(&config(&env, true, "")));
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{text}");
+    assert!(text.contains("writes no mg:ev"), "{text}");
+}

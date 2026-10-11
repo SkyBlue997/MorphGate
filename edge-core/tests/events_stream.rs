@@ -7,8 +7,8 @@
 
 use mg_core::{Action, BotClass};
 use mg_edge_core::events::{
-    DecisionEntry, DropSink, EventClass, EventQueues, EventRecord, EventSink, EventsConfig, Sink,
-    StreamEntry, StreamWriter, envelope,
+    DecisionEntry, DecisionEntryV2, DropSink, EventClass, EventQueues, EventRecord, EventSink,
+    EventsConfig, Sink, StreamEntry, StreamWriter, envelope,
 };
 use mg_edge_core::state::{EVENT_STREAM_KEY, StateConfig, StateHandle, StateMode, StateService};
 use mg_edge_core::testkit::valkey::ValkeyFixture;
@@ -21,21 +21,24 @@ const K: [u8; 32] = [7; 32];
 const PROMPT: Duration = Duration::from_secs(10);
 
 fn entry(site: &str, rid: &str) -> StreamEntry {
-    StreamEntry::decision(&DecisionEntry {
-        site,
-        ts_ms: 1_790_000_000_123,
-        request_id: rid,
-        session: None,
-        route: "default",
-        action: Action::Allow,
-        dry_run: true,
-        class: BotClass::HumanLikely,
-        score: 12,
-        ipk: Some("0123456789abcdef0123456789abcdef"),
-        pfk: Some("fedcba9876543210fedcba9876543210"),
-        asn: Some(64500),
-        status: Some(200),
-    })
+    StreamEntry::decision_v2(&DecisionEntryV2::new(
+        DecisionEntry {
+            site,
+            ts_ms: 1_790_000_000_123,
+            request_id: rid,
+            session: None,
+            route: "default",
+            action: Action::Allow,
+            dry_run: true,
+            class: BotClass::HumanLikely,
+            score: 12,
+            ipk: Some("0123456789abcdef0123456789abcdef"),
+            pfk: Some("fedcba9876543210fedcba9876543210"),
+            asn: Some(64500),
+            status: Some(200),
+        },
+        "GET",
+    ))
 }
 
 fn cfg() -> EventsConfig {

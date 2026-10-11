@@ -66,6 +66,20 @@
 //!   the score, v2 tokens with `cnf.jkt`, `__Host-mg_st`, `__Host-mg_a11y`)
 //!   in [`mg_endpoints`] and [`submission`], and `POST /__mg/c/renew` in
 //!   [`renew`]; `/__mg/v?…&min=interactive` (D-58) in [`decide`].
+//!
+//! Phase 2 proof and observability (WP-E2b):
+//!
+//! * [`proof`]: `MG-Proof` on routes (exempt navigations, verification on
+//!   demand, the `jti` check in round trip 1, `identity.proof`), executed by
+//!   [`decide`] (403 `mg_proof_required`, 425, the unchecked 429) with the
+//!   in-place recovery `C` of [`proxy`]; challenges bound to a valid proof's
+//!   key (D-41);
+//! * [`refresh`] (`POST /__mg/r`) and [`telemetry`] (`POST /__mg/t`);
+//! * D-61 cookie stripping ([`headers`]), `force_monitor` (D-60, [`sites`]),
+//!   the I-35 review of early answers and the shutdown drain behind the
+//!   proxies (I-52, [`background`]);
+//! * `mg:ev` v2, the Phase 2 event fields and metrics ([`events`],
+//!   [`metrics`]).
 
 pub mod background;
 pub mod challenge;

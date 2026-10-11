@@ -135,6 +135,9 @@ flush_interval_ms = 1000
 # grace_period_seconds * 1000 - 1000); a set value must be 0..10000 and at most
 # grace_period_seconds * 1000 - 1000.
 # shutdown_drain_ms = 2000
+# Capacity of the kind=telemetry queue of POST /__mg/t (Phase 2 spec §9.4),
+# 64..65536: when it is full only telemetry is dropped.
+queue_telemetry = 2048
 
 [intel]
 dns_resolver = "system"

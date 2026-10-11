@@ -1,0 +1,156 @@
+# vmalert rules for MorphGate Phase 2 (docs/impl/phase2-spec.md §19 step 8).
+#
+# For a host with VictoriaMetrics: vmagent scrapes mg-edge's /metrics (and
+# mg-nearline's), vmalert loads this file:
+#   vmalert -rule=/etc/morphgate/vmalert/mg-phase2.rules.yml \
+#     -datasource.url=http://127.0.0.1:8428 -notifier.url=... \
+#     -rule.defaultRuleType=prometheus
+# The `logs` group queries VictoriaLogs (vl-main) and needs a vmalert built
+# with VictoriaLogs support and -datasource.url pointing at vl-main for
+# `type: vlogs` groups (see the VictoriaMetrics vmalert docs).
+# Without VictoriaMetrics run scripts/mg-daily-check.sh daily instead: it
+# checks the same conditions from two /metrics snapshots.
+#
+# Edit before use:
+#   - MgInteractiveUnavailable: list the sites whose bundle enables
+#     interactive challenges in the `site=~` matcher;
+#   - MgValkeyMemory needs redis_exporter (or valkey_exporter) metrics;
+#   - the Turnstile rule (mg_provider_verify_total) belongs to WP-E2c.
+# edge/tests/alerts.rs checks that every mg_* series used here is one that
+# mg-edge serves, with those labels.
+
+groups:
+  - name: morphgate-edge
+    interval: 1m
+    rules:
+      - alert: MgDoubleChallenge
+        expr: sum by (site, route) (increase(mg_double_challenge_total[1h])) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cloudflare challenges in front of MorphGate-protected requests on {{ $labels.site }} / {{ $labels.route }} (trusted SDK reports, 1 h)"
+
+      - alert: MgEndpointCached
+        expr: sum by (site) (increase(mg_endpoint_cache_hit_reports_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A /__mg/ answer was served from Cloudflare's cache on {{ $labels.site }}: the Bypass cache rule is not working (docs/08 §2.6)"
+
+      - alert: MgServiceWorkerIntercepts
+        expr: sum by (site) (increase(mg_sw_intercept_reports_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The site's Service Worker answers /__mg/ requests on {{ $labels.site }} (§19 step 3b)"
+
+      - alert: MgReplayUncheckedTokens
+        expr: sum by (site) (increase(mg_token_ruc_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Clearances issued without a replay check are in use on {{ $labels.site }} (the replay store was unavailable, I-30)"
+
+      - alert: MgLocalStateOverflow
+        expr: sum by (table) (increase(mg_state_local_overflow_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The in-process {{ $labels.table }} table was full: raise its [valkey] local_*_capacity"
+
+      - alert: MgRenewUnavailable
+        expr: sum(increase(mg_challenge_renew_total{result="unavailable"}[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Interactive challenges could not be renewed (replay store unavailable)"
+
+      - alert: MgForcedMonitor
+        expr: max by (site) (mg_site_forced_monitor) == 1
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "force_monitor has been on for more than an hour on {{ $labels.site }} (D-60): deploy a monitor bundle and remove it"
+
+      - alert: MgInteractiveUnavailable
+        # List the sites whose bundle enables interactive challenges.
+        expr: max by (site) (mg_interactive_available{site=~"blog"}) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Interactive challenges run as pow on {{ $labels.site }}: the [sdk] dir is not a manifest v2 directory (§5.1)"
+
+      - alert: MgProofFailures
+        expr: |
+          sum(increase(mg_proof_verify_total{result=~"missing|malformed|unbound|jkt|htm|htu|iat|sig|replay"}[1h]))
+            / sum(increase(mg_proof_verify_total[1h])) > 0.05
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5 % of MG-Proof verifications failed in the last hour: visitors loop on proof: required routes (§9.1)"
+
+      - alert: MgHumanFriction
+        # Request level (§20): an upper bound, /__mg/v counts twice.
+        expr: |
+          sum(increase(mg_challenge_total{type="interactive", result="issued"}[7d]))
+            / sum(increase(mg_navigations_total[7d])) > 0.001
+        labels:
+          severity: warning
+        annotations:
+          summary: "Interactive challenges exceed 0.1 % of GET navigations over 7 days (§20)"
+
+  - name: morphgate-nearline
+    interval: 1m
+    rules:
+      - alert: MgNearlineBacklog
+        expr: max(mg_nl_backlog) > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "mg-nearline has more than 10000 undelivered mg:ev entries"
+
+      - alert: MgNearlineLag
+        expr: max(mg_nl_lag_seconds) > 600
+        labels:
+          severity: warning
+        annotations:
+          summary: "mg-nearline lags more than 10 minutes behind mg:ev"
+
+      - alert: MgNearlineVisitorFriction
+        # Visitor level (§20); only exported with >= 2000 visitors in 7 days.
+        expr: max by (site) (mg_nl_interactive_visitor_share) > 0.001
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 0.1 % of visitors of {{ $labels.site }} got an interactive challenge in 7 days (§20)"
+
+  - name: morphgate-valkey
+    interval: 1m
+    rules:
+      - alert: MgValkeyMemory
+        # redis_exporter / valkey_exporter metric names.
+        expr: max(redis_memory_used_bytes / redis_memory_max_bytes) > 0.8
+        labels:
+          severity: warning
+        annotations:
+          summary: "Valkey uses more than 80 % of maxmemory: with noeviction XADD and limiter writes start failing (§19 step 1b)"
+
+  - name: morphgate-logs
+    type: vlogs
+    interval: 10m
+    rules:
+      - alert: MgInteractiveHardCheckFailures
+        # kind=feedback in vl-main: ic.too_fast, ic.hold_short and
+        # ic.no_trusted_input above 5 % of interactive submissions (1 h).
+        expr: |
+          _time:1h kind:=feedback type:=interactive
+            | stats count() total, count() if (reason_codes:"ic.too_fast" or reason_codes:"ic.hold_short" or reason_codes:"ic.no_trusted_input") failing
+            | math failing / total as ratio
+            | filter total:>0 ratio:>0.05
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5 % of interactive submissions fail the hard checks (SDK or page regression)"

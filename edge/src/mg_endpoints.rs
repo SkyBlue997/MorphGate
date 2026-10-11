@@ -425,6 +425,9 @@ pub struct SubmitRecord {
     /// The `provider` label of `mg_challenge_total`: `none`, or the
     /// submitted provider of an interactive `C`.
     pub provider: &'static str,
+    /// The `sub` of the clearance issued (the `sess` of the `mg:ev` v2
+    /// feedback entry, Phase 2 spec §13.1).
+    pub session: Option<String>,
 }
 
 impl SubmitRecord {
@@ -443,6 +446,7 @@ impl SubmitRecord {
             telemetry: None,
             reissued: None,
             provider: challenge::PROVIDER_NONE,
+            session: None,
         }
     }
 
@@ -881,6 +885,8 @@ impl<'s> Flow<'_, 's> {
                 return fail(reason::PROVIDER_NOT_OFFERED);
             };
             self.record.provider = p.as_str();
+            // §15.1: the provider actually submitted.
+            self.record.feedback.provider_id = Some(p);
             match p {
                 ProviderId::SelfHold => {}
                 ProviderId::PowA11y => {
@@ -1152,6 +1158,8 @@ impl<'s> Flow<'_, 's> {
         };
         self.record.feedback.outcome = Some(VerdictOutcome::Pass);
         self.record.feedback.lvl = Some(lvl);
+        // `sess` of the mg:ev v2 feedback entry (§13.1).
+        self.record.session = Some(minted.sub.clone());
         self.record.result = "solved";
         let cookie = set_cookie_value(&token, ttl_s);
         let mut resp = match self.answer {
