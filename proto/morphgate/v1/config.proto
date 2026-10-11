@@ -45,6 +45,7 @@ message Route {
   bool require_clearance = 10;   // CHALLENGE unless a valid clearance token is presented
   bool redact_path = 11;         // events and access records log "/<route name>" instead of the path (tokenized URLs)
   RouteMode mode = 12;           // monitor / enforce override of SiteBundle.monitor_only (spec I-36)
+  bool never_challenge = 13;     // CHALLENGE is recorded and forwarded; BLOCK / RATE_LIMIT apply (spec I-37)
 }
 
 // Per-route override of the site's monitor switch (spec I-36). When a request

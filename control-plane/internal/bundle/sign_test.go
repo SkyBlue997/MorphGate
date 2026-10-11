@@ -8,6 +8,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -169,6 +170,13 @@ func TestSummarize(t *testing.T) {
 	want := map[string]string{env + "/" + routes[0].Name: "enforce", env + "/api": "monitor", env + "/x": "9"}
 	if !maps.Equal(sum.RouteModes, want) {
 		t.Errorf("route modes %v, want %v", sum.RouteModes, want)
+	}
+	if sum.NeverChallenge != nil {
+		t.Errorf("never_challenge %v", sum.NeverChallenge)
+	}
+	sb.Environments[0].Routes[1].NeverChallenge = true
+	if sum = Summarize(&sb, bundleBytes, s, file); !slices.Equal(sum.NeverChallenge, []string{env + "/api"}) {
+		t.Errorf("never_challenge %v", sum.NeverChallenge)
 	}
 }
 

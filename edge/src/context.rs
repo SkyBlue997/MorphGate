@@ -106,6 +106,8 @@ pub struct Facts<'a> {
     /// The request is only recorded, never enforced: the site's
     /// `monitor_only` resolved through the matched routes' modes (I-36).
     pub monitor: bool,
+    /// A CHALLENGE is recorded and the request forwarded (I-37).
+    pub never_challenge: bool,
     pub profile: ListenerProfile,
     /// `loopback` / `origin_mtls` / `secret_header` / `none` (§9.2).
     pub auth_method: &'a str,
@@ -697,6 +699,7 @@ mod tests {
                 site_id: "blog",
                 route: &self.route,
                 monitor: false,
+                never_challenge: false,
                 profile,
                 auth_method: if cf.is_some() { "loopback" } else { "none" },
                 cf,

@@ -285,6 +285,76 @@ fn monitor_route_on_an_enforce_site() {
     assert!(r.header("mg-challenge").is_some(), "{}", r.head);
 }
 
+/// I-37: on a `never_challenge` route of an enforcing site a CHALLENGE is
+/// only recorded and the request forwarded, while BLOCK, RATE_LIMIT and
+/// the other routes' challenges still apply.
+#[test]
+fn never_challenge_route_records_challenges() {
+    let env = TestEnv::new("dec-never-challenge");
+    let mut b = bundle(false);
+    let e = &mut b.environments[0];
+    e.routes
+        .iter_mut()
+        .find(|r| r.name == "api")
+        .unwrap()
+        .never_challenge = true;
+    e.rules.push(rule(
+        "challenge-api",
+        "custom",
+        Action::Challenge,
+        glob(field("req.path"), "/api/c/**"),
+        &[("type", "pow")],
+    ));
+    e.rules.push(rule(
+        "block-api",
+        "custom",
+        Action::Block,
+        glob(field("req.path"), "/api/b/**"),
+        &[],
+    ));
+    let edge = start(&env, &b);
+
+    let r = get(
+        env.listen,
+        "example.com",
+        "/api/c/1",
+        &api_client("198.51.100.70"),
+    );
+    assert_eq!(r.status, 200, "{}", r.head);
+    assert!(r.header("mg-challenge").is_none(), "{}", r.head);
+    let line = origin_log(&env, &edge, "/api/c/1");
+    assert!(
+        line.contains(" rule=challenge-api action=challenge dry_run=true "),
+        "{line}"
+    );
+    assert!(line.contains("enforcement=Forward"), "{line}");
+
+    let r = get(
+        env.listen,
+        "example.com",
+        "/api/b/1",
+        &api_client("198.51.100.71"),
+    );
+    assert_eq!(r.status, 403, "{}", r.head);
+    assert!(env.origin.last("/api/b/1").is_none());
+
+    let client = api_client("198.51.100.72");
+    let r = get(env.listen, "example.com", "/api/1", &client);
+    assert_eq!(r.status, 200, "{}", r.head);
+    let r = get(env.listen, "example.com", "/api/2", &client);
+    assert_eq!(r.status, 429, "{}", r.head);
+
+    // Other routes still challenge.
+    let r = get(
+        env.listen,
+        "example.com",
+        "/members/x",
+        &api_client("198.51.100.73"),
+    );
+    assert_eq!(r.status, 403, "{}", r.head);
+    assert!(r.header("mg-challenge").is_some(), "{}", r.head);
+}
+
 /// Enforce: BLOCK and RATE_LIMIT answers (§9.9), JSON or HTML by request
 /// kind, never reaching the origin.
 #[test]

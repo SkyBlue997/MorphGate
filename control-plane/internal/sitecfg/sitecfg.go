@@ -242,8 +242,13 @@ type Route struct {
 	RedactPath       bool
 	// Mode overrides Site.MonitorOnly for this route: "monitor", "enforce",
 	// or "" to inherit it (spec I-36).
-	Mode     string
-	Implicit bool
+	Mode string
+	// NeverChallenge: a CHALLENGE decision on this route is recorded and the
+	// request forwarded; BLOCK and RATE_LIMIT still apply (spec I-37). For
+	// endpoints that can never carry clearance, such as sendBeacon
+	// telemetry. Only on low and medium routes without require_clearance.
+	NeverChallenge bool
+	Implicit       bool
 }
 
 // RateLimit is one rate_limits: entry.

@@ -180,6 +180,8 @@ pub struct RouteRuntime {
     pub require_clearance: bool,
     pub redact_path: bool,
     pub mode: RouteMode,
+    /// A CHALLENGE is recorded and the request forwarded (I-37).
+    pub never_challenge: bool,
     pub patterns: Vec<Glob>,
 }
 
@@ -227,6 +229,7 @@ impl RouteRuntime {
             require_clearance: false,
             redact_path: false,
             mode: RouteMode::Inherit,
+            never_challenge: false,
             patterns: Vec::new(),
         }
     }
@@ -419,6 +422,13 @@ fn convert_route(r: &Route, case_insensitive: bool) -> Result<RouteRuntime, Stri
         Ok(mg_proto::v1::RouteMode::Enforce) => RouteMode::Enforce,
         Err(_) => return Err(format!("mode {} is unknown", r.mode)),
     };
+    // The builder refuses these (I-37); a hand-made bundle must not turn a
+    // route that demands clearance into one that never asks for it.
+    if r.never_challenge && (r.require_clearance || sensitivity >= RouteSensitivity::High) {
+        return Err(
+            "never_challenge on a high or critical route, or with require_clearance".into(),
+        );
+    }
     let mut sources: Vec<&str> = r.paths.iter().map(String::as_str).collect();
     // Deprecated in Phase 1: a non-empty path_glob is one more entry of paths.
     if !r.path_glob.is_empty() {
@@ -447,6 +457,7 @@ fn convert_route(r: &Route, case_insensitive: bool) -> Result<RouteRuntime, Stri
         require_clearance: r.require_clearance,
         redact_path: r.redact_path,
         mode,
+        never_challenge: r.never_challenge,
         patterns,
     })
 }

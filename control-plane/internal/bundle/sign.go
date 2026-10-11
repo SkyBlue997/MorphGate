@@ -129,7 +129,8 @@ type Summary struct {
 	SourceDigest     string            `json:"source_digest,omitempty"` // site YAML + policy + list files
 	Profile          string            `json:"profile"`
 	MonitorOnly      bool              `json:"monitor_only"`
-	RouteModes       map[string]string `json:"route_modes,omitempty"` // "<env>/<route>" -> monitor | enforce (I-36)
+	RouteModes       map[string]string `json:"route_modes,omitempty"`     // "<env>/<route>" -> monitor | enforce (I-36)
+	NeverChallenge   []string          `json:"never_challenge,omitempty"` // "<env>/<route>" (I-37)
 	Hosts            []string          `json:"hosts"`
 	AllowedListeners []string          `json:"allowed_listeners"`
 	TokenKeyIDs      []string          `json:"token_key_ids"`
@@ -188,6 +189,9 @@ func Summarize(sb *morphgatev1.SiteBundle, bundleBytes []byte, signed *morphgate
 		s.Environments = append(s.Environments, EnvSummary{Name: env.Name, Hosts: nonNil(env.Hosts),
 			Routes: len(env.Routes), Rules: len(env.Rules), RateLimits: len(env.RateLimits)})
 		for _, r := range env.Routes {
+			if r.NeverChallenge {
+				s.NeverChallenge = append(s.NeverChallenge, env.Name+"/"+r.Name)
+			}
 			var mode string
 			switch r.Mode {
 			case morphgatev1.RouteMode_ROUTE_MODE_INHERIT:
