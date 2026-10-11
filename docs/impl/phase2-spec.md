@@ -39,10 +39,15 @@
 
 ## 集成者裁决（优先于正文）
 
-尚无。实现中的裁决从 I-43 起编号，按 Phase 1 的格式追加在此表，覆盖正文中对应的条目；WP-D2 把它们同步到设计文档。
+实现中的裁决从 I-43 起编号，覆盖正文中对应的条目；WP-D2 把它们同步到设计文档。
 
 | 编号 | 裁决 | 覆盖 |
 |---|---|---|
+| I-43 | 2026-10-13，契约落地（§0.4）：`SealedChallengeClaims::check` 的 Phase 2 规则另有错误值 `InvalidUiSeed`、`InvalidRenewNo`、`InvalidPow`、`InvalidJktBinding`；所有类型的 C 都必须带 PoW。`seal` 的形状检查接受两种 PoW 算法，按类型的规则只在 `check()` 中执行，所以缺失或未知的 PoW 在 `seal` 时报 `Invalid(InvalidPow)`；`open` 不变 | §6.2 |
+| I-44 | 2026-10-13，契约落地：`IxTelemetry` 中 0.1 步长的值以"十分之一"的整数保存；`hold.offset` 的范围为 −1.0..1.0；交互摘要的 shadow / enforce 用枚举 `EvalMode` | §3.4、§7.6 |
+| I-45 | 2026-10-13，契约落地，`testdata/phase2` 的样例写死了以下取舍：`MG-Proof` 的签名不是 64 字节（例如 DER）时为 `proof.sig`，不是 `proof.malformed`；`htu` 带显式端口时为 `proof.htu`；`/__mg/c` 的请求体缺 `jwk` 或 `sig` 为 `ic.body`，内容无效为 `ic.sig`；`/__mg/t` 出现未知的报告种类时整个请求 400 | §6.7、§7.5、§9.4 |
+| I-46 | 2026-10-13，契约落地：近线 worker 的 Valkey 客户端为 `github.com/valkey-io/valkey-go`，以 `ForceSingleClient`、`DisableCache`、`DisableClientSetInfo` 连接，只发送 `HELLO` 与保活的 `PING`；§13.6 的 ACL 命令表不变 | §13.6 |
+| I-47 | 2026-10-13：`node testdata/phase2/gen/kat.mjs --check`（向量与生成器一致）由 WP-E2a 加入 `make docs-check` 或 CI 的文档作业 | §17 WP-E2a、§18 |
 
 ## 0. 范围、决定与待落地文件
 
