@@ -1,7 +1,7 @@
 # ADR-0005：凭证采用 PASETO v4，密封 Challenge 采用 protobuf（prost）编码 + XChaCha20-Poly1305
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：编码与 AEAD 定稿、按阶段绑定、TTL 与 epoch、epoch 密钥派生、Early-Data）；2026-09-28 勘误：Phase 1 实现口径（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-04、D-05、D-23、D-29、D-30、I-14、I-18、I-30，见文末"勘误"）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：编码与 AEAD 定稿、按阶段绑定、TTL 与 epoch、epoch 密钥派生、Early-Data）；2026-09-28 勘误：Phase 1 实现口径（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-04、D-05、D-23、D-29、D-30、I-14、I-18、I-30，见文末"勘误"）；2026-10-12 勘误：Phase 2 实现口径（依据 [Phase 2 实现规格](../impl/phase2-spec.md) D-42、D-43、D-46、D-47、I-43、I-49，见文末"勘误"）
 - 相关：[04 Challenge 与访问凭证](../04-challenge-and-tokens.md)、[09 自研交互式 Challenge](../09-interactive-challenge.md)、[ADR-0008](0008-interactive-challenge-self-built.md)、[ADR-0010](0010-single-owner-model.md)
 
 ## 背景
@@ -64,6 +64,23 @@ ct = XChaCha20-Poly1305.seal(k_epoch[kid], xnonce, prost(SealedChallengeClaims),
 | epoch 与编码 | kid 为 `e<epoch_no>`；info 为 `"mg-seal-v1" ‖ 0x00 ‖ site ‖ 0x00 ‖ u64be(epoch_no)`；接受窗口收紧为当前 epoch，日界后 125 s 内另接受上一个、日界前 5 s 内另接受下一个（原文"接受当前与上一个 epoch"会让上一个 epoch 全天有效）；`aad` 各段带 u16be 长度前缀；`len(C) ≤ 1024`；`open` 只接受 `seal` 写出的规范信封编码，`seal` 拒绝 `open` 会拒绝的一切，且对所有类型要求 `exp − iat ≤ 120 s`（I-18） |
 | Early-Data | 任何 `Early-Data` 头都视为早期数据（RFC 8470 §5.1），见 [04 §4.3](../04-challenge-and-tokens.md#43-early-data0-rtt) |
 | `tfp` | 仍不签发。JA4 预研（[ADR-0002 勘误](0002-edge-pingora-boringssl.md#bindtfp-的建议)）表明原始 JA4 随 TLS 1.3 会话恢复与 ClientHello 长度变化，决策中"`tfp`（JA4 哈希）硬绑定"改为：只取恢复时不变的部分，先 shadow，Phase 2 前不启用 |
+
+## 勘误（2026-10-12，Phase 2 实现）
+
+结论（PASETO v4.local 凭证；prost 编码 + XChaCha20-Poly1305 的密封 C）不变。Phase 2 按下表实现，字节级格式见规格 [§6](../impl/phase2-spec.md#6-密码学与协议原语mg-challengewp-r5) 与 `testdata/phase2/kat.json`（D-xx 见规格 [§0.3](../impl/phase2-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](../impl/phase2-spec.md#集成者裁决优先于正文)）：
+
+| 项 | Phase 2 |
+|---|---|
+| C 的寿命与 epoch 窗口（D-42） | 交互式 C 固定 600 s，其他类型仍 ≤ 120 s，`seal` 与 `open` 按类型检查。接受的 epoch 改为：当前 epoch，日界后 605 s 内另接受上一个，日界前 5 s 内另接受下一个，所有类型共用。Phase 1 的 `accepted_epochs` 向量作废。续期用 `open_for_renew`：过期不超过 1 小时的交互式 C（及其 epoch）仍能打开，以便标签页休眠后续期 |
+| claims（I-43） | 新增 `renew_no`（0–6）；`pow` 增加 `k` 与 `a11y_difficulty`；所有类型都必须带 PoW；交互式的 `providers` 必须含 `pow_a11y`。`bind.jkt = bind_hash("jkt", jkt)`，导航得到的 C 经首次续期绑定（D-41） |
+| PoW（D-43） | 交互式用 `sha256-hashcash-v2`：k 个子题，`digest_i = SHA-256("mg-pow-v2" ‖ 0x00 ‖ SHA-256(C) ‖ u8(i) ‖ u64be(counter_i))` |
+| 会话密钥签名 | ES256（P-256，64 字节 `r ‖ s`，DER 拒绝），只用 `aws-lc-rs` 验签（已在锁文件中）；生产路径从不持有私钥。JWK 恰好四个成员，指纹按 RFC 7638 |
+| 凭证 v2（D-46） | `v = 2` 在 v1 字段之外增加 `lat`（获得该级别的时间）与可缺的 `cnf: {jkt}`；v1 拒绝未知字段，所以新增字段必须换版本。Edge 同时接受 v1 与 v2，只在有 `cnf`、级别为交互级或凭证由刷新得到时签发 v2；配置包 `schema_version = 1` 时只签发 v1，二进制回滚时只有用到 Phase 2 功能的凭证失效。`mint_v2` 在不允许 v2 时签发 v1（I-49） |
+| TTL | 交互级缺省 `interactive` / `interactive_ext:*` 1800 s，`interactive_a11y` 900 s（站点可调，上限 7200 / 3600 s） |
+| 刷新（D-47） | `POST /__mg/r` 缺省关闭；新凭证复制 `lvl`、`sub`、`sst`、`lat`、`bind`、`cnf`、`rb`，重新生成 `jti`，`kid` 取当前密钥；按级别以 `now − lat` 封顶，`interactive_a11y` 与 `invisible` 不可刷新 |
+| 状态 Cookie | 另设脚本可读的 `__Host-mg_st=<iat>.<exp>.<b>`，不含级别与秘密；Edge 从不读取它做判定 |
+| Turnstile `cData` | `base64url_nopad(HMAC-SHA256(k_bind, "mg-ts-cdata-v1" ‖ 0x00 ‖ lp(site_id) ‖ lp(nonce)))`，`k_bind` 按 C 的 epoch 以 `mg-bind-v1` 派生，校验时对每个根各算一次 |
+| 吊销 | 仍在 Phase 3（D-54） |
 
 ## 参考
 

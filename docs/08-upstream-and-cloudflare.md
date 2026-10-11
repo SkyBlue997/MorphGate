@@ -24,6 +24,8 @@
 | IP 段同步（§2.11） | `mgctl cf ips sync`（工作站），工件随签名配置包下发 | [§12.2](impl/phase1-spec.md#122-cloudflare-ipsjson)、[§14.4](impl/phase1-spec.md#144-mgctl-cf-ips-syncwp-g3) |
 | 未实现 | HMAC Cookie 跳过（§2.9）、`mgctl cf apply`、SDK 侧的 `cf-mitigated` 处理（§2.8）、其他 CDN 与 PROXY protocol（§3–§4）；`direct_tls` 的 JA4 仍在预研（D-07） | [§0.1](impl/phase1-spec.md#01-范围) |
 
+**Phase 2**（2026-10-12 勘误，[Phase 2 实现规格](impl/phase2-spec.md)）：SDK 侧的 `cf-mitigated` 处理已实现（§2.8 的 Phase 2 段落）；Turnstile 对大陆访客同样可选（§2.13，D-70）；`/__mg/` 缓存规则的失效由 SDK 的 `cache_hit` 报告发现（§2.6）。HMAC Cookie 跳过、`mgctl cf apply`、其他 CDN 与 PROXY protocol 仍未实现。
+
 ## 1. UpstreamProfile 上游模型
 
 ### 1.1 取值与阶段
@@ -385,6 +387,13 @@ Cloudflare 的所有挑战页响应都带 `cf-mitigated: challenge`（该头唯�
 - 计入 `mg_double_challenge_total`；Console 按站点、路由、国家展示。计数持续非零说明 §2.7 的某项配置有冲突。
 - Web SDK 的实现属于 Phase 2（见 [04 §7](04-challenge-and-tokens.md#7-客户端信号采集web--mobile-sdk)）；`mg_double_challenge_total` 随之出现。Phase 1 靠 `mgctl cf audit` 第 9、10、11、14 项预防双重挑战。
 
+**Phase 2**（[规格 §12.5](impl/phase2-spec.md#125-fetch-包装与刷新)、[§9.4](impl/phase2-spec.md#94-post-mgt遥测d-48)）：
+- 只看经 `MorphGate.fetch` 发出的站点请求：收到 `cf-mitigated: challenge` 时，先把一条 `upstream_challenge` 报告写入 sessionStorage 队列（下次页面加载后发送），再以 `location.assign(location.href)` 重载页面；同一页面路径 60 s 内只重载一次，没有 sessionStorage 时不重载、只上报。
+- SDK 自己的后台请求（`/__mg/r`、`/__mg/t`、续期）遇到它时从不重载，只上报，并停止本页的后台活动。
+- `mg_double_challenge_total{site, route}` 只计带有效 `MG-Proof` 的报告，同一会话同一种报告 10 分钟至多计一次，`route` 由报告的路径匹配；未签名的报告只进 `mg_telemetry_reports_total`。1 小时增加 > 10 告警。
+- SDK 在 `/__mg/*`（`/__mg/s/` 除外）的应答上看到 `cf-cache-status: HIT` 时上报 `cache_hit`，计 `mg_endpoint_cache_hit_reports_total`：§2.6 的 Bypass 规则失效。
+- `cf-mitigated` 应答的状态码与所有者站点上双重挑战的实际频率在 shadow 期测量（[规格 §21](impl/phase2-spec.md#21-待实测与未决)）。
+
 ### 2.9 可选：HMAC Cookie 跳过（Pro 及以上）
 
 Phase 1 未实现（仅在双重挑战计数确实出现后才考虑）。
@@ -478,6 +487,8 @@ Turnstile 与 zone 套餐无关，额度见 [09 §8.1](09-interactive-challenge.
 - Cloudflare China Network（京东云机房）需要 Enterprise、单独订阅，且每个顶级域名都要有 ICP 备案。个人预算不考虑。
 - 没有 China Network 时，大陆访客访问境外数据中心，Cloudflare 文档写明这条路径存在明显的延迟与可靠性问题 → Challenge 路径保持第一方、轻量（SDK ≤ 30 KB gzip），不依赖第三方域名。
 - Turnstile 官方声明不支持中国大陆（China Network zone 与全局 zone 都不支持）→ 大陆访客永不选用（[09](09-interactive-challenge.md)）。Cloudflare 自己的挑战页在全局 zone 下对大陆访客是否受同样影响没有文档说明（需确认），这也是不叠加 Cloudflare 挑战的原因之一。
+
+- **Phase 2**（D-70，2026-10-12）：所有者决定大陆与国家未知的访客也可以选用 Turnstile，上一条的"永不选用"不再成立。大陆访客的 api.js 加载失败、控件报错或 siteverify 不可用时，SDK 与 Edge 自动回退到内置验证，不计失败，最坏多等一次 5 s 的加载超时。所有者可以写 `deny_countries: [CN]` 恢复排除（[09 §7](09-interactive-challenge.md#7-provider-选择策略)）。
 - 源站区域默认香港 / 东京 / 新加坡。ICP 备案只针对大陆服务器；阿里云会阻断解析到其大陆服务器的未备案域名。源站需能访问 `challenges.cloudflare.com` 才能调用 Turnstile siteverify，这三个区域没有问题。
 - 站点已备案并使用境内 CDN 时：ESA 与 EdgeOne 的"中国内地"或"全球"加速区域都要求 ICP，否则只能选"全球（不含中国内地）"。非 Enterprise 套餐下只能拿到 IP + 地理，需另配 `esa` / `edgeone` profile 并走独立监听器（例如国际流量走 Cloudflare、境内流量走 ESA）。
 
@@ -631,6 +642,8 @@ Turnstile 与 zone 套餐无关，额度见 [09 §8.1](09-interactive-challenge.
 | EdgeOne 回源 mTLS 的配置页与套餐；Bot 管理所需套餐 | `edgeone` profile | Phase 4 |
 | 各 CDN 是否覆盖客户端发来的同名信号头 | 头采信规则 | Phase 4 |
 | 腾讯云 CLB ProxyProtocol 版本 | `proxy_protocol` profile | Phase 5 |
+
+Phase 2 的待实测项（Turnstile 的 `hostname` / `cdata` 大小写、`remoteip` 不一致时的行为、幂等键被记住多久、Free 套餐的 siteverify 限速、`hagen.` / `brunhild.challenges.cloudflare.com` 是否需要 CSP 条目、widget `region` 的语义、从 Edge 主机到 siteverify 的延迟；`cf-mitigated` 应答的状态码；大陆访客选用 Turnstile 后的效果）记在 [Phase 2 规格 §21](impl/phase2-spec.md#21-待实测与未决)。
 
 ## 参考
 

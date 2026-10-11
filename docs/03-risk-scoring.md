@@ -4,6 +4,8 @@
 
 本文是评分与处置的设计口径；Phase 1 已落地的部分标为"Phase 1"（2026-09-28 勘误）。Phase 1 的检测器清单、初始权重与默认处置矩阵的规范实现见 [规格 §5.5](impl/phase1-spec.md#55-默认处置矩阵wp-r1) 与 [§5.7](impl/phase1-spec.md#57-phase-1-检测器与评分-v1wp-r1)，初始值都可以在站点 YAML 的 `scoring` 中覆盖。
 
+Phase 2 已落地的部分标为"Phase 2"（2026-10-12 勘误），契约见 [Phase 2 实现规格](impl/phase2-spec.md)：交互式 Challenge、`identity.proof` 与 `min_level`、近线 verdict。Phase 2 不改变评分模型，只改变它的输入。
+
 ## 1. 判定分层
 
 ```
@@ -39,6 +41,8 @@ Ingress 由 Edge 的适配层负责：认证上游、删除不可信的上游头
 类别之外可附加标签，例如 `delegated`：在用户真实浏览器中代用户操作的 Agent（见 [05 §2](05-ai-agent-policy.md#2-分类)），可与 `HUMAN_LIKELY`、`AUTOMATION_LIKELY`、`SIGNED_AGENT` 同时出现。
 
 **Phase 1 的分类推导**（按顺序取第一个成立的）：爬虫验证 `verified` → `VERIFIED_CRAWLER`；`failed` → `IMPERSONATOR`；labels 含 `scanner` → `SCANNER`；爬虫 `pending` / `unverifiable` 或 UA 自我声明为 bot → `DECLARED_AGENT`；score ≥ 60 → `AUTOMATION_LIKELY`；score < 30 且置信度 ≥ θ_c → `HUMAN_LIKELY`；否则 `UNKNOWN`。`AUTHORIZED_AGENT`、`API_PARTNER`、`SIGNED_AGENT` 在 Phase 1 不会出现（Agent 身份在 Phase 3）。客户端 IP 未知时另加 label `client_ip_unknown`。
+
+**Phase 2**（D-53，[规格 §13.3](impl/phase2-spec.md#133-窗口与检测器-v1)）：近线 worker 写出的 verdict 只抬高风险，标签为 `nl_scanner`、`nl_shared_token`、`nl_challenge_abuse`、`nl_high_rate`，从不带 `scanner` 标签，所以近线不会让请求被归为 `SCANNER` 而直接阻断；`scanner` 标签只用于所有者手写的 verdict。按单个 IP 直接阻断会误伤 CGNAT 与办公网的邻居，而第三方网页可以让访客的浏览器发出诱饵请求。
 
 ## 3. 信号体系
 
@@ -163,7 +167,11 @@ Phase 1 的 EDGE_TLS 只有一个检测器：声明现代浏览器却使用 SSLv
 
 交互式 Challenge 的交互遥测只在 Challenge 校验时评分，评分方法与 §4.1 相同（按族封顶）。特征与硬检查见 [09](09-interactive-challenge.md)。
 
+**Phase 2**（[规格 §5.6](impl/phase2-spec.md#56-不进入每个请求评分的内容)）：SDK 遥测与交互特征只影响挑战提交本身（硬检查与评分）；它们对后续请求的影响只经近线 verdict 进入评分（BEHAVIOR 族）。`RequestContext.client` 在 Phase 2 仍为空，CLIENT 族的探测器照旧缺席，Edge 不需要按会话保存遥测的在线状态。"页面已加载但 SDK 从未运行"不实现。
+
 ### 3.7 行为（BEHAVIOR，近线产出，经 verdict 回灌）
+
+Phase 2：近线检测器 v1 的 verdict 按 §4.1 的 `R_e` 进入评分（ip、prefix、session 三种，不产生 asn 类 verdict），见 [02 §4](02-data-flow.md#4-近线会话与实体分析)。
 
 见 §6。
 
@@ -174,6 +182,8 @@ Phase 1 的 EDGE_TLS 只有一个检测器：声明现代浏览器却使用 SSLv
 - 凭证状态：缺失 / 过期 / 无效 / 重放；持有证明是否有效。绑定按阶段（详见 [04 §5](04-challenge-and-tokens.md)）：Phase 1 为 `uah`（硬）+ `ipp`（软）；Phase 2 起加 `cnf.jkt`（硬，SDK 会话密钥）；`tfp`（硬）仅 `direct_tls`，JA4 预研成功后启用；`ctp` 仅 `cloudflare`、仅 shadow，达标后才可转为软绑定（§3.4）。
 - Agent 签名；爬虫验证（官方 IP 段 + 异步 rDNS）。Phase 1：验证失败 → +1.0（且 score 下限 90，§4.2）；rDNS 结论未出（`pending`）而 IP 不在该运营方已发布的段内 → +0.5，这样 rDNS 队列被挤满时冒充者也不是零风险（D-18）。
 - 凭证和 Challenge 通过带来的负向贡献有上限，见 §4.1。
+
+- **Phase 2**（[规格 §4.1](impl/phase2-spec.md#41-新增与改变的字段)）：新增 `identity.proof.{present, valid, replayed}`、`identity.token.bound`（凭证带 `cnf.jkt`）与 `identity.token.level_age`（`now − lat`）；`identity.proof.*` 只在校验时可用，可豁免的导航上为 MISSING。持有证明的结果不进入评分族，只经路由的 `proof: required` 与策略规则起作用。
 
 ### 3.9 上游 verdict（EXTERNAL）
 
@@ -238,6 +248,8 @@ score    = round(100 · sigmoid(z))
 | 所有族的负向贡献合计 | ≥ `H_min`（初始 −4.0） | 人类证据不能抵消强自动化证据 |
 
 通过之后仍然要监控：按前缀 / ASN 统计凭证签发数、解题时间分布、通过率突然接近 100%（`mg_challenge_total` 按 `provider` 分，告警见 [06 §5](06-policy-console-observability.md)）。Challenge 通过不会重置实体 verdict。
+
+**Phase 2**（D-68）：所有级别的凭证证据保持 −0.4（`identity.clearance`），上表中交互级的 −0.8 暂不启用。`self_hold` 的检查除服务端时间窗外都依赖客户端自报的数据，交互级凭证的成本下限只是 PoW 加 1.2–2.5 s 等待，不能给它两倍于 `pow` 的人类证据（[09 §11.1](09-interactive-challenge.md#111-硬检查)）。交互级的更强证据只能在交互评分改为 `enforce` 之后以新裁决引入。交互级只在能满足的挑战要求上高于 `pow`（[04 §5](04-challenge-and-tokens.md#5-短期访问凭证) 的 `min_level`）。
 
 **置信度**：按 profile 的预期信号集合计算，避免上游本来就不提供的信号让请求显得可疑。
 

@@ -1,7 +1,7 @@
 # ADR-0010：单一所有者模型与个人版密钥保管
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：密钥保管、跨站点共享、访问记录归档）；2026-09-28 勘误：Phase 1 的密钥保管与审计（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-06、I-27，见文末"勘误"）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：密钥保管、跨站点共享、访问记录归档）；2026-09-28 勘误：Phase 1 的密钥保管与审计（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-06、I-27，见文末"勘误"）；2026-10-12 勘误：Phase 2 实现口径（依据 [Phase 2 实现规格](../impl/phase2-spec.md) D-51、D-60，见文末"勘误"）
 - 相关：[01 整体架构](../01-architecture.md)、[05 AI Agent 策略](../05-ai-agent-policy.md)、[06 策略引擎、后台与审计](../06-policy-console-observability.md)、[10 威胁模型](../10-threat-model.md)、[ADR-0009](0009-ja4-only-licensing.md)
 
 ## 背景
@@ -56,3 +56,13 @@
 | 配置签名密钥 | `kid` 由所有者命名（如 `owner-2026`，只允许小写字母、数字与 `._-`）；Edge 的 `[trust] owner_keys` 可同时列两把公钥，轮换顺序为"先加新公钥 → 用新密钥发布 → 所有 Edge 生效后删旧公钥" |
 | 审计（决策 6） | Phase 1 为 mgctl 的本地 JSON Lines 哈希链（`mgctl audit verify` 校验）；写命令在任何写入或出站请求之前先确认日志可追加，否则不执行并返回 3（I-27）；每日锚点签名与对象存储随 mg-control 在 Phase 3 |
 | 生效延迟（决策 4） | 站点 YAML 的 `not_before` 提供可选的延迟生效；Phase 1 的"重新认证 + 确认"对应 mgctl 的口令与 `bundle publish --confirm <site>` |
+
+## 勘误（2026-10-12，Phase 2 实现）
+
+结论不变。Phase 2 的变化（D-xx 见规格 [§0.3](../impl/phase2-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](../impl/phase2-spec.md#集成者裁决优先于正文)）：
+
+| 项 | Phase 2 |
+|---|---|
+| Turnstile secret（决策 5，D-51） | 按站点放在 `mg-turnstile-keys` 文件（`[当前, 上一个]`），以 systemd credential 交付，`edge.toml` `[[sites]] turnstile_keys` 引用；`mgctl turnstile secret import`、`rotate` 与 `drop-previous` 管理，Cloudflare API token 只授予 Account → Turnstile → Edit，以 age 加密保存在工作站；审计条目不含 secret |
+| 本机应急开关（D-60） | `edge.toml` `[[sites]] force_monitor = true` 是"只能经签名配置包放宽"的唯一例外，所有者在离开签名工作站时经 SSH 止损；理由与约束见 [ADR-0011](0011-local-emergency-monitor-switch.md) |
+| 新增凭据 | 近线 worker 的 Valkey ACL 口令（`mg-nearline-valkey`），以 `LoadCredentialEncrypted` 交付 |

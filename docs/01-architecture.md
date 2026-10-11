@@ -3,6 +3,8 @@
 > 本文是总纲。上游模型与 Cloudflare 集成细节见 [08](08-upstream-and-cloudflare.md)，自研交互式 Challenge 见 [09](09-interactive-challenge.md)，数据模型与保留期见 [02](02-data-flow.md)，关键取舍的记录见 [ADR](adr/README.md)。
 >
 > 本文描述各阶段的目标设计；标有"Phase 1"的内容是已落地的实现（2026-09-28 勘误）。Phase 1 的逐项契约以 [Phase 1 实现规格](impl/phase1-spec.md) 为准，进度见 [phase1-status](impl/phase1-status.md)。
+>
+> 标有"Phase 2"的内容是 Phase 2 已落地的做法（2026-10-12 勘误），逐项契约以 [Phase 2 实现规格](impl/phase2-spec.md) 为准，进度见 [phase2-status](impl/phase2-status.md)。
 
 ## 1. 目标与设计原则
 
@@ -169,6 +171,12 @@
 | `mg-edge`（`edge/`） | Pingora 接线：监听器、站点状态机、请求流水线、`/__mg/*`、事件与指标组装 | 只有它依赖 Pingora |
 | Go `control-plane/internal/*` | 策略编译器（cel-go → IR）、站点 YAML、密钥、配置包、审计日志、Cloudflare 与情报同步 | `mgctl` 在所有者工作站运行，不连 Valkey |
 
+**Phase 2 的组件**（[规格 §1](impl/phase2-spec.md#1-架构)；D-xx 见规格 [§0.3](impl/phase2-spec.md#03-决定与偏离)）：
+- **InteractiveChallengeProvider**：`self_hold`、`pow_a11y` 与 Provider 选择、交互评估、失败升级、刷新判定都是 mg-core 中的纯函数。Turnstile 不实现该 trait：siteverify 在 `mg-edge-core` 的 `outbound` 模块（`OutboundHttp` 的唯一实现，只在后台服务上运行）。所有者决定大陆访客也可以选用 Turnstile，失败自动回退；`tencent` / `aliyun_v2` 不再规划（D-70）。
+- **Near-line Worker**：Go 命令 `mg-nearline`，窗口状态在 worker 内存中，不在 Valkey；检测器 v1 有扫描器、凭证共享、挑战滥用、高速率四个，verdict 只抬高风险（D-53，[02 §4](02-data-flow.md#4-近线会话与实体分析)）。
+- **Web SDK v1**：版本 0.3.0，站点模板自己引用 `/__mg/s/mg.js`，不做 Edge 侧注入（D-39）。
+- **新增代码**：`mg-challenge` 增加交互式 C、PoW v2、JWK / ES256 验签（`aws-lc-rs`，只验签）、`MG-Proof`、凭证 v2 与 Turnstile `cData`；`mg-edge-core` 增加 `jti` 与 token 重放集合、`mg:ev` v2、唯一的遥测解析、关闭时的事件刷写与出站 HTTP；Go 增加 `internal/turnstile`、`internal/nearline` 与 `cmd/mg-nearline`。没有新增 crate。
+
 ## 6. 接入模式
 
 **结论**：个人版只有一种主形态——Edge 作为反向代理位于源站之前；前面是谁、如何认证、能提供哪些信号，由每个监听器配置的 `UpstreamProfile` 描述。原 M1–M5 中"M1 位于 CDN 之后"的笼统说法由 UpstreamProfile 取代；其余形态降为按需。
@@ -294,6 +302,12 @@
 
 `mgctl cf audit` 第 18 项（运行时指标）只在给了 `--vm-url` 时检查，否则为 `skip`：不计入错误，但也不是通过，[规格 §18](impl/phase1-spec.md#18-验收映射) 的"全绿"要求第 18 项另有证据。本机跑着 VictoriaMetrics 时直接 `--vm-url http://127.0.0.1:8428`。没有时，用 Edge 自己的 `metrics_listen` 做同样的判断：
 
+**Phase 2 的单机形态**（D-38，[规格 §19](impl/phase2-spec.md#19-所有者运维手册代码之外) 第 1a、1b 步）：
+- Phase 2 的共享与一次性状态以 Valkey 为准：近线的输入 `mg:ev` 与输出 `mg:v:*`、`MG-Proof` 的 `jti`、Turnstile token 重放集合、跨重启仍有效的交互式 C nonce。单机推荐本机 Valkey：`mode = "valkey"`、`local_replay_authoritative = true`、配置包 `events.stream = true`。
+- 打开 `events.stream` 之前先设 `maxmemory = 24 小时峰值 × 2 + stream_maxlen × 400 B`：`noeviction` 下内存不足会让 `XADD` 与限速写入失败。
+- Valkey 只监听回环或 unix socket（`unixsocketperm 770`）。ACL 用户有两个：Edge（增加 `~mg:jti:* ~mg:jc:* ~mg:rp:*`）与 `mg-nearline`（只能读 `mg:ev`、读写本站点的 `mg:v:<site>:*`）。
+- `mode = "local"` 继续支持，按以下方式降级：没有近线与 verdict；`jti` 与 token 重放用进程内集合（不逐出，溢出即"不可用"）；本进程启动前签发的交互式 C 按"重放存储不可用"处理（续期 429，提交按 I-30），所以每次 reload 后进行中的交互式挑战在 10 分钟内无法续期，`--check-config` 为此给出警告。
+
 1. 记下 `systemctl show -p MainPID mg-edge` 与 `curl -s http://127.0.0.1:9901/metrics`（端口按 `edge.toml`）的输出，24 小时后再记一次。两次 `MainPID` 必须相同：重启或 `reload` 会让计数器归零，此时重新开始计时。
 2. 两次之间的增量里，`mg_cf_connecting_ip_missing_total{site=…}`、`mg_upstream_auth_failures_total{reason="bad_secret_header"}`、`mg_cf_foreign_worker_total{site=…}` 都必须为 0，否则判为失败（与第 18 项相同）。
 3. `mg_upstream_signal_missing_total{profile="cloudflare"}` 按 `signal` 取增量（`hdr-names` 除外），最大值除以 `mg_requests_total` 的增量之和，应小于 1%；`mg_requests_total` 增量为 0 说明这 24 小时没有流量或拿错了 Edge，不能作为证据。
@@ -329,6 +343,8 @@
 | 情报数据过期（含 Cloudflare IP 段同步失败） | 按数据年龄衰减相关信号置信度（Phase 1 未实现衰减）；IP 段沿用上一份快照并告警。Phase 1：`crawler sync` 抓取失败的运营方沿用旧段并标记 `stale`；`cf audit` 第 19 项检查 IP 段快照在 48 h 内 |
 | 模型加载失败 | 回退到规则评分 |
 
+Phase 2 的降级补充（[规格 §5.1](impl/phase2-spec.md#51-交互式是否可用改-d-08)、§8.6）：Turnstile 熔断（60 s 内连续 5 次不可用即打开 30 s，倍增至 300 s）与 secret 错误自动禁用由 Edge 进程内维护，重启后丢失；配置包关闭交互式或 SDK 目录换回 manifest v1 时，交互式按 `pow` 执行，进行中的交互式 C 换成 `pow` 新 C，不计失败；近线 worker 停止时 stream 按 `MAXLEN ~` 截断，已写的 verdict 按 TTL 过期，Edge 照常按规则评分。
+
 **Phase 1 的重放存储降级**（[规格 §9.7](impl/phase1-spec.md#97-状态层valkeywp-c3-实现wp-e1b--e1c-接线)，D-35、I-30）
 
 | 情况 | 行为 |
@@ -339,6 +355,8 @@
 | 带 `ruc` 的凭证 | `fail_closed` 路由不接受：视为没有有效凭证、重新挑战，重放存储仍不可用时提交得到 429；其他路由照常接受；决定事件记录 `token.replay_unchecked` |
 
 **全局 monitor 开关**：一键把全部站点切为只记录、不处置（Phase 1 验收要求以此模式运行 ≥ 1 周）。Phase 1 为站点级开关：签名配置包的 `monitor_only`（站点 YAML 缺省 `true`），引擎的决定照常记录并标 `dry_run`，请求按 ALLOW 转发；协议输入超限不拒绝、跳过求值（I-2）。**"受攻击模式"**：站点级开关，临时提高先验风险、收紧限速、对新会话默认无感 Challenge（Phase 1 未实现）。
+
+**Phase 2 的本机应急开关**（D-60，[ADR-0011](adr/0011-local-emergency-monitor-switch.md)，[规格 §9.6](impl/phase2-spec.md#96-本机应急开关d-60)）：`edge.toml` `[[sites]] force_monitor = true` 让该站点整站只记录，覆盖配置包的 `monitor_only = false` 与路由级 `mode: enforce`；经 SSH 改文件后 `systemctl reload mg-edge` 即生效，不需要签名工作站。它是"只能经签名配置包放宽"的唯一例外：每次加载打 WARN 日志（生效期间每小时一次），`mg_site_forced_monitor{site} = 1`，持续超过 1 小时告警，决定事件带 `forced_monitor: true`。止损之后签发并部署一个 monitor 配置包，再撤销 `force_monitor`。
 
 ## 9. 技术选型建议
 
@@ -371,6 +389,8 @@
 | Mobile SDK | 仅在需要时 | — |
 | IP 数据 | MaxMind GeoLite2（IP / ASN / 地理），Rust 用 `maxminddb` 0.32 读取；mmdb 作为签名配置包引用的工件下发 | Cloudflare 头只作交叉校验；记录数据年龄（工件的 `version` 取 mmdb 的 `build_epoch`） |
 | 进程与部署 | systemd（Edge）+ docker compose / systemd（有状态组件） | 不用 Kubernetes |
+
+Phase 2 对上表的修正：HTML 注入不做（D-39），站点模板自己引用 `/__mg/s/mg.js`；ES256 验签用 `aws-lc-rs`（已在锁文件中，reqwest / rustls 本来就编译它；生产路径从不持有私钥）；近线 worker 的 Valkey 客户端为 Go 的 `valkey-go`（I-46）；Turnstile siteverify 经 reqwest（`no_proxy()`，User-Agent `morphgate-dev-tooling`），只允许精确的 siteverify URL。
 
 **JA4 / JA4+ 许可**（非法律意见）
 

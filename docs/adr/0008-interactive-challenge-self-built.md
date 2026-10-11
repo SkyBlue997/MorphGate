@@ -1,7 +1,7 @@
 # ADR-0008：交互式 Challenge 自研（按住验证）+ 可插拔 Provider，Turnstile 仅用于非大陆访客
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：Provider 实现位置、a11y 封顶与 TTL）；2026-09-28 勘误：Phase 1 的 PoW 实现与阶段性行为（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-08、D-12、D-27、D-37，见文末"勘误"）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：Provider 实现位置、a11y 封顶与 TTL）；2026-09-28 勘误：Phase 1 的 PoW 实现与阶段性行为（依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-08、D-12、D-27、D-37，见文末"勘误"）；2026-10-12 勘误：Phase 2 实现口径（依据 [Phase 2 实现规格](../impl/phase2-spec.md) D-43、D-49、D-50、D-51、D-56、D-65、D-68、D-70，见文末"勘误"）
 - 相关：[09 自研交互式 Challenge](../09-interactive-challenge.md)、[04 Challenge 与访问凭证](../04-challenge-and-tokens.md)、[ADR-0005](0005-token-and-sealed-challenge-format.md)
 
 ## 背景
@@ -48,6 +48,21 @@
 | PoW 实现（决策 1，D-12） | 浏览器端在 Web Worker 中用纯 JS SHA-256 同步搜索（前缀预先填好，每次尝试只做一次压缩），WebCrypto 只做启动自检：`crypto.subtle.digest` 逐次异步调用，hashcash 搜索慢一个数量级以上。算法 `sha256-hashcash-v1`（规格 [§6.3](../impl/phase1-spec.md#63-pow)），交互式沿用 |
 | 失败升级（D-27） | 失败后附的新 C 为风险段更高的 `pow`（`attempt_no` 保持 0，它只用于交互式）；次数由失败配额约束 |
 | 签发配额（D-37） | 按 ipp / ASN 的凭证签发配额已强制执行（超额 429），交互式沿用 |
+
+## 勘误（2026-10-12，Phase 2 实现）
+
+结论（交互式 Challenge 自研、可插拔 Provider、外部 Provider 绝不 fail-open）不变。Phase 2 中与本 ADR 不同的做法（D-xx 见规格 [§0.3](../impl/phase2-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](../impl/phase2-spec.md#集成者裁决优先于正文)）：
+
+| 项 | Phase 2 |
+|---|---|
+| Turnstile 的地区（决策 5，D-70） | 所有者决定（2026-10-12）大陆与国家未知的访客也可以选用 Turnstile，标题与决策 5 中"仅用于非大陆访客"不再成立；不另提供 Turnstile 以外的外部方案。没有硬编码的 `denied_regions`，`deny_countries` 缺省为空，所有者可以写 `CN` 恢复排除。大陆访客的 api.js 加载失败、控件报错或 siteverify 不可用时自动回退到内置验证，不计失败。被选中的大陆访客的 IP 经 siteverify 发给 Cloudflare，隐私说明须写明 |
+| 大陆 Provider（决策 6） | `tencent` / `aliyun_v2` 不再规划（D-70） |
+| 无障碍路径（决策 2，D-65、D-56） | 键盘路径与"无法按住？"合并为单次激活：按一次或点一次，控件自动走完时长与 PoW 后提交，不要求按住，也不要求第二次按下；指针按住只在抬起时提交。站点账号替代（passkey / 邮件链接）推迟 |
+| PoW（决策 1，D-43） | 交互式用 `sha256-hashcash-v2`，k 个子题；`self_hold` 与 `pow_a11y` 的难度分别密封在 C 中；绑定续期完成后立即开始，不等按下 |
+| Provider 配置（决策 3、5，D-51） | 配置包只放公开配置，回退只能是 `self_hold`（`fail_closed` 只降低可用性）；secret 在 `edge.toml` 引用的 `mg-turnstile-keys` 文件中。Turnstile 不实现 `InteractiveChallengeProvider`，siteverify 在 `mg-edge-core` 的 `outbound` 模块 |
+| 评分与证据（D-49、D-68） | 只交付 shadow；`self_hold` 的检查除服务端时间窗外都依赖客户端自报的数据，所以交互级凭证的人类证据保持 −0.4，不是 03 §4.1 的 −0.8 |
+| 失败升级（D-50） | 失败附交互式新 C，`attempt_no > N` 时 `pow_a11y` 置首；次数上限由失败配额执行 |
+| CI（后果） | 不用 Cloudflare 的测试 sitekey / secret，全部用回环 mock siteverify（D-52） |
 
 ## 参考
 

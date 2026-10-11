@@ -4,6 +4,8 @@
 
 Phase 1（2026-09-28 勘误）只交付 §4 的密封格式中 `invisible` / `pow` 用到的部分，以及 §12 的防重放与配额的对应子集；各节的"Phase 1"段落给出实际做法，细节以 [Phase 1 实现规格](impl/phase1-spec.md) 为准（D-xx 见规格 [§0.3](impl/phase1-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](impl/phase1-spec.md#集成者裁决2026-09-28优先于正文)）。规则或矩阵要求 `interactive` 时，Phase 1 按 `pow` 执行（D-08）。
 
+**Phase 2**（2026-10-12 勘误）：`self_hold`、`pow_a11y` 与可选的 `turnstile` 已按 [Phase 2 实现规格](impl/phase2-spec.md) 交付（D-xx 见规格 [§0.3](impl/phase2-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](impl/phase2-spec.md#集成者裁决优先于正文)；两者冲突时以规格为准），进度见 [phase2-status](impl/phase2-status.md)。与本文的主要差异：交互评分只交付 shadow（D-49）；键盘路径与"无法按住？"合并为单次激活（D-65）；交互式 C 固定 600 s，续期链至多 6 次（D-42）；PoW v2 分 k 个子题（D-43）；导航得到的 C 先经续期绑定会话密钥（D-41）；Provider 配置只放公开字段，回退只能是 `self_hold`（D-51）；所有者决定大陆与国家未知的访客也可以选用 Turnstile，失败时自动回退，`tencent` / `aliyun_v2` 不再规划（D-70）；交互级凭证的人类证据保持 −0.4（D-68）。各节的"Phase 2"段落给出逐项做法。交互式只在配置包 `schema_version = 2`、`challenge.interactive.enabled` 且 SDK 目录为 manifest v2 时可用（[规格 §5.1](impl/phase2-spec.md#51-交互式是否可用改-d-08)），否则仍按 D-08 以 `pow` 执行。
+
 ## 1. 定位
 
 **结论**：交互式 Challenge 不是安全边界。谜题难度挡不住自动求解与人工代解，通过只是**封顶的人类证据**（[03](03-risk-scoring.md) §4.1）。它的价值只来自五项服务端机制：
@@ -45,6 +47,8 @@ Phase 1（2026-09-28 勘误）只交付 §4 的密封格式中 `invisible` / `po
 
 大陆访客如需熟悉的滑块，接入 `tencent` / `aliyun_v2`（§9），不自研。
 
+Phase 2：大陆 Provider 不再规划（D-70）。大陆访客用内置的 `self_hold` / `pow_a11y`，所有者配置了 Turnstile 时同样可能被选中，失败时自动回退（§7）。
+
 ## 2. v1 交互设计
 
 **结论**：自研"按住验证（Hold to verify）"。按住期间在 Web Worker 中运行 PoW，用按住时长掩盖 PoW 延迟。不含认知测试、不是拖动、可键盘操作、第一方 `/__mg/` 提供，大陆可用。
@@ -63,6 +67,12 @@ Phase 1（2026-09-28 勘误）只交付 §4 的密封格式中 `invisible` / `po
 | 资源 | 全部第一方：`/__mg/s/{build}.js`（内容哈希，可缓存）及懒加载的交互模块；不引用第三方域名、字体、统计脚本；SDK 核心 ≤ 30 KB gzip |
 | 载体 | HTML 导航：403 Challenge 页面；XHR：SDK 覆盖层（`role="dialog"`，焦点限制在对话框内，Esc 取消并向调用方返回错误）。响应头按 [04](04-challenge-and-tokens.md) §9 |
 
+**Phase 2**（[规格 §6.3](impl/phase2-spec.md#63-ui_seed-派生)、[§6.4](impl/phase2-spec.md#64-pow-v2d-43)、[§7.2](impl/phase2-spec.md#72-明文参数-ixd-44)、[§12.6](impl/phase2-spec.md#126-交互式控件)）：
+- 按住时长与按钮偏移由 `ui_seed` 派生（1200–2500 ms，偏移 ±16 / ±8 px），经明文参数 `ix` 交给 SDK 渲染；服务端从 C 重算，从不信任 `ix`（D-44）。没有单独的 `pow_salt`。
+- PoW 改为 `sha256-hashcash-v2`：`digest_i = SHA-256("mg-pow-v2" ‖ 0x00 ‖ SHA-256(C) ‖ u8(i) ‖ u64be(counter_i))`，k 个子题（缺省 8）都要达到难度；`self_hold` 与 `pow_a11y` 的难度分别密封在 C 中（`pow.difficulty`、`pow.a11y_difficulty`）。上表的 `SHA-256(C.nonce, pow_salt, counter)` 作废：SDK 不解析 C，拿不到 nonce（D-43）。缺省难度：`self_hold` 每个子题按风险段 14 / 16 / 18 / 19 位，`pow_a11y` 17 位，按 shadow 期的 `pow.ms` 校准。
+- PoW 在绑定续期完成后立即在 Worker 中开始，不等用户按下；松开不终止，切换 Provider 时保留已完成的子题（I-54）。交互式 PoW 没有客户端总时限。
+- 载体：HTML 导航为挑战页模板 v2。不做页内覆盖层（D-57）：SDK 遇到交互式 JSON 挑战时跳转 `/__mg/v?ret=<页面路径>&min=interactive`（D-58），解出后回到原页面。
+
 ### 2.2 界面状态
 
 ```
@@ -77,6 +87,14 @@ READY --"verify without interaction"--> POW_A11Y --pow done--> SUBMITTING
 READY / TOGGLE_READY --C at ~80% life, idle--> silent renew (no visible change)
 any --cf-mitigated: challenge--> top-level reload (upstream challenge, not a failure)
 ```
+
+**Phase 2**（D-65，[规格 §12.6](impl/phase2-spec.md#126-交互式控件)）：
+- 状态机改为 `LOADING → BINDING`（首次绑定续期，D-41）`→ READY`。
+- 指针按住只在抬起时提交：抬起时指针仍在控件内、且已达到时长（WCAG 2.5.2）。提前松开、`pointercancel`、指针移出、窗口失焦或页面隐藏一律回到 `READY`，不计失败。
+- 键盘的 Space / Enter、读屏合成的点击与短按都进入单次激活（`WAITING`）：控件自动走完时长与 PoW 后提交。`TOGGLE_READY` 与 `WAIT_PROMPT` 删除。
+- Turnstile 为当前 Provider 时处于 `EXTERNAL` 状态，同时保留"改用按住验证"。
+- 失败附新 C 时回到 `READY`；没有新 C、429、15 s 无应答或网络错误时重新加载页面，从不重发同一个 C。超过次数上限的临时阻断由服务端的失败配额执行（D-50）。
+- 续期在 `READY` 与 `EXTERNAL` 状态进行（I-54），结果从不改变状态文字。
 
 ### 2.3 文案规范
 
@@ -101,6 +119,8 @@ any --cf-mitigated: challenge--> top-level reload (upstream challenge, not a fai
 | 无 JS | 此页面需要启用 JavaScript 完成验证。请求 ID：{request_id} | JavaScript is required to complete this check. Request ID: {request_id} |
 | 隐私链接 | 隐私说明 | Privacy |
 
+**Phase 2**：文案以 [规格 §12.7](impl/phase2-spec.md#127-文案zh-cn--en) 为准。切换入口改为"无法按住？改为按一下"，删除"现在再按一次"；无障碍入口改为"改用自动验证（较慢）"；另有"可以松开了"、"请允许本站使用 Cookie 后重试"、"当前浏览器无法完成验证…"等状态文字。页面语言按 `Accept-Language` 的第一个标签选择，都不匹配时取站点的 `challenge.default_lang`；"排查问题"与"隐私说明"链接指向站点配置的 `help_path` 与 `privacy_path`。
+
 ## 3. 无障碍路径与 WCAG 对照
 
 **结论**：v1 必须同时交付键盘、切换模式、`pow_a11y` 三条路径；自研路径不含任何认知测试，在登录等认证流程中也满足 3.3.8 / 3.3.9。enforce 前用 VoiceOver、NVDA、TalkBack 实测。
@@ -117,6 +137,12 @@ any --cf-mitigated: challenge--> top-level reload (upstream challenge, not a fai
 
 通用要求：按钮用原生 `<button>`，`aria-describedby` 指向目的说明；进度用 `aria-live="polite"`，只在开始与完成时播报；`prefers-reduced-motion` 下关闭动画，改为分段填充；用户选过 C 路径后，本站后续 Challenge 默认把 `pow_a11y` 放在首位（第一方偏好 Cookie，不含标识）。
 
+**Phase 2**（D-65、D-56，[规格 §12.6](impl/phase2-spec.md#126-交互式控件)、[§7.9](impl/phase2-spec.md#79-失败升级与配额)）：
+- 路径 A、B 合并为**单次激活**：在按钮上按一次 Space / Enter、点一次，或点"无法按住？改为按一下"，控件就自动走完所需时长与 PoW 后提交，签发 `interactive`。它既不要求按住，也不要求第二次按下：WCAG 2.1.1 的 Understanding 文档把"按住某个键一段时间才生效"列为特定时序要求，原设计的第二次按下同样依赖时机。遥测 `ix.mode` 取 `hold` / `single` / `pow_only` / `external`，不再记录 `key_autorepeat_count` 与 `release_latency_after_prompt_ms`。
+- 路径 C：凭证 TTL 缺省 900 s（`ttl_interactive_a11y_s`，300–3600），不可刷新；签发配额 `mg.a11y.issue` 强制执行（按 `ip` 实体 6 次 / 小时，按 `ipp` 120 次 / 小时），超限时附新 C 并把单次激活放在首位，不计失败。
+- 偏好：用户以 `pow_a11y` 通过后，Edge 写 `__Host-mg_a11y=1`（HttpOnly，SDK 不读写，不进入策略字段、事件与 `mg:ev`），以 `self_hold` 通过时删除。
+- 路径 D（站点账号替代）推迟：`self_hold` 与 `pow_a11y` 都不是认知测试，已满足 3.3.8；站点账号替代需要源站到 Edge 的签名断言，另行设计（D-56）。
+
 **策略约束**：路由要求最低 `lvl: interactive` 时，必须同时接受 `interactive_a11y` 与 `interactive_ext:*`。三者的人类证据封顶相同（[03](03-risk-scoring.md) §4.1 的 −0.8），差异只在 TTL 与配额（[04](04-challenge-and-tokens.md) §5）。
 
 ### 3.2 WCAG 2.2 对照
@@ -129,6 +155,8 @@ any --cf-mitigated: challenge--> top-level reload (upstream challenge, not a fai
 | 2.5.8 目标尺寸（最小） | AA | 目标 ≥ 24×24 CSS px | ≥ 44×44 CSS px |
 | 3.3.8 无障碍认证（最小） | AA | 认证流程不得要求认知功能测试，除非有替代方式等例外 | 按住与 PoW 都不是认知测试；站点有登录时另提供 passkey / 邮件链接 |
 | 3.3.9 无障碍认证（增强） | AAA | 去掉物体识别与个人内容两项例外 | 自研路径不含物体识别；点选 / 图像类 Provider 永远不是唯一选项 |
+
+**Phase 2**：2.2.1 一行的"切换模式第二次按下无时限"由单次激活取代（D-65）；另满足 2.1.1（单次激活，不需要按住按键）、2.5.2（指针在抬起时提交，可以中止）与 4.1.3（每次状态转移的文字经 `#mg-status` 播报一次）。3.3.8 一行不再提供 passkey / 邮件链接（D-56）。改为 enforce 之前，所有者用辅助技术与仅键盘的方式完成实测（[规格 §19](impl/phase2-spec.md#19-所有者运维手册代码之外) 第 5 步）。
 
 ## 4. 密封 Challenge
 
@@ -149,6 +177,8 @@ ct = XChaCha20-Poly1305.seal(k_epoch[kid], xnonce, prost(SealedChallengeClaims),
 | 密钥 | `k_epoch` 与 Turnstile `cData` 的 `k_bind_epoch`（§8.2）由按站点根密钥 `K_seal_root` 以 HKDF 按日派生（info 不同），24 小时轮换；派生方式见 [04 §4.1](04-challenge-and-tokens.md#41-密封-challenge-与验证顺序)。Phase 1：根密钥 1–2 个，`roots[0]` 封装、全部用于打开（D-30）；接受窗口收紧为当前 epoch，日界后 125 s 内另接受上一个，日界前 5 s 内另接受下一个（窗口按 C 的最长寿命 120 s + 5 s 时钟偏差计，Phase 2 引入约 10 分钟的交互式 C 时随之放宽） |
 | 状态 | 下发时不写存储；只在提交时写一次性 nonce（§12.1） |
 | 长度与编码（Phase 1） | `len(C) ≤ 1024`；信封 `v = 1`、`kid = "e<epoch_no>"`、24 字节 `xnonce`；`aad = u16be(len) ‖ host ‖ u16be(len) ‖ type ‖ u16be(len) ‖ kid`，`host` 为小写、去端口与末尾点的请求主机名；`open` 只接受 `seal` 写出的规范编码（未知字段、重复字段、字段乱序、非最短 varint 一律拒绝，I-18），因为 PoW 前缀（以及 Phase 2 的签名）覆盖的是 C 的文本（[规格 §6.2](impl/phase1-spec.md#62-密封-c)） |
+
+**Phase 2**（D-42，[规格 §6.1](impl/phase2-spec.md#61-寿命与-epoch-窗口改-phase-1-61i-18)）：接受的 epoch 改为：当前 epoch，日界后 605 s 内另接受上一个（交互式 C 最长寿命 600 s 加 5 s 时钟偏差），日界前 5 s 内另接受下一个，所有类型共用。`seal` 与 `open` 的寿命上限按类型检查：交互式 600 s，其他 120 s。新的已知答案向量在 `testdata/phase2/kat.json`，Phase 1 的 `accepted_epochs` 向量作废。`len(C) ≤ 1024` 不变，交互式 C 约 560 字符。
 
 ### 4.2 Claims
 
@@ -176,6 +206,13 @@ ct = XChaCha20-Poly1305.seal(k_epoch[kid], xnonce, prost(SealedChallengeClaims),
 
 绑定项的阶段与强度以 [04](04-challenge-and-tokens.md) §5 为准，每个绑定哈希 16 字节。非 GET 导航触发 Challenge 时，`ret` 取站点配置的回退路径（如表单页），不重放原请求体；XHR 由 SDK 在通过后重试原请求。Phase 1：GET / HEAD 的挑战（包括 JSON 挑战）取原始 `path[?query]`（校验失败或 > 512 字节时用 `fallback_ret`），其他方法用 `fallback_ret`；提交失败时若提交的 `ret` 与 C 中的哈希不符（原 `ret` 未知），新 C 用 `fallback_ret`。
 
+**Phase 2**（[规格 §3.1](impl/phase2-spec.md#31-challengeproto04-落地)、[§6.2](impl/phase2-spec.md#62-密封-claims-的-phase-2-规则sealedchallengeclaimscheck字段在-04-落地)、D-41）：
+- 新增 `renew_no`（本条续期链中已续期的次数，0–6）；`pow` 增加 `k` 与 `a11y_difficulty`。所有类型的 C 都必须带 PoW（I-43）。
+- 交互式 C 的 `providers` 必须含 `pow_a11y`，是 `{self_hold, pow_a11y, turnstile}` 的子集；`attempt_no` 从 1 起。
+- `bind.jkt = bind_hash("jkt", jkt)`。导航得到的交互式 C 起初不绑定：SDK 在用户操作之前先调用 `/__mg/c/renew`，把新 C 绑定到自己的会话密钥（bind-on-first-use，计一次续期）。非交互式 C 只在触发请求带有效 `MG-Proof` 时绑定。
+- 已绑定的 C 换密钥提交，或以没有签名的 v1 提交，一律失败（`ic.bind_jkt`）。未绑定的 C 在 UA 家族不同、或 /24 与 ASN 都不同时失败；同一 ASN 内换 /24 只记 `ic.bind_ipp_soft`（Phase 1 的软绑定，已知边界）。
+- `attempt_no` 不再在 C 中与 M 比较：次数上限由失败配额执行（§11.3）。
+
 ### 4.3 有效期与续期
 
 | 对象 | 有效期 | 说明 |
@@ -187,6 +224,12 @@ ct = XChaCha20-Poly1305.seal(k_epoch[kid], xnonce, prost(SealedChallengeClaims),
 | 阿里云验证参数 | 单次；初始化记录 20 分钟；V3 架构下行为验证到服务端验证间隔 > 90 s 返回 F019 | 阿里云规定 |
 
 续期规则（端点、nonce 消费、继承字段、链上限、失败处理）以 [04 §3.1](04-challenge-and-tokens.md#31-状态机) 为准。界面层面：SDK 只在用户未操作时续期，`ui_seed` 继承，按住时长与按钮位置不变；第三方 Provider 的 `cData` 随 nonce 变化，续期后 SDK 重新渲染其 widget（`turnstile.remove` 后重建）。
+
+**Phase 2**（D-42、I-54、I-55，[规格 §7.4](impl/phase2-spec.md#74-post-mgcrenew续期与首次绑定d-41d-42)）：
+- 交互式 C 固定 600 s。SDK 在服务端时间 `iat + 480 s` 之后、控件处于 `READY` 或 `EXTERNAL` 时续期；PoW 开始前剩余寿命不足 120 s 也先续期。一条续期链至多 6 次（`renew_no`），约 1 小时。
+- 续期可以打开过期不超过 1 小时的 C（标签页休眠）：先消费旧 nonce，再附新 C。为此交互式 C 的 nonce 保留约 70 分钟（I-55）。一个旧 C 只能续出一个新 C；nonce 已用过时不附新 C，SDK 重新加载页面。
+- 续期与新 C 继承 `ui_seed`，按住时长与按钮位置不变；Provider 按当前请求重新判断（§7）。
+- Turnstile token 仍为 300 s；腾讯、阿里云两行不再适用（D-70）。
 
 ### 4.4 提交格式
 
@@ -207,6 +250,12 @@ ct = XChaCha20-Poly1305.seal(k_epoch[kid], xnonce, prost(SealedChallengeClaims),
 ```
 
 **Phase 1 的提交**（[规格 §10.3](impl/phase1-spec.md#103-post-mgc)）没有 Provider、交互遥测与会话密钥：`{"v":1,"type","c","pow":{"counters":[n]},"ret","ts","build","env","auto"}`，以表单字段 `mg`（导航提交，成功 303）或 `application/json`（fetch，成功 200）发送；JSON 为 UTF-8、嵌套 ≤ 16、对象键不得重复，顶层未知字段忽略；`env` / `auto` 按 SDK schema 解析，失败视为缺省。
+
+**Phase 2 的提交**（[规格 §7.5](impl/phase2-spec.md#75-post-mgc-v2)、[§6.5–§6.6](impl/phase2-spec.md#66-提交签名与续期签名)）：
+- 格式为 `{"v":2,"type","c","p","pp","t","pow":{"counters":[…]},"ret","ts","build","jwk","sig"}`。交互式由 SDK 用 fetch 以 JSON 提交；非交互式照旧以表单导航提交。
+- `pp` 与 `t` 是字符串字段：`t` 内是含 `env`、`auto`、`ix` 的 JSON，≤ 2048 字节；Turnstile 时 `pp` 为其 token。
+- 签名消息为 `"mg-sub-v2" ‖ 0x00` 之后依次带长度前缀的 `c`、`type`、`p`、`H(pp)`、`H(t)`、计数器串、`ret`、`u64be(ts)`、`build`；用提交中的 JWK（恰好 `kty`、`crv`、`x`、`y` 四个成员）以 ES256 验证，签名为 64 字节 `r ‖ s`，DER 编码拒绝。
+- `v = 1` 的提交仍接受，只用于 `invisible` / `pow`，签发的凭证没有 `cnf`；C 已绑定密钥时 v1 提交一律失败。
 
 ## 5. 生命周期
 
@@ -263,6 +312,11 @@ sequenceDiagram
 | 上游挑战 | 收到 `cf-mitigated: challenge` 时 SDK 顶层重载并上报，不计失败（[08](08-upstream-and-cloudflare.md) §2.8） |
 | 事件 | DecisionEvent + `ChallengeResult`（[02](02-data-flow.md) §7），只含内部 reason code |
 
+**Phase 2**：时序与上图相同，另有三点：
+- 首次续期在用户操作之前完成绑定（D-41）。
+- Turnstile token 的重放键与 nonce、签发配额在同一个 Lua 脚本 `mg_nonce_issue` v2 中写入，之后才调用 siteverify（[规格 §14.2](impl/phase2-spec.md#142-lua-脚本)）。
+- 外部 Provider 只有 Turnstile。失败时附的新 C 按 D-50 升级（§11.3）。
+
 ## 6. Provider 接口
 
 **结论**：trait `InteractiveChallengeProvider` 与 `self_hold`、`pow_a11y` 实现在 mg-core（纯计算、无 I/O、可编译到 `wasm32-unknown-unknown`）；需要出站校验的 `turnstile`、`tencent`、`aliyun_v2` 在 mg-edge 实现，通过注入的 `OutboundHttp` 做网络 I/O。
@@ -301,6 +355,11 @@ pub trait OutboundHttp: Send + Sync {         // host-controlled egress: allowli
 
 外部 Provider 的通过**不能单独签发凭证**：只有在有效的密封 C、已消费的 nonce、绑定与会话密钥签名都通过的前提下，才采纳其结果。
 
+**Phase 2**（D-51，[规格 §8.4](impl/phase2-spec.md#84-siteverifyoutboundhttpwp-c6)，I-48、I-57）：
+- `on_unavailable` 的缺省改为 `UseProvider(self_hold)`。
+- `self_hold` / `pow_a11y` 的 `verify` 不做网络调用，直接 `Pass`；硬检查与评分由纯函数 `assess_interaction` 完成。`select_providers`、`turnstile_eligible` 与 `next_challenge_after_failure` 同样在 mg-core。
+- Turnstile 不实现该 trait：siteverify 由 `mg-edge-core` 的 `outbound` 模块完成（`OutboundHttp` 的唯一实现，在后台服务 `mg-outbound` 上运行），`cData` 由 mg-challenge 计算。`BindingMac` 与 `VerifyCtx.binder` 在 Phase 2 不使用。
+
 ### 6.2 能力对照
 
 | 能力 | `self_hold` | `pow_a11y` | `turnstile` | `tencent` | `aliyun_v2` |
@@ -318,6 +377,8 @@ pub trait OutboundHttp: Send + Sync {         // host-controlled egress: allowli
 | 签发 `lvl` | `interactive` | `interactive_a11y` | `interactive_ext:turnstile` | `interactive_ext:tencent` | `interactive_ext:aliyun_v2` |
 | 实现位置 | mg-core | mg-core | mg-edge | mg-edge | mg-edge |
 | 阶段 | Phase 2 | Phase 2 | Phase 2（非大陆） | Phase 4 可选 | Phase 4 可选 |
+
+Phase 2（D-70）：`turnstile` 没有硬编码的 `denied_regions`，国家排除由所有者在配置的 `deny_countries` 中写出（缺省为空）；`tencent` / `aliyun_v2` 两列不再规划。
 
 ### 6.3 配置
 
@@ -353,6 +414,12 @@ challenge:
 | `fallback` | 外部 Provider 只允许 `self_hold` 或 `fail_closed`；控制面编译时拒绝 fail-open |
 | `regions` | 只能在 capabilities 的 `denied_regions` 之上追加 |
 
+**Phase 2 的配置**（D-51，[规格 §8.2](impl/phase2-spec.md#82-配置与校验)、[§10.2](impl/phase2-spec.md#102-站点-yaml-新字段wp-g4)，I-51）：
+- 配置包只放公开配置：`sitekey`、`hostnames`（widget 中的精确 FQDN，必须是站点主机名）、`routes`、`selection`（`first` / `escalate_after_fail`）、`mode`（`shadow` / `enforce`）、`timeout_ms`（1000–5000）、`fallback` 与 `deny_countries`。Phase 2 至多一个 Provider（`turnstile`）。
+- `fallback` 只能是 `self_hold`。`fail_closed` 与 `fail_open_with_signal` 都被构建器与 Edge 拒绝：内置 Provider 总在集合中，访客随时可以改用它们，`fail_closed` 不增加保护，只降低可用性。
+- secret 不进配置包，也不用 `secret_ref`：它是部署属性，放在 `edge.toml` `[[sites]] turnstile_keys = "cred://…"` 指向的 `mg-turnstile-keys` 文件中（1–2 个值，当前值在前）。配置包启用了 Turnstile 而缺少该文件时，`--check-config` 失败。
+- 未写明时的缺省值：`enabled: true`、`selection: escalate_after_fail`、`mode: shadow`、`timeout_ms: 4000`。`regions`、`pre_clearance` 与 `budget` 不实现。
+
 ## 7. Provider 选择策略
 
 **结论**：默认所有访客 `self_hold`（附 `pow_a11y`）；**中国大陆访客永不选用 Turnstile**；外部 Provider 不可用时回退自研或 fail-closed，绝不 fail-open；选定的集合密封在 C 中。
@@ -375,6 +442,18 @@ challenge:
 
 Turnstile pre-clearance 默认关闭，只在所有者同一 zone 还使用 Cloudflare WAF 挑战时开启；`cf_clearance` 对 MorphGate 不透明，**永远不作为证据**。
 
+**Phase 2**（D-70，[规格 §5.4](impl/phase2-spec.md#54-provider-选择纯函数)、[§8.1](impl/phase2-spec.md#81-国家判定)，I-57）：所有者决定（2026-10-12）大陆与国家未知的访客也可以选用 Turnstile，取消本节"中国大陆访客永不选用 Turnstile"的硬编码规则。
+- Turnstile 只在以下条件**全部**满足时可选：
+  - 已配置且可用：有 secret、未禁用、熔断未打开；
+  - `routes` 为空或包含本路由；
+  - 没有命中路由带 `redact_path`：这类 URL 可能含一次性令牌，不让第三方脚本运行在这样的页面上；
+  - 请求 Host 精确等于 `hostnames` 之一；
+  - `deny_countries` 为空；或者国家已知，且 GeoLite2 与认证过的 `cf-ipcountry` 都不在其中（任一来源命中即不提供，国家未知同样不提供）。
+- 所有者想恢复"大陆访客不用 Turnstile"时，写 `deny_countries: [CN]`。
+- 集合从 `[self_hold, pow_a11y]` 开始。`selection: first`，或 `escalate_after_fail` 且 `attempt_no > N`（缺省 2）时，`turnstile` 放在首位；`attempt_no > N` 时 `pow_a11y` 移到 `self_hold` 之前；有偏好 Cookie 时 `pow_a11y` 置首。
+- 续期与提交时按当前请求重新判断上述条件，不再满足则去掉 Turnstile、不调用 siteverify。`redact_path` 按 C 的 `route_class` 所指路由判断，提交时再加上 `ret` 命中的路由；配置包中已不存在的路由从不提供 Turnstile。
+- 双 Provider 升级、预算保护与大陆 Provider 不实现；pre-clearance 恒关闭。
+
 ### 7.2 回退
 
 | 事件 | 处理 | 计入失败 |
@@ -387,6 +466,11 @@ Turnstile pre-clearance 默认关闭，只在所有者同一 zone 还使用 Clou
 
 `FailOpenWithSignal` 只用于非 `critical` 路由上整个 Challenge 子系统不可用的情况（如重放存储不可用，§12.5），不用于外部 Provider。
 
+**Phase 2**（[规格 §8.3](impl/phase2-spec.md#83-客户端参数与-csp)、[§8.5](impl/phase2-spec.md#85-通过条件与错误映射)、[§8.6](impl/phase2-spec.md#86-熔断与自动禁用)，I-50、I-57）：
+- 客户端：110xxx（110600、110620 除外）、400xxx、200100 是配置问题，立即回退（`ts_config`）；110600、110620、200500、300xxx、600xxx 先让控件自己重试一次，仍失败则回退（`ts_error`）；`unsupported-callback`（`ts_unsupported`）与 api.js 5 s 未就绪（`ts_load_timeout`）同样回退。回退切换到集合中的下一个 Provider，不消费 nonce、不计失败。
+- 服务端：`Unavailable` / `Misconfigured` 时 nonce 已消费，统一失败并附新 C，新 C 不含 Turnstile，不计失败；`critical` 路由也不能配置 `FailClosed`（D-51）。
+- 熔断：60 s 内连续 5 次 `Unavailable` 时打开 30 s，每次再打开加倍，上限 300 s，到期后半开、放行一次校验。`Misconfigured` 立即禁用，直到配置包版本变化或 reload。进程内并发上限已满（`busy`）与没有到达后台服务的校验都不计入熔断。禁用另有告警 `MgTurnstileDisabled`：禁用后不再提供 Turnstile，比例类告警会沉默。
+
 ### 7.3 预算保护
 
 | 项目 | 设计 |
@@ -396,9 +480,13 @@ Turnstile pre-clearance 默认关闭，只在所有者同一 zone 还使用 Clou
 | 腾讯计费口径 | 按前端验证计费（无论成败）→ 预算按下发（渲染）次数控制，并对单个前缀的腾讯 C 签发限速 |
 | 阿里云计费口径 | 按服务端验证请求计费；3 个免费场景外每场景 ¥5 / 天 |
 
+Phase 2：预算保护不实现。Turnstile 免费，出站并发由进程内上限（32）约束，超出按 `Unavailable` 处理、不计入熔断；付费 Provider 不再规划（D-70）。
+
 ## 8. Turnstile 适配
 
 **结论**：非大陆访客的可选、零成本 Provider。显式渲染、Managed 模式、`action` / `cData` 与 MorphGate nonce 绑定、siteverify 全字段校验、绝不 fail-open。
+
+**Phase 2**（D-70、D-52）：大陆访客同样可以选用（§7 的 Phase 2 段落）。Cloudflare 官方说明 Turnstile 不支持中国大陆：大陆访客的 api.js 加载失败、控件报错或 siteverify 不可用时，SDK 与 Edge 自动回退到 `self_hold` / `pow_a11y`，不计失败，所以大陆访客最坏是多等一次 5 s 的加载超时；实际效果在 Turnstile 启用后的 shadow 期测量（[规格 §21](impl/phase2-spec.md#21-待实测与未决)）。所有测试与 CI 只用 `edge-core` testkit 的回环 mock siteverify，从不访问 `challenges.cloudflare.com`；所有者在 staging 上用 Cloudflare 的测试 sitekey 在浏览器中手工核对一次（[规格 §19](impl/phase2-spec.md#19-所有者运维手册代码之外) 第 7 步）。
 
 ### 8.1 Widget 与控制面
 
@@ -410,6 +498,8 @@ Turnstile pre-clearance 默认关闭，只在所有者同一 zone 还使用 Clou
 | 管理 | `mgctl` 通过 Cloudflare API `/accounts/{account_id}/challenges/widgets`（create / list / get / update / delete、`rotate_secret`）管理；API Token 只授予 Turnstile Sites Write |
 | pre-clearance | 默认关闭（`clearance_level: no_clearance`）；开启时 MorphGate 不处理 `/cdn-cgi/`，CSP 追加 `connect-src 'self'` |
 | Enterprise 字段 | `metadata.ephemeral_id`、Offlabel、任意主机名仅 Enterprise，不依赖 |
+
+Phase 2（[规格 §16](impl/phase2-spec.md#16-mgctl-命令wp-g4)、[§8.7](impl/phase2-spec.md#87-secret-的存放与轮换)）：`mgctl turnstile widgets`、`turnstile secret import | rotate | drop-previous` 管理 widget 与 secret；API token 只授予 Account → Turnstile → Edit，以 age 加密保存在工作站。`rotate` 总是显式传 `invalidate_immediately`（常规轮换为 `false`，旧 secret 保留 2 小时），先读取 widget，文件中的当前值与 widget 不同时拒绝（I-51）。审计条目不含 secret。pre-clearance 不支持。
 
 ### 8.2 客户端参数
 
@@ -425,6 +515,8 @@ Turnstile pre-clearance 默认关闭，只在所有者同一 zone 还使用 Clou
 | 回调 | `callback` → 立即提交；`error-callback` / `unsupported-callback` / `timeout-callback` → §7.2；`expired-callback` → 等待自动刷新 | 续期换 C 后重新渲染 |
 | 资源提示 | `<link rel="preconnect" href="https://challenges.cloudflare.com">` | 只在选用 Turnstile 的页面 |
 
+Phase 2（[规格 §8.3](impl/phase2-spec.md#83-客户端参数与-csp)、§6.9）：只在 Turnstile 是当前 Provider 时（集合首位，或用户在控件内切换到它）由 SDK 创建带页面 nonce 的 api.js 标签；`sitekey`、`action`、`cData`、`language` 取自 `ix.turnstile`，`language` 按页面语言（I-57）；容器宽度小于 300 px 时用 `size: "compact"`；不加 preconnect。`cData = base64url_nopad(HMAC-SHA256(k_bind, "mg-ts-cdata-v1" ‖ 0x00 ‖ lp(site_id) ‖ lp(nonce)))`，校验时对每个根各算一次。续期得到新 C 后先 `turnstile.remove` 再重新渲染。
+
 ### 8.3 CSP
 
 只在 `turnstile ∈ C.providers` 的 Challenge 页面追加：
@@ -436,6 +528,8 @@ connect-src 'self'                           # only when pre-clearance is enable
 ```
 
 api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资源。先用 `Content-Security-Policy-Report-Only` 验证：2026-07-22 的 changelog 提到 `hagen.challenges.cloudflare.com` 与 `brunhild.challenges.cloudflare.com`，是否需要页面级 CSP 条目需实测。
+
+Phase 2：只在 C 提供了 Turnstile 的挑战页上，把 `script-src 'nonce-<N>'` 换成 `script-src 'nonce-<N>' 'strict-dynamic'`，并追加 `frame-src https://challenges.cloudflare.com`；不支持 pre-clearance，`connect-src` 不变。启用前用 Report-Only 同时核对 `script-src`、`frame-src` 与 `style-src`。`self_hold` / `pow_a11y` 的挑战页不引用任何第三方源。
 
 ### 8.4 siteverify 与通过条件
 
@@ -450,6 +544,13 @@ api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资�
 
 全部满足才为 `Pass`：`success = true`；`hostname` 精确等于站点配置的主机名（不接受后缀匹配）；`action == C.route_class`；`cdata` 与重算值常量时间相等（首次上线实测大小写是否保留）；`C.iat − 5 s ≤ challenge_ts ≤ now + 5 s`；`now − challenge_ts ≤ 300 s`；`SET mg:rp:{site}:turnstile:{H(token)} NX EX 300` 成功。
 
+**Phase 2**（[规格 §8.4–§8.5](impl/phase2-spec.md#84-siteverifyoutboundhttpwp-c6)、§6.9，I-50）：
+- 只允许精确的 siteverify URL；回环 mock 只在环境变量 `MG_EDGE_TEST_OUTBOUND=1` 时可用，生效时打 WARN 并置 `mg_outbound_override = 1`。
+- 截止时间 `min(timeout_ms, 5000)`。传输错误、超时（剩余 ≥ 1 s）、5xx 或 `internal-error` 时用同一个幂等键重试一次；一次校验至多 3 个请求。
+- `idempotency_key` 为 `SHA-256("mg-ts-idem-v1" ‖ 0x00 ‖ nonce)` 前 16 字节的 UUID v4 格式；用旧 secret 重试时改用另一个变体，以免 Cloudflare 返回缓存的结果。
+- 只接受 200 与 `application/json`、≤ 16 KiB 的响应，缺字段等不合格响应按 `Unavailable` 处理。
+- `hostname` 必须等于请求的规范化主机且在 `hostnames` 中。token 重放键在 nonce 消费的同一脚本中、调用 siteverify **之前**写入（TTL 300 s），重复 token 为 `ic.ts_dup`。
+
 ### 8.5 错误码映射
 
 | siteverify 结果 | `outcome` | Edge 处理 | 计入失败 |
@@ -463,6 +564,8 @@ api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资�
 
 过期 token 在官方文档中可能返回 `invalid-input-response` 或 `timeout-or-duplicate`（文档前后不一致），两者都按"需要新 token"处理。
 
+Phase 2：错误码按 secret 错误、`bad-request`、`timeout-or-duplicate`、`invalid/missing-input-response`、`internal-error` 的顺序取第一个（I-50）。`bad-request` 为 `Unavailable` 并打 ERROR 日志；secret 错误在旧 secret 重试之后仍失败时为 `Misconfigured`，自动禁用。`mode: shadow` 时 `Pass` 照常签发 `interactive_ext:turnstile`，`Fail` 与 `Unavailable` 都不计失败、新 C 排除 Turnstile；`enforce` 时 `Fail` 计失败。
+
 ### 8.6 密钥、测试与隐私
 
 | 项目 | 设计 |
@@ -473,9 +576,13 @@ api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资�
 | 隐私 | 启用后访客 IP、TLS 指纹、User-Agent 以及 sitekey 与来源发送给 Cloudflare（Turnstile Privacy Addendum，2025-06-18，未写明保留期限）；按站点启用并同步更新隐私说明。大陆访客不会选到 Turnstile；其他地区合规口径见 [06](06-policy-console-observability.md#7-隐私与合规)，需法务确认 |
 | 可访问性 | Cloudflare 概览页称 WCAG 2.2 AA，方案页与 2026-02 改版博客称 AAA，均为厂商自述、无第三方审计；自研无障碍路径仍然必需 |
 
+Phase 2：secret 放在 `mg-turnstile-keys` 文件（`values` 为 `[当前, 上一个]`），以 systemd credential 交付，不用 `secret_ref` / `kms://`（D-51）。CI 不使用 Cloudflare 的测试 sitekey / secret：绑定、重试、熔断与错误映射全部用回环 mock siteverify 测试（D-52）。隐私：大陆访客被选中 Turnstile 时，其 IP 同样经 siteverify 发给 Cloudflare（D-70），隐私说明的写法见 [隐私说明模板](privacy-notice-template.md)。
+
 ## 9. 大陆 Provider
 
 **结论**：可选、付费、Phase 4。两者都没有 nonce 透传字段（`wrapper_only`），绑定弱于 Turnstile，只作为 MorphGate 密封提交中的一个组成部分。若所有者已有其中一家账号或 Edge 部署在其云上，选对应的一家。
+
+**Phase 2**（D-70，2026-10-12）：不再规划。所有者不需要大陆专用的验证码服务：内置的按住验证与自动回退已经覆盖 Turnstile 不可用的情况。本节只作为调研记录保留。
 
 | 项目 | `tencent`（腾讯云验证码） | `aliyun_v2`（阿里云验证码 2.0） |
 |---|---|---|
@@ -515,6 +622,8 @@ api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资�
 
 保留期以 [06 §7](06-policy-console-observability.md#7-隐私与合规) 为准（事件明细 7 天，`vl-short`；聚合不含个人标识，随指标存于 VictoriaMetrics，13 个月）。Challenge 页面附简短隐私说明链接；交互遥测是否另有留存要求需法务确认。
 
+**Phase 2 的交互遥测**（`t.ix` v1，[规格 §7.6](impl/phase2-spec.md#76-交互遥测-tixv1sdk-端量化)）：字段为 `mode`（hold / single / pow_only / external）、`modality`、`locale`、`ks`（会话密钥存放处）、`sv`（SDK 版本）、`fallback`、`trusted`（分桶）、`act_ms`，以及按模式出现的 `pre`、`hold`（含 `cancels`）、`single`、`page`（含按住期间的 `vis_during`）、`pow`（`ms`、`worker`、`impl`）。计数与毫秒用对数分桶，比例与偏移取 0.1 的步长。整个 `t` ≤ 2048 字节，超出时按 `ix.pre`、`ix.page`、`env`、`auto` 的顺序丢弃。上表的 `widget_build_id`、`env_summary_hash`、`key_autorepeat_count` 与 `release_latency_after_prompt_ms` 不采集。解析与重新序列化在 edge-core 中只有一份实现（D-62），写入 `kind=telemetry`（`vl-short`）；评分结果写入 `kind=feedback` 的 `ix`。隐私说明的写法见 [隐私说明模板](privacy-notice-template.md)。
+
 ## 11. 服务端评分
 
 **结论**：硬检查任一失败即统一失败；软特征按族封顶计分（与 [03](03-risk-scoring.md) §4.1 同一模型）；键盘 / 切换 / 无障碍模式不使用指针特征，缺失的指针数据是中性的。先 shadow，用所有者自己的流量定阈值。
@@ -534,6 +643,15 @@ api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资�
 | 模式与大小 | 带 `Content-Encoding`、请求体 > 8 KB、遥测 > 2 KB、字段不符合模式 | 全部 |
 | 尝试次数 | `attempt_no` 超过 M | 全部 |
 
+**Phase 2 的硬检查**（[规格 §7.7](impl/phase2-spec.md#77-硬检查assess_interaction在消费-nonce-之前)，I-48）：
+- `ix` 存在且 `mode` 与 Provider 相符（`pow_a11y` 可以不带 `ix`），否则 `ic.ix_mode`。
+- `hold` / `single` 模式：`trusted ≥ 1`，否则 `ic.no_trusted_input`。
+- `hold` 模式：`0.95 × 要求时长 ≤ hold.ms ≤ 30000`，否则 `ic.hold_short` / `ic.hold_long`；`single` 模式：`single.wait_ms ≥ 0.95 × 要求时长`。
+- 服务端时间窗：`hold` / `single` 为 `elapsed_ms ≥ 要求时长 + min_pow_ms + 250`（`min_pow_ms` 缺省 0），`pow_only` 为 `elapsed_ms ≥ a11y_min_ms`（缺省 2000），否则 `ic.too_fast`。`elapsed_ms` 从 C 的 `iat` 算起，续期后从最近一次续期算起。
+- "尝试次数"一行不在硬检查中，由失败配额执行（§11.3）。
+
+**这些检查能挡住什么**：除服务端时间窗外，表中的值（`trusted`、`hold.ms`、`single.wait_ms`、`mode`、`modality`）都由客户端自报。对自己控制客户端的自动化来说，交互级凭证的成本下限只是 PoW 加上 1.2–2.5 s 的等待（`pow_only` 为 `a11y_min_ms`）。硬检查只挡住不了解协议的脚本与时序不合理的提交，软评分在 shadow 中积累数据。所以交互级凭证的人类证据不高于 `pow`（D-68），刷新也受限（D-47）；威胁模型见 [10 CH-15](10-threat-model.md#43-challenge-端点mg)。
+
 ### 11.2 软特征
 
 | 特征 | 方向 | 适用 |
@@ -549,6 +667,8 @@ api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资�
 
 交互特征归入 CLIENT / BEHAVIOR 族，沿用族上限。通过后的人类证据封顶：`interactive`、`interactive_a11y`、`interactive_ext:{provider}` 相同（[03](03-risk-scoring.md) §4.1 的 −0.8）。
 
+**Phase 2**（[规格 §7.8](impl/phase2-spec.md#78-软评分shadow)、D-68）：软特征与初始权重为 `no_pre_move` +0.15、`straight_long` +0.15、`fast_target` +0.10、`zero_jitter` +0.20、`untrusted` +0.20、`hidden` +0.10、`pow_too_fast` +0.20、`ts_fallback` +0.05、`touch_natural` −0.10，加风险段先验 0–0.15，`score = clamp(Σ, 0, 1)`。`single` 与 `pow_only` 不计指针特征，选择无障碍路径本身从不计分。交互特征不进入后续请求的评分，只经近线 verdict 影响后续请求。通过后的人类证据：Phase 2 中所有级别的凭证都保持 −0.4（`identity.clearance`），上文的 −0.8 只能在交互评分改为 enforce 之后以新裁决引入（D-68）。
+
 ### 11.3 阈值与 shadow 校准
 
 | 结果 | 条件 | 动作 |
@@ -561,6 +681,11 @@ api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资�
 - shadow 期（≥ 7 天，同 [03](03-risk-scoring.md) §9）：硬检查照常执行（它们是完整性检查），软评分只记录不影响结果。
 - 标签稀少：用"长期登录且有真实交易的会话"近似人类，Validation Lab 自有脚本作自动化下限，二者都有噪声（[03](03-risk-scoring.md) §8）。shadow 期多长能得到稳定基线未知，按分布是否收敛判断。
 - v2：用所有者自己的数据离线训练小型 GBDT，Rust 内联推理，保留规则下限（§14）。
+
+**Phase 2**（D-49、D-50，[规格 §5.3](impl/phase2-spec.md#53-失败升级d-50)、[§7.8–§7.9](impl/phase2-spec.md#79-失败升级与配额)，I-51、I-55）：
+- 只交付 `scoring.mode: shadow`：硬检查照常执行，`score` 与特征只写入事件与直方图 `mg_interactive_score`。`enforce` 要求显式给出 `0 < t_pass < t_block ≤ 1`，shadow 下构建器拒绝这两个值。`t_pass` 必须高于所有者用辅助技术完成的样本的最高分。
+- 失败升级：站点启用交互式后，`invisible` / `pow` 提交失败时附交互式 C（风险段仍按 `after_failure` 升级）；交互式失败附新的交互式 C，`attempt_no + 1`；`attempt_no > N`（`escalate_after`，缺省 2）时 `pow_a11y` 置首，Turnstile 为 `escalate_after_fail` 且可用时同时加入。
+- "M 次后临时阻断"不由 C 计数（`attempt_no` 可以通过重新请求页面清零），而由失败配额执行：`mg.c.fail`（`ip` 实体，缺省 5 次 / 600 s）与 `mg.c.fail.prefix`（`ipp`，4 倍），超出时 429 + `Retry-After`。enforce 下的 `ic.score_block` 同样是 429（`Retry-After: 60`）。
 
 ## 12. 防重放与限速
 
@@ -575,6 +700,11 @@ api.js 标签带 nonce，Turnstile 会把 nonce 传播到其动态加载的资�
 每个 nonce 只接受一次提交；每次重试都是新 C，带新的 `ui_seed`、`pow_salt` 与按住时长。
 
 Phase 1：nonce 键为 `mg:n:{site}:{nonce_hex}`，由 Lua 脚本 `mg_nonce_issue` 以 `SET NX PX` 写入（TTL = `exp_ms − now_ms + 60 s`），同一脚本在 nonce 首次使用时计凭证签发配额；进程内重放集合同时写入，从不逐出未过期的 nonce（D-35、D-37）。
+
+Phase 2（[规格 §14](impl/phase2-spec.md#14-状态层wp-c5)，I-52、I-55）：
+- `mg_nonce_issue` v2 在一次调用中依次处理 nonce、Turnstile token 重放键 `mg:rp:{site}:turnstile:{H(token)}`（300 s）与签发配额（`p = pow_a11y` 时含 `mg.a11y.issue`），任一步不通过都不写入后面的项。
+- 交互式 C 的 nonce 保留约 70 分钟（续期可以打开过期 1 小时内的 C），续期也写入。
+- 本地模式另有进程内的 token 重放集合（`local_rp_capacity`，缺省 10,000），所有模式下都先查。规则同 D-35：不逐出未过期的项，溢出即"不可用"。
 
 ### 12.2 时序
 
@@ -595,6 +725,17 @@ Phase 1：nonce 键为 `mg:n:{site}:{nonce_hex}`，由 Lua 脚本 `mg_nonce_issu
 
 具体速率在 shadow 后按自有流量设定。通用限速、端点请求体限制与 Cloudflare 边缘泄压见 [04](04-challenge-and-tokens.md) §6.3、§9。
 
+**Phase 2**（D-67，[规格 §7.9](impl/phase2-spec.md#79-失败升级与配额)，I-55、I-56）：新的内置限速器都分两级：按 `ip` 实体的主限额，加按 `ipp` 的宽松限额（缺省 4 倍）。上表的"会话"维度不实现：挑战前没有会话。按前缀的一级有自己的限速器 id（`.prefix`）。
+
+| 限速器 | `ip` 实体 | `ipp` | 超限 |
+|---|---|---|---|
+| `mg.ix.issue`：交互式 C 的签发与续期（首次绑定的续期不计） | 30 / 600 s，burst 20 | 4 倍，只计数 | 429 |
+| `mg.c.renew` | 30 / 600 s，burst 10 | 4 倍 | 429 |
+| `mg.a11y.issue`：`interactive_a11y` 凭证的签发 | 6 / 3600 s | 120 / 3600 s | 附新 C 的统一失败（`ic.a11y_quota`，不计失败） |
+| `mg.r`、`mg.t`：`/__mg/r`、`/__mg/t`（[04 §6.3](04-challenge-and-tokens.md#63-限速)） | 30 / 600 s；60 / 60 s | 4 倍 | 429 |
+
+`pow_a11y` 是最容易自动化的路径，所以它的签发配额强制执行；按 `ip` 实体计数，CGNAT 与校园网背后的其他访客不受某一个人的影响。失败退避没有指数增长，靠失败配额（D-28）。外部 Provider 只有进程内并发上限。
+
 Phase 1 只有 `/__mg/c` 的内置限速器（[04 §6.3](04-challenge-and-tokens.md#63-限速)）：`mg.c.submit`（按 `ipp`，缺省 30 次 / 60 s、burst 10）、`mg.c.fail`（`ip` 实体）与 `mg.c.fail.prefix`（`ipp`，4 倍）、`mg.clr.issue.ipp` 与 `mg.clr.issue.asn`。超限一律 `429`；凭证签发上限强制执行，而不是"信号 + 告警"（D-37）；没有指数退避，靠失败窗口内的配额（D-28）。
 
 ### 12.4 统一失败响应
@@ -602,6 +743,8 @@ Phase 1 只有 `/__mg/c` 的内置限速器（[04 §6.3](04-challenge-and-tokens
 所有失败（绑定、重放、Provider 失败、评分）使用 [04](04-challenge-and-tokens.md) §9 的同一响应（`mg_challenge_failed` + 新 C + request_id；超过 M 次为 `429` + `Retry-After`），不暴露哪项检查失败，也不暴露阈值。具体原因只写入内部 reason code 与日志：`ic.c_invalid`、`ic.c_expired`、`ic.nonce_reused`、`ic.provider_not_offered`、`ic.bind_uah`、`ic.bind_jkt`、`ic.sig`、`ic.pow`、`ic.hold_short`、`ic.too_fast`、`ic.no_trusted_input`、`ic.attempts`、`ic.ts_hostname`、`ic.ts_action`、`ic.ts_cdata`、`ic.ts_time`、`ic.ts_dup`、`ic.provider_unavailable`、`ic.score_high`。相关指标与告警见 [06 §5](06-policy-console-observability.md#5-日志指标与告警)。
 
 Phase 1 的 reason code：`ic.no_client_ip`、`ic.too_early`、`ic.rate_limited`、`ic.issue_quota`、`ic.body`、`ic.c_invalid`、`ic.c_kid`、`ic.c_expired`、`ic.bind_uah`、`ic.bind_ipp`（软结果另记 `ic.bind_ipp_soft`）、`ic.pow`、`ic.ret`、`ic.automation_flag`、`ic.ua_mismatch`、`ic.nonce_reused`、`ic.replay_unavailable`、`ic.replay_unchecked`，只写入 `kind=feedback` 事件（[规格 §10.3](impl/phase1-spec.md#103-post-mgc)、[§13.3](impl/phase1-spec.md#133-kindfeedbackvl-main)）。频率类失败（限速、配额、IP 未知）是 `429`，不是统一失败响应。
+
+Phase 2 新增的 reason code（[规格 §7.4–§7.5](impl/phase2-spec.md#75-post-mgc-v2)、§8.5）：`ic.interactive_unavailable`、`ic.renew_cap`、`ic.ix_mode`、`ic.hold_long`、`ic.a11y_quota`、`ic.score_block`、`ic.ts_fail`、`ic.provider_misconfigured`；`ic.provider_not_offered`、`ic.bind_jkt`、`ic.sig`、`ic.hold_short`、`ic.too_fast`、`ic.no_trusted_input`、`ic.score_high`、`ic.ts_*` 与 `ic.provider_unavailable` 按上文的定义实现，`ic.attempts` 不使用（次数由失败配额执行）。哪些计入失败配额见规格 §7.5。
 
 ### 12.5 降级
 
@@ -611,6 +754,11 @@ Phase 1 的 reason code：`ic.no_client_ip`、`ic.too_early`、`ic.rate_limited`
 | 外部 Provider 不可用 | §7.2 |
 | 控制面不可用 | 使用 last-known-good 配置（含 Provider 配置） |
 | Worker / WebCrypto 不可用 | 主线程 / 纯 JS PoW。Phase 1：PoW 始终用纯 JS SHA-256，WebCrypto 只做启动自检，自检不一致时不启动挑战、显示重试链接（D-12）；Worker 不可用时主线程分片计算 |
+
+Phase 2（[规格 §5.1](impl/phase2-spec.md#51-交互式是否可用改-d-08)、[§7.10](impl/phase2-spec.md#710-mgv重启与本地模式)、[§12.4](impl/phase2-spec.md#124-会话密钥存储d-45)）：
+- 交互式不可用（配置包关闭、SDK 目录换回 v1）时，进行中的交互式 C 的续期与提交失败并附 `pow` 新 C（`ic.interactive_unavailable`，不计失败）。
+- 本地模式下，本进程启动前签发的交互式 C 按"重放存储不可用"处理：续期 429，提交按 I-30。
+- WebCrypto 不可用时交互式无法完成，控件提示更换浏览器；非交互式提交退回 v1。
 
 ## 13. 收割防护的边界
 
@@ -630,6 +778,12 @@ Phase 1 的 reason code：`ic.no_client_ip`、`ic.too_early`、`ic.rate_limited`
 | 串通的人工代解中继、打码平台（每千次 $0.10–5） | 交互级凭证短 TTL（`interactive` / `interactive_ext` 30 分钟，`interactive_a11y` 15 分钟，[04](04-challenge-and-tokens.md) §5）+ 持有证明刷新（刷新时重新评分）；按前缀 / ASN 的凭证签发上限；解题时间分布监控；通过率接近 100% 告警 |
 | 真实设备农场 | 业务层限额、账号 / 设备图关联（[03](03-risk-scoring.md) §6） |
 
+**Phase 2**（D-47、D-54、D-68）：
+- 交互级凭证 TTL 缺省 `interactive` / `interactive_ext:*` 1800 s，`interactive_a11y` 900 s。
+- 刷新（`/__mg/r`）缺省关闭；开启后要求 `MG-Proof` 与 `cnf.jkt` 一致，按级别以"获得该级别的时间"`lat` 封顶：`interactive` 4 小时、`interactive_ext:*` 2 小时、`pow` 为 `2 × ttl_pow_s`，`interactive_a11y` 与 `invisible` 不可刷新；刷新前按路由 R 重新决策，需要更高级别或决定为阻断时拒绝。
+- 吊销集在 Phase 3；Phase 2 中近线的 `shared_token` verdict 起软吊销作用：抬高该会话的风险，并阻止它在重新挑战时沿用 `sub`。
+- 交互级凭证的人类证据不高于 `pow`（§11.2）。
+
 ## 14. v2 路线
 
 v1 先 shadow 再 enforce，稳定后按下表推进：
@@ -643,6 +797,8 @@ v1 先 shadow 再 enforce，稳定后按下表推进：
 | 5 | Morph 构建 | 按 epoch 多态构建 widget、随机化提交编码（[04](04-challenge-and-tokens.md#8-morph-动态变形)）；Turnstile api.js 不参与 | Morph 流水线 | Phase 5 |
 | 6 | WebAuthn step-up | 对敏感操作用 passkey 做 step-up（[04](04-challenge-and-tokens.md) `step_up` 类型） | 站点有账号体系 | 按需 |
 | 7 | 受攻击时自适应难度 | 按负载提高 PoW 难度（类似 mCaptcha：正常负载无延迟，受攻击时约 2 s） | 受攻击模式开关（[01](01-architecture.md)） | 按需 |
+
+Phase 2：第 4 项（双 Provider 升级）不做。§2.1 的 PoW 在禁用 JIT 的环境（如 iOS 锁定模式）下慢 45–65 倍，是否提供 WASM 内核或按设备降低难度在 shadow 期按 `pow.impl` 与 `pow.ms` 的分布再定（[规格 §21](impl/phase2-spec.md#21-待实测与未决)）。
 
 ## 15. 验收标准
 
@@ -664,6 +820,13 @@ v1 先 shadow 再 enforce，稳定后按下表推进：
 | CSP | Turnstile 页面先 Report-Only | enforce 前无违规报告 |
 | 遥测 | 模式测试 | ≤ 2 KB；无原始坐标、按键值 |
 | CI | Turnstile 测试 sitekey / secret（1x / 2x / 3x） | 通过、失败、重复 token 三条路径均覆盖 |
+
+**Phase 2 的验收口径**（[规格 §20](impl/phase2-spec.md#20-验收映射)；当前状态见 [phase2-status](impl/phase2-status.md)）：
+- 完整性一行中的"换会话密钥或 UA 提交他人的 C"只对已绑定的 C 声明 100% 拒绝；未绑定的 C 在 UA 家族不同、或 /24 与 ASN 都不同时拒绝，同一 ASN 内换 /24 只记 `ic.bind_ipp_soft`（D-41 的已知边界）。完整性检查在 `edge/tests` 中用 mg-challenge 的测试辅助完成，Lab 只回放固定请求（D-59）。
+- "大陆访客"一行改为：`deny_countries` 中的国家从不得到 Turnstile；大陆访客的 Turnstile 失败时回退到内置验证且不计失败（D-70）。
+- "Provider 故障"一行只回退 `self_hold`，没有 fail-closed 选项（D-51）。
+- "CI"一行改用回环 mock siteverify 覆盖通过、失败与重复 token（D-52）。
+- 人类摩擦按访客级的 `mg_nl_interactive_visitor_share` 与 `mg_nl_interactive_abandon_share`（7 天）判断，请求级比例只作上界。完成时间按 `kind=feedback` 的 `ix.act_ms`（从第一次激活到提交）取中位数。
 
 ## 16. 参考
 

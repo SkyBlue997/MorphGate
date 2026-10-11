@@ -1,7 +1,7 @@
 # ADR-0007：精简部署：不用 Kafka / Kubernetes，Valkey Streams + VictoriaLogs，Edge 拉取配置
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：VictoriaLogs 双实例与保留期、密钥保管、分阶段配置下发）；2026-09-28 Phase 1 勘误（事件管道、配置下发与 Valkey 的落地方式，见文末"勘误"，依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-03、D-15、D-21、D-35 与裁决 I-3、I-11、I-15、I-16、I-25）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：VictoriaLogs 双实例与保留期、密钥保管、分阶段配置下发）；2026-09-28 Phase 1 勘误（事件管道、配置下发与 Valkey 的落地方式，见文末"勘误"，依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-03、D-15、D-21、D-35 与裁决 I-3、I-11、I-15、I-16、I-25）；2026-10-12 勘误：Phase 2 实现口径（依据 [Phase 2 实现规格](../impl/phase2-spec.md) D-38、D-53、D-62、I-46、I-53，见文末"勘误"）
 - 相关：[01 整体架构](../01-architecture.md)、[02 数据流](../02-data-flow.md)、[07 分阶段路线](../07-roadmap.md)、[ADR-0004](0004-origin-protection-tunnel-aop.md)
 
 ## 背景
@@ -63,6 +63,18 @@ visitor -> Cloudflare (Free/Pro) -> cloudflared --loopback--> mg-edge (127.0.0.1
 | Valkey | 客户端为 redis-rs（`redis` 1.7）；所有 Valkey I/O 只在一个后台 service 的运行时上执行，请求经有界通道提交、按超时（缺省 10 ms）回退本地模式；连续失败熔断。进程内重放集合是固定容量的 TTL 集合，从不逐出未过期的 nonce，满时按"重放存储不可用"处理（原稿的 LRU 会逐出已用 nonce，导致可以重放）。Edge 的 ACL 用户按键选择器授权，已在 Valkey 9.1.2 上实测 | D-03、D-35 |
 | PostgreSQL | Phase 1 用不到（没有 mg-control）；开发环境的 compose 仍包含它 | 规格 §0.1 |
 | 最小访问记录归档 | Phase 1 写 `kind=access` 到 `vl-main`，每日归档到对象存储的任务尚未实现 | — |
+
+## 勘误（2026-10-12，Phase 2 实现）
+
+结论不变（不用 Kafka / Kubernetes，Valkey Streams + VictoriaLogs，Edge 拉取配置）。Phase 2 的落地（D-xx 见规格 [§0.3](../impl/phase2-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](../impl/phase2-spec.md#集成者裁决优先于正文)）：
+
+| 项 | Phase 2 |
+|---|---|
+| 状态后端（D-38） | Phase 2 的共享与一次性状态以 Valkey 为准；单机形态推荐本机 Valkey（`mode = "valkey"`、`local_replay_authoritative = true`、`events.stream = true`），`mode = "local"` 继续支持但没有近线与 verdict，本进程启动前签发的交互式 C 无法续期 |
+| 近线 worker（D-53） | Go 命令 `mg-nearline`，消费组 `nl` 的唯一消费者，Valkey 客户端 `valkey-go`（I-46）；窗口状态在 worker 内存中，不用 `mg:w:*`，Edge 不维护窗口计数；verdict 经 Lua 脚本写入、只抬高风险；不用 `mg:pub:inv`。独立的 ACL 用户与 systemd 单元（`DynamicUser`、`IPAddressDeny=any`、`MemoryMax=512M`） |
+| `mg:ev` v2 | 在 v1 字段后追加方法、路径哈希、内容类型类别、诱饵、跨站、凭证与证明标记、UA 家族、地址族；worker 同时接受 v1 条目。`maxmemory` 按 `24 小时峰值 × 2 + stream_maxlen × 400 B` 设置后再打开 `events.stream` |
+| 事件管道（D-62） | 遥测改为第四个事件类别，进入独立的有界队列；关闭时事件刷写最多再等 `shutdown_drain_ms`，在升级宽限时间之内；带 `ruc` 凭证的决定事件不受采样影响 |
+| 出站 | Turnstile siteverify 是 Edge 唯一新增的出站 HTTP，在后台服务上运行（`no_proxy()`，进程内并发上限 32） |
 
 ## 参考
 
