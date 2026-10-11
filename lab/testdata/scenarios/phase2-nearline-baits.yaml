@@ -1,0 +1,41 @@
+# Phase 2 near-line end to end (docs/impl/phase2-spec.md §17 WP-L2, §13):
+# a scanner's bait requests. Two distinct paths on the built-in bait list
+# (§13.1: /.env.*, /.git/**) from one client address are what the scanner
+# detector needs (bait_distinct: 2) for an ip verdict. The run id keeps the
+# paths, and so their path hashes, distinct between runs.
+#
+# scripts/lab-e2e.sh replays it twice against site labp2
+# (lab/testdata/e2e/site-p2.yaml, events.stream: true, Valkey state): once
+# with mg-nearline's scanner in shadow (a kind=verdict line and a log line,
+# nothing written to Valkey) and once in enforce (the verdict written), each
+# time from another address:
+#
+#   mglab replay -map-host p2.lab.test=127.0.0.1 -base http://p2.lab.test:<edge port> \
+#     -var run=<id> -var ip=203.0.113.120 lab/testdata/scenarios/phase2-nearline-baits.yaml
+#
+# The client is an HTTP library: scored medium and tagged, so the Edge
+# forwards both requests (the origin answers them; the detector counts bait
+# paths whatever the status).
+name: phase2-nearline-baits
+description: A scanner probes two bait paths, the input of mg-nearline's scanner detector.
+vars:
+  run: manual   # path segment that ties the events to one run
+  ip: ~         # client address (CF-Connecting-IP), one per detector mode
+
+requests:
+  - name: bait /.env.*
+    method: GET
+    path: /.env.${run}
+    headers: &scanner
+      CF-Connecting-IP: ${ip}
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: python-requests/2.32.3
+      Accept: '*/*'
+    expect_status: 200
+    expect_header_absent: [MG-Challenge]
+  - name: bait /.git/**
+    method: GET
+    path: /.git/${run}/config
+    headers: *scanner
+    expect_status: 200
+    expect_header_absent: [MG-Challenge]

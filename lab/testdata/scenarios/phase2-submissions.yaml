@@ -1,0 +1,239 @@
+# Phase 2 acceptance (docs/impl/phase2-spec.md §17 WP-L2, §20): recorded,
+# tampered and mismatched interactive submissions fail, and a foreign
+# CF-Worker is still refused outright.
+#
+# D-59: the Lab has no solving logic. Replay, splicing, cross-client and
+# concurrent double submissions of a C the Edge accepts are covered by
+# edge/tests with mg-challenge's test helpers; here every request is a
+# fixed recording:
+#
+#   - Two C were recorded on 2026-10-11 from an earlier lab-e2e Edge (route
+#     "account": self_hold and pow_a11y; route "login" with Turnstile
+#     first), sealed under a throwaway seal root that no Edge holds and long
+#     expired. The submissions carry them with the session key, signature,
+#     telemetry and PoW counters of testdata/phase2/samples/submissions
+#     (signed over the sample's own placeholder C, so they would not verify
+#     either).
+#   - Each submission is answered with the unified failure (§7.5 step 4: the
+#     C does not open), without a clearance cookie, a redirect or a new C;
+#     replaying the same body twice changes nothing. So does a tampered or
+#     truncated C, a provider the C does not offer, an unknown provider id
+#     and a v1 interactive submission (form), and a renewal of the recorded
+#     or the tampered C (§7.4 step 4).
+#   - A Turnstile submission never reaches siteverify (the C does not open);
+#     scripts/lab-e2e.sh checks that the loopback mock saw no call.
+#   - A Worker of a zone the owner does not control (D-23) gets 403 on the
+#     page, the verify entry, a submission and a renewal.
+#
+# Run by scripts/lab-e2e.sh against lab/testdata/e2e/site-p2.yaml:
+#
+#   mglab replay -map-host p2.lab.test=127.0.0.1 -base http://p2.lab.test:<edge port> \
+#     -var run=<id> lab/testdata/scenarios/phase2-submissions.yaml
+#
+# CF-Connecting-IP stands in for cloudflared on the Edge's loopback listener;
+# every address is from a documentation range.
+name: phase2-submissions
+description: Recorded, tampered and mismatched interactive submissions and renewals fail without a clearance; a foreign CF-Worker is refused.
+vars:
+  run: manual   # path segment that ties the events to one run
+
+requests:
+  # 1. The protected page: an interactive challenge, no cookie.
+  - name: account page (navigation)
+    method: GET
+    path: /p2/account/${run}/home
+    headers: &page
+      CF-Connecting-IP: 203.0.113.111
+      CF-Visitor: '{"scheme":"https"}'
+      CF-IPCountry: US
+      User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36
+      Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+      Accept-Language: en-US,en;q=0.9
+      Sec-Fetch-Mode: navigate
+      Sec-Fetch-Site: none
+      Sec-Fetch-Dest: document
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr, __Host-mg_st]
+    expect_body_contains: data-mg-type="interactive"
+
+  # 2-3. The recorded self_hold submission (fetch, JSON), sent twice.
+  - name: recorded self_hold submission
+    method: POST
+    path: /__mg/c
+    headers: &fetch
+      <<: *page
+      Content-Type: application/json
+      Accept: application/json
+      Origin: https://p2.lab.test
+      Sec-Fetch-Mode: cors
+      Sec-Fetch-Site: same-origin
+      Sec-Fetch-Dest: empty
+    body: '{"v":2,"type":"interactive","c":"CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kOwwYTCWnJUETwtP5NumUHEXY8xAM41tlcXAIOMwoxwTrlaEvB5M3XYKEgTaIfIyj9JZDZBWTQhQca36P_ptzzFxwF65PDtW0oHwVDUPj9zZ1sfn52vrlFX2xdpevDY5d8_BvQV8i4Q-5Z_JzUiAgb7Zmj2QNfrizhzOjO2eiXn0hg95ahYuI4SfqD0pSBHkiAc_IX","p":"self_hold","pp":"","t":"{\"ix\":{\"v\":1,\"mode\":\"hold\",\"modality\":\"mouse\",\"locale\":\"zh-CN\",\"ks\":\"idb\",\"sv\":\"0.3.0\",\"fallback\":null,\"trusted\":3,\"act_ms\":2300,\"pre\":{\"moves\":5,\"path_px\":9,\"straight\":0.7,\"speed_mean\":6,\"speed_sd\":4,\"dir_changes\":3,\"render_to_input_ms\":11,\"to_target_ms\":9},\"hold\":{\"ms\":1910,\"offset\":[0.1,-0.2],\"jitter_px\":2,\"moves\":3,\"cancels\":0,\"pressure\":0.5,\"pressure_var\":0,\"contact_var\":0},\"page\":{\"vis\":0,\"vis_during\":0,\"focus\":0,\"frame_mean\":4,\"frame_sd\":1},\"pow\":{\"ms\":8,\"worker\":true,\"impl\":\"js\"}}}","pow":{"counters":[12,3401,77,912,4005,18,230,6600]},"ret":"/p2/account/","ts":1790000000123,"build":"0123456789abcdef","jwk":{"kty":"EC","crv":"P-256","x":"rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0","y":"fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"},"sig":"nWex1duVyoM8x9hhgca5YbDRcrfewtF7CII2_HKHxEd_poSU70mOplM1tVRRCs-YdT1fZS6u6VUZxW3Y8jZ8Ig"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: &no-clearance [__Host-mg_clr, __Host-mg_st, __Host-mg_a11y]
+    expect_body_contains: '"error":"mg_challenge_failed"'
+    expect_body_excludes: &no-new-c ['"challenge"', '"ix"']
+  - name: recorded self_hold submission again
+    method: POST
+    path: /__mg/c
+    headers: *fetch
+    body: '{"v":2,"type":"interactive","c":"CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kOwwYTCWnJUETwtP5NumUHEXY8xAM41tlcXAIOMwoxwTrlaEvB5M3XYKEgTaIfIyj9JZDZBWTQhQca36P_ptzzFxwF65PDtW0oHwVDUPj9zZ1sfn52vrlFX2xdpevDY5d8_BvQV8i4Q-5Z_JzUiAgb7Zmj2QNfrizhzOjO2eiXn0hg95ahYuI4SfqD0pSBHkiAc_IX","p":"self_hold","pp":"","t":"{\"ix\":{\"v\":1,\"mode\":\"hold\",\"modality\":\"mouse\",\"locale\":\"zh-CN\",\"ks\":\"idb\",\"sv\":\"0.3.0\",\"fallback\":null,\"trusted\":3,\"act_ms\":2300,\"pre\":{\"moves\":5,\"path_px\":9,\"straight\":0.7,\"speed_mean\":6,\"speed_sd\":4,\"dir_changes\":3,\"render_to_input_ms\":11,\"to_target_ms\":9},\"hold\":{\"ms\":1910,\"offset\":[0.1,-0.2],\"jitter_px\":2,\"moves\":3,\"cancels\":0,\"pressure\":0.5,\"pressure_var\":0,\"contact_var\":0},\"page\":{\"vis\":0,\"vis_during\":0,\"focus\":0,\"frame_mean\":4,\"frame_sd\":1},\"pow\":{\"ms\":8,\"worker\":true,\"impl\":\"js\"}}}","pow":{"counters":[12,3401,77,912,4005,18,230,6600]},"ret":"/p2/account/","ts":1790000000123,"build":"0123456789abcdef","jwk":{"kty":"EC","crv":"P-256","x":"rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0","y":"fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"},"sig":"nWex1duVyoM8x9hhgca5YbDRcrfewtF7CII2_HKHxEd_poSU70mOplM1tVRRCs-YdT1fZS6u6VUZxW3Y8jZ8Ig"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_contains: '"error":"mg_challenge_failed"'
+    expect_body_excludes: *no-new-c
+
+  # 4-5. The recorded C with one character changed, and cut short.
+  - name: tampered C
+    method: POST
+    path: /__mg/c
+    headers: *fetch
+    body: '{"v":2,"type":"interactive","c":"CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kOwwYTCWnJUETwtP5NumUHEXY8xAM41tAcXAIOMwoxwTrlaEvB5M3XYKEgTaIfIyj9JZDZBWTQhQca36P_ptzzFxwF65PDtW0oHwVDUPj9zZ1sfn52vrlFX2xdpevDY5d8_BvQV8i4Q-5Z_JzUiAgb7Zmj2QNfrizhzOjO2eiXn0hg95ahYuI4SfqD0pSBHkiAc_IX","p":"self_hold","pp":"","t":"{\"ix\":{\"v\":1,\"mode\":\"hold\",\"modality\":\"mouse\",\"locale\":\"zh-CN\",\"ks\":\"idb\",\"sv\":\"0.3.0\",\"fallback\":null,\"trusted\":3,\"act_ms\":2300,\"pre\":{\"moves\":5,\"path_px\":9,\"straight\":0.7,\"speed_mean\":6,\"speed_sd\":4,\"dir_changes\":3,\"render_to_input_ms\":11,\"to_target_ms\":9},\"hold\":{\"ms\":1910,\"offset\":[0.1,-0.2],\"jitter_px\":2,\"moves\":3,\"cancels\":0,\"pressure\":0.5,\"pressure_var\":0,\"contact_var\":0},\"page\":{\"vis\":0,\"vis_during\":0,\"focus\":0,\"frame_mean\":4,\"frame_sd\":1},\"pow\":{\"ms\":8,\"worker\":true,\"impl\":\"js\"}}}","pow":{"counters":[12,3401,77,912,4005,18,230,6600]},"ret":"/p2/account/","ts":1790000000123,"build":"0123456789abcdef","jwk":{"kty":"EC","crv":"P-256","x":"rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0","y":"fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"},"sig":"nWex1duVyoM8x9hhgca5YbDRcrfewtF7CII2_HKHxEd_poSU70mOplM1tVRRCs-YdT1fZS6u6VUZxW3Y8jZ8Ig"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_contains: '"error":"mg_challenge_failed"'
+    expect_body_excludes: *no-new-c
+  - name: truncated C
+    method: POST
+    path: /__mg/c
+    headers: *fetch
+    body: '{"v":2,"type":"interactive","c":"CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kO","p":"self_hold","pp":"","t":"{\"ix\":{\"v\":1,\"mode\":\"hold\",\"modality\":\"mouse\",\"locale\":\"zh-CN\",\"ks\":\"idb\",\"sv\":\"0.3.0\",\"fallback\":null,\"trusted\":3,\"act_ms\":2300,\"pre\":{\"moves\":5,\"path_px\":9,\"straight\":0.7,\"speed_mean\":6,\"speed_sd\":4,\"dir_changes\":3,\"render_to_input_ms\":11,\"to_target_ms\":9},\"hold\":{\"ms\":1910,\"offset\":[0.1,-0.2],\"jitter_px\":2,\"moves\":3,\"cancels\":0,\"pressure\":0.5,\"pressure_var\":0,\"contact_var\":0},\"page\":{\"vis\":0,\"vis_during\":0,\"focus\":0,\"frame_mean\":4,\"frame_sd\":1},\"pow\":{\"ms\":8,\"worker\":true,\"impl\":\"js\"}}}","pow":{"counters":[12,3401,77,912,4005,18,230,6600]},"ret":"/p2/account/","ts":1790000000123,"build":"0123456789abcdef","jwk":{"kty":"EC","crv":"P-256","x":"rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0","y":"fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"},"sig":"nWex1duVyoM8x9hhgca5YbDRcrfewtF7CII2_HKHxEd_poSU70mOplM1tVRRCs-YdT1fZS6u6VUZxW3Y8jZ8Ig"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_contains: '"error":"mg_challenge_failed"'
+    expect_body_excludes: *no-new-c
+
+  # 6-7. A provider the C does not offer (Turnstile on the account route's
+  #      C, with a recorded token), and a provider id that does not exist.
+  - name: provider not offered (turnstile)
+    method: POST
+    path: /__mg/c
+    headers: *fetch
+    body: '{"v":2,"type":"interactive","c":"CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kOwwYTCWnJUETwtP5NumUHEXY8xAM41tlcXAIOMwoxwTrlaEvB5M3XYKEgTaIfIyj9JZDZBWTQhQca36P_ptzzFxwF65PDtW0oHwVDUPj9zZ1sfn52vrlFX2xdpevDY5d8_BvQV8i4Q-5Z_JzUiAgb7Zmj2QNfrizhzOjO2eiXn0hg95ahYuI4SfqD0pSBHkiAc_IX","p":"turnstile","pp":"kat.turnstile.token.0000000000000000","t":"{\"ix\":{\"v\":1,\"mode\":\"external\",\"modality\":\"mouse\",\"locale\":\"en\",\"ks\":\"local\",\"sv\":\"0.3.0\",\"fallback\":null,\"trusted\":3,\"act_ms\":1500}}","pow":{"counters":[3,141]},"ret":"/p2/account/","ts":1790000100000,"build":"0123456789abcdef","jwk":{"kty":"EC","crv":"P-256","x":"3ysMqtWPQYC3tAK7dPz_zflvyJEhfD7n12YIeKoBm44","y":"6NNjVTVw_T7Rww18TFD2kzslfB4vmadK7UZLMJi9Y84"},"sig":"Lq-EoKcWmTS5yymtx_9CmM7GsX4YG5PFK-ZbATO1rKZRml3rxImFUgm7xd-0MuUwJdQtdYGSs_If_o5sVnF7UA"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_contains: '"error":"mg_challenge_failed"'
+    expect_body_excludes: *no-new-c
+  - name: unknown provider id
+    method: POST
+    path: /__mg/c
+    headers: *fetch
+    body: '{"v":2,"type":"interactive","c":"CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kOwwYTCWnJUETwtP5NumUHEXY8xAM41tlcXAIOMwoxwTrlaEvB5M3XYKEgTaIfIyj9JZDZBWTQhQca36P_ptzzFxwF65PDtW0oHwVDUPj9zZ1sfn52vrlFX2xdpevDY5d8_BvQV8i4Q-5Z_JzUiAgb7Zmj2QNfrizhzOjO2eiXn0hg95ahYuI4SfqD0pSBHkiAc_IX","p":"solver","pp":"","t":"{\"ix\":{\"v\":1,\"mode\":\"hold\",\"modality\":\"mouse\",\"locale\":\"zh-CN\",\"ks\":\"idb\",\"sv\":\"0.3.0\",\"fallback\":null,\"trusted\":3,\"act_ms\":2300,\"pre\":{\"moves\":5,\"path_px\":9,\"straight\":0.7,\"speed_mean\":6,\"speed_sd\":4,\"dir_changes\":3,\"render_to_input_ms\":11,\"to_target_ms\":9},\"hold\":{\"ms\":1910,\"offset\":[0.1,-0.2],\"jitter_px\":2,\"moves\":3,\"cancels\":0,\"pressure\":0.5,\"pressure_var\":0,\"contact_var\":0},\"page\":{\"vis\":0,\"vis_during\":0,\"focus\":0,\"frame_mean\":4,\"frame_sd\":1},\"pow\":{\"ms\":8,\"worker\":true,\"impl\":\"js\"}}}","pow":{"counters":[12,3401,77,912,4005,18,230,6600]},"ret":"/p2/account/","ts":1790000000123,"build":"0123456789abcdef","jwk":{"kty":"EC","crv":"P-256","x":"rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0","y":"fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"},"sig":"nWex1duVyoM8x9hhgca5YbDRcrfewtF7CII2_HKHxEd_poSU70mOplM1tVRRCs-YdT1fZS6u6VUZxW3Y8jZ8Ig"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_contains: '"error":"mg_challenge_failed"'
+    expect_body_excludes: *no-new-c
+
+  # 8. The recorded login C (Turnstile first) with a recorded token.
+  - name: recorded turnstile submission
+    method: POST
+    path: /__mg/c
+    headers:
+      <<: *fetch
+      CF-Connecting-IP: 203.0.113.112
+    body: '{"v":2,"type":"interactive","c":"CAESBmUyMDczNxoYVxbshph9kRlukhTWu5-8YSyA2Lb6E4BFIs8BAyFH6wxSFB-wM_pf1LotkCmUDf49w-FexCRL-4LPaleDYD_u4NB23llEpDNw9m69W5toehX2gqZv2COKwtopY8k6vUtFXKlEiAwHLeoxuv4Z6LpFN7tMecUjbYiH5MhEYpeD2mDm8t6SYOCXS96opXBne_-6U6XEMZMLIgfHkEWnGlO2Gia7SVNmOEiOl-grLZ6rEizmnrTyUtcKWfVkquhCCjuYlE9MMWaMteNKdop1DNTv_tb865GZOpc9n0W6uzDmh20Pam7h4mIkqp1G","p":"turnstile","pp":"kat.turnstile.token.0000000000000000","t":"{\"ix\":{\"v\":1,\"mode\":\"external\",\"modality\":\"mouse\",\"locale\":\"en\",\"ks\":\"local\",\"sv\":\"0.3.0\",\"fallback\":null,\"trusted\":3,\"act_ms\":1500}}","pow":{"counters":[3,141]},"ret":"/p2/login/","ts":1790000100000,"build":"0123456789abcdef","jwk":{"kty":"EC","crv":"P-256","x":"3ysMqtWPQYC3tAK7dPz_zflvyJEhfD7n12YIeKoBm44","y":"6NNjVTVw_T7Rww18TFD2kzslfB4vmadK7UZLMJi9Y84"},"sig":"Lq-EoKcWmTS5yymtx_9CmM7GsX4YG5PFK-ZbATO1rKZRml3rxImFUgm7xd-0MuUwJdQtdYGSs_If_o5sVnF7UA"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_contains: '"error":"mg_challenge_failed"'
+    expect_body_excludes: *no-new-c
+
+  # 9. An interactive C submitted as v1 by form (§7.5: only v2).
+  - name: interactive v1 submission (form)
+    method: POST
+    path: /__mg/c
+    headers:
+      <<: *page
+      Content-Type: application/x-www-form-urlencoded
+      Origin: https://p2.lab.test
+      Sec-Fetch-Site: same-origin
+    body: mg=%7B%22v%22%3A1%2C%22type%22%3A%22interactive%22%2C%22c%22%3A%22CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kOwwYTCWnJUETwtP5NumUHEXY8xAM41tlcXAIOMwoxwTrlaEvB5M3XYKEgTaIfIyj9JZDZBWTQhQca36P_ptzzFxwF65PDtW0oHwVDUPj9zZ1sfn52vrlFX2xdpevDY5d8_BvQV8i4Q-5Z_JzUiAgb7Zmj2QNfrizhzOjO2eiXn0hg95ahYuI4SfqD0pSBHkiAc_IX%22%2C%22pow%22%3A%7B%22counters%22%3A%5B0%5D%7D%2C%22ret%22%3A%22%2Fp2%2Faccount%2F%22%2C%22ts%22%3A1791760800000%2C%22build%22%3A%220000000000000000%22%7D
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_contains: data-mg-state="failed"
+
+  # 10-11. Renewal (§7.4) of the recorded and of the tampered C: refused,
+  #        and no new C.
+  - name: recorded renewal
+    method: POST
+    path: /__mg/c/renew
+    headers: *fetch
+    body: '{"v":2,"c":"CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kOwwYTCWnJUETwtP5NumUHEXY8xAM41tlcXAIOMwoxwTrlaEvB5M3XYKEgTaIfIyj9JZDZBWTQhQca36P_ptzzFxwF65PDtW0oHwVDUPj9zZ1sfn52vrlFX2xdpevDY5d8_BvQV8i4Q-5Z_JzUiAgb7Zmj2QNfrizhzOjO2eiXn0hg95ahYuI4SfqD0pSBHkiAc_IX","jwk":{"kty":"EC","crv":"P-256","x":"rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0","y":"fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"},"ts":1790000480000,"sig":"psi0GlH6WNDOjqN2Zn_OZd_sYS4uLAHamRRJ5OGSn-vTPZ6khK_gm_hgqKQJCNsMAYg74ROg6Jr99DcgKheVHQ"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_contains: '"error":"mg_challenge_failed"'
+    expect_body_excludes: *no-new-c
+  - name: renewal of a tampered C
+    method: POST
+    path: /__mg/c/renew
+    headers: *fetch
+    body: '{"v":2,"c":"CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kOwwYTCWnJUETwtP5NumUHEXY8xAM41tAcXAIOMwoxwTrlaEvB5M3XYKEgTaIfIyj9JZDZBWTQhQca36P_ptzzFxwF65PDtW0oHwVDUPj9zZ1sfn52vrlFX2xdpevDY5d8_BvQV8i4Q-5Z_JzUiAgb7Zmj2QNfrizhzOjO2eiXn0hg95ahYuI4SfqD0pSBHkiAc_IX","jwk":{"kty":"EC","crv":"P-256","x":"rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0","y":"fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"},"ts":1790000480000,"sig":"psi0GlH6WNDOjqN2Zn_OZd_sYS4uLAHamRRJ5OGSn-vTPZ6khK_gm_hgqKQJCNsMAYg74ROg6Jr99DcgKheVHQ"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_contains: '"error":"mg_challenge_failed"'
+    expect_body_excludes: *no-new-c
+
+  # 12. Back to the protected page: still challenged.
+  - name: account page again
+    method: GET
+    path: /p2/account/${run}/home
+    headers: *page
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_contains: data-mg-state="challenge"
+
+  # 13-16. A Worker of a zone the owner does not control (D-23): refused
+  #        before anything else, without a challenge.
+  - name: foreign CF-Worker, protected page
+    method: GET
+    path: /p2/account/${run}/home
+    headers:
+      <<: *page
+      CF-Worker: attacker.example
+    expect_status: 403
+    expect_header_absent: [MG-Challenge, Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_excludes: [data-mg-c=]
+  - name: foreign CF-Worker, verify entry
+    method: GET
+    path: /__mg/v?ret=%2Fp2%2Faccount%2F${run}%2Fhome&min=interactive
+    headers:
+      <<: *page
+      CF-Worker: attacker.example
+    expect_status: 403
+    expect_header_absent: [MG-Challenge, Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_excludes: [data-mg-c=]
+  - name: foreign CF-Worker, submission
+    method: POST
+    path: /__mg/c
+    headers:
+      <<: *fetch
+      CF-Worker: attacker.example
+    body: '{"v":2,"type":"interactive","c":"CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kOwwYTCWnJUETwtP5NumUHEXY8xAM41tlcXAIOMwoxwTrlaEvB5M3XYKEgTaIfIyj9JZDZBWTQhQca36P_ptzzFxwF65PDtW0oHwVDUPj9zZ1sfn52vrlFX2xdpevDY5d8_BvQV8i4Q-5Z_JzUiAgb7Zmj2QNfrizhzOjO2eiXn0hg95ahYuI4SfqD0pSBHkiAc_IX","p":"self_hold","pp":"","t":"{\"ix\":{\"v\":1,\"mode\":\"hold\",\"modality\":\"mouse\",\"locale\":\"zh-CN\",\"ks\":\"idb\",\"sv\":\"0.3.0\",\"fallback\":null,\"trusted\":3,\"act_ms\":2300,\"pre\":{\"moves\":5,\"path_px\":9,\"straight\":0.7,\"speed_mean\":6,\"speed_sd\":4,\"dir_changes\":3,\"render_to_input_ms\":11,\"to_target_ms\":9},\"hold\":{\"ms\":1910,\"offset\":[0.1,-0.2],\"jitter_px\":2,\"moves\":3,\"cancels\":0,\"pressure\":0.5,\"pressure_var\":0,\"contact_var\":0},\"page\":{\"vis\":0,\"vis_during\":0,\"focus\":0,\"frame_mean\":4,\"frame_sd\":1},\"pow\":{\"ms\":8,\"worker\":true,\"impl\":\"js\"}}}","pow":{"counters":[12,3401,77,912,4005,18,230,6600]},"ret":"/p2/account/","ts":1790000000123,"build":"0123456789abcdef","jwk":{"kty":"EC","crv":"P-256","x":"rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0","y":"fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"},"sig":"nWex1duVyoM8x9hhgca5YbDRcrfewtF7CII2_HKHxEd_poSU70mOplM1tVRRCs-YdT1fZS6u6VUZxW3Y8jZ8Ig"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_excludes: *no-new-c
+  - name: foreign CF-Worker, renewal
+    method: POST
+    path: /__mg/c/renew
+    headers:
+      <<: *fetch
+      CF-Worker: attacker.example
+    body: '{"v":2,"c":"CAESBmUyMDczNxoYGqKiykP2iqkBa3CNVnlgLJ-FYZOhoZCgIsYBtsZdwGUiBzspVYpTMlI_RqIAw8z1tU9ROEVeQOgkxHzH8rXfuYj59RBXoB5lMhsO02kOwwYTCWnJUETwtP5NumUHEXY8xAM41tlcXAIOMwoxwTrlaEvB5M3XYKEgTaIfIyj9JZDZBWTQhQca36P_ptzzFxwF65PDtW0oHwVDUPj9zZ1sfn52vrlFX2xdpevDY5d8_BvQV8i4Q-5Z_JzUiAgb7Zmj2QNfrizhzOjO2eiXn0hg95ahYuI4SfqD0pSBHkiAc_IX","jwk":{"kty":"EC","crv":"P-256","x":"rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0","y":"fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"},"ts":1790000480000,"sig":"psi0GlH6WNDOjqN2Zn_OZd_sYS4uLAHamRRJ5OGSn-vTPZ6khK_gm_hgqKQJCNsMAYg74ROg6Jr99DcgKheVHQ"}'
+    expect_status: 403
+    expect_header_absent: [Location]
+    expect_cookie_absent: *no-clearance
+    expect_body_excludes: *no-new-c

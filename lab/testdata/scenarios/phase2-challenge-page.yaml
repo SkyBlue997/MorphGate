@@ -1,0 +1,239 @@
+# Phase 2 acceptance (docs/impl/phase2-spec.md §17 WP-L2, §20): what an
+# interactive challenge names, and to whom Turnstile is offered.
+#
+#   - An interactive challenge page without Turnstile references no third
+#     party: its scripts and links are same-origin, its CSP names no host,
+#     http(s) or ws(s) source and no wildcard (only 'self', nonces and data:
+#     images), no 'strict-dynamic' and no frame-src (§2.4 item 12).
+#   - A country in the site's deny_countries (CN), an unknown country (no
+#     CF-IPCountry, XX, T1) and a malformed one (lower case) never get a C
+#     that offers Turnstile, on the page, the JSON challenge or the verify
+#     entry /__mg/v (§5.4 rule 2, §8.1). A visitor from an allowed country
+#     (US, DE) on the same route gets it first (selection: first), so the
+#     negative checks are not vacuous.
+#
+# The scenario replays fixed requests only and solves nothing (D-59): every
+# response is a challenge, no clearance cookie is set.
+#
+# Run by scripts/lab-e2e.sh against lab/testdata/e2e/site-p2.yaml (site
+# labp2, host p2.lab.test; routes "account" and "login" require an
+# interactive clearance; Turnstile only on "login", deny_countries [CN]):
+#
+#   mglab replay -map-host p2.lab.test=127.0.0.1 -base http://p2.lab.test:<edge port> \
+#     -var run=<id> lab/testdata/scenarios/phase2-challenge-page.yaml
+#   mglab events providers -site labp2 -route login -offer US,DE \
+#     -want-offered 3 -want-withheld 7 <events.jsonl>
+#
+# The page's ix is HTML-attribute escaped (&quot;), the JSON challenge's is
+# not. CF-Connecting-IP stands in for cloudflared on the Edge's loopback
+# listener and CF-IPCountry for Cloudflare's location header, which the site
+# trusts (cloudflare.location_headers); every address is from a
+# documentation range.
+name: phase2-challenge-page
+description: Interactive challenges name no third party, and a denied or unknown country never gets a C that offers Turnstile.
+vars:
+  run: manual   # path segment that ties the events to one run
+
+requests:
+  # 1. Interactive page, no Turnstile on this route: nothing third-party.
+  - name: account page (US, no Turnstile here)
+    method: GET
+    path: /p2/account/${run}/home
+    headers: &page
+      CF-Connecting-IP: 203.0.113.100
+      CF-Visitor: '{"scheme":"https"}'
+      CF-IPCountry: US
+      User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36
+      Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+      Accept-Language: en-US,en;q=0.9
+      Sec-Fetch-Mode: navigate
+      Sec-Fetch-Site: none
+      Sec-Fetch-Dest: document
+    expect_status: 403
+    expect_header: &page-headers
+      Content-Type: text/html
+      Cache-Control: no-store
+      Content-Security-Policy: "default-src 'none'; script-src 'nonce-"
+    expect_header_excludes: &first-party-csp
+      # No host ("."), wildcard or network scheme. The random nonce is
+      # base64 and cannot contain ".", "*" or ":".
+      Content-Security-Policy: [".", "*", "http:", "https:", "ws:", "wss:", strict-dynamic, frame-src]
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: data-mg-ix="{&quot;a11y_first
+    expect_body_excludes: &first-party-body
+      - challenges.cloudflare.com
+      - '&quot;turnstile&quot;'
+      - src="http
+      - src="//
+      - href="http
+      - href="//
+      - action="http
+      - action="//
+      - url(
+      - '@import'
+    expect_body_contains_all: &self-hold-only
+      - '&quot;providers&quot;:[&quot;self_hold&quot;,&quot;pow_a11y&quot;]'
+      - src="/__mg/s/mg.
+      - data-mg-type="interactive"
+
+  # 2. The same route as an API call: the JSON challenge (§7.3).
+  - name: account API (JSON challenge)
+    method: GET
+    path: /p2/account/${run}/data.json
+    headers: &api
+      <<: *page
+      Accept: application/json
+      Sec-Fetch-Mode: cors
+      Sec-Fetch-Site: same-origin
+      Sec-Fetch-Dest: empty
+    expect_status: 403
+    expect_header: {MG-Challenge: interactive, Content-Type: application/json}
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: '"providers":["self_hold","pow_a11y"]'
+    expect_body_excludes: &no-turnstile-json [turnstile, challenges.cloudflare.com]
+
+  # 3-4. Positive control: an allowed country on the Turnstile route gets it
+  #      first, and the page's CSP admits Cloudflare's frame (§8.3).
+  - name: login page (US, Turnstile offered)
+    method: GET
+    path: /p2/login/${run}/home
+    headers:
+      <<: *page
+      CF-Connecting-IP: 203.0.113.101
+    expect_status: 403
+    expect_header:
+      Content-Type: text/html
+      Content-Security-Policy: frame-src https://challenges.cloudflare.com
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: '&quot;providers&quot;:[&quot;turnstile&quot;,&quot;self_hold&quot;,&quot;pow_a11y&quot;]'
+  - name: login API (DE, Turnstile offered)
+    method: GET
+    path: /p2/login/${run}/data.json
+    headers:
+      <<: *api
+      CF-Connecting-IP: 203.0.113.102
+      CF-IPCountry: DE
+    expect_status: 403
+    expect_header: {MG-Challenge: interactive}
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: '"providers":["turnstile","self_hold","pow_a11y"]'
+
+  # 5-6. A denied country (CN): never Turnstile, and the page is first-party only.
+  - name: login page (CN, denied)
+    method: GET
+    path: /p2/login/${run}/home
+    headers:
+      <<: *page
+      CF-Connecting-IP: 203.0.113.103
+      CF-IPCountry: CN
+    expect_status: 403
+    expect_header: *page-headers
+    expect_header_excludes: *first-party-csp
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: data-mg-type="interactive"
+    expect_body_excludes: *first-party-body
+    expect_body_contains_all: *self-hold-only
+  - name: login API (CN, denied)
+    method: GET
+    path: /p2/login/${run}/data.json
+    headers:
+      <<: *api
+      CF-Connecting-IP: 203.0.113.104
+      CF-IPCountry: CN
+    expect_status: 403
+    expect_header: {MG-Challenge: interactive}
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: '"providers":["self_hold","pow_a11y"]'
+    expect_body_excludes: *no-turnstile-json
+
+  # 7-10. An unknown country: no header, Cloudflare's XX (no data) and T1
+  #       (Tor), and a malformed value. With deny_countries set, unknown
+  #       means no Turnstile (§8.1).
+  - name: login page (no country header)
+    method: GET
+    path: /p2/login/${run}/home
+    headers:
+      CF-Connecting-IP: 203.0.113.105
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36
+      Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+      Accept-Language: en-US,en;q=0.9
+      Sec-Fetch-Mode: navigate
+      Sec-Fetch-Site: none
+      Sec-Fetch-Dest: document
+    expect_status: 403
+    expect_header_excludes: *first-party-csp
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: data-mg-type="interactive"
+    expect_body_excludes: *first-party-body
+  - name: login page (XX, no data)
+    method: GET
+    path: /p2/login/${run}/home
+    headers:
+      <<: *page
+      CF-Connecting-IP: 203.0.113.106
+      CF-IPCountry: XX
+    expect_status: 403
+    expect_header_excludes: *first-party-csp
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: data-mg-type="interactive"
+    expect_body_excludes: *first-party-body
+  - name: login API (T1, Tor)
+    method: GET
+    path: /p2/login/${run}/data.json
+    headers:
+      <<: *api
+      CF-Connecting-IP: 203.0.113.107
+      CF-IPCountry: T1
+    expect_status: 403
+    expect_header: {MG-Challenge: interactive}
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: '"providers":["self_hold","pow_a11y"]'
+    expect_body_excludes: *no-turnstile-json
+  - name: login API (lower-case cn, malformed)
+    method: GET
+    path: /p2/login/${run}/data.json
+    headers:
+      <<: *api
+      CF-Connecting-IP: 203.0.113.108
+      CF-IPCountry: cn
+    expect_status: 403
+    expect_header: {MG-Challenge: interactive}
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: '"providers":["self_hold","pow_a11y"]'
+    expect_body_excludes: *no-turnstile-json
+
+  # 11-12. The verify entry a page's script sends an interactive JSON
+  #        challenge to (D-57, D-58): the same rule, CN withheld, DE offered.
+  - name: verify entry (CN, denied)
+    method: GET
+    path: /__mg/v?ret=%2Fp2%2Flogin%2F${run}%2Fhome&min=interactive
+    headers:
+      <<: *page
+      CF-Connecting-IP: 203.0.113.109
+      CF-IPCountry: CN
+      Sec-Fetch-Site: same-origin
+    expect_status: 403
+    expect_header: *page-headers
+    expect_header_excludes: *first-party-csp
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: data-mg-ret="/p2/login/
+    expect_body_excludes: *first-party-body
+    expect_body_contains_all: *self-hold-only
+  - name: verify entry (DE, offered)
+    method: GET
+    path: /__mg/v?ret=%2Fp2%2Flogin%2F${run}%2Fhome&min=interactive
+    headers:
+      <<: *page
+      CF-Connecting-IP: 203.0.113.110
+      CF-IPCountry: DE
+      Sec-Fetch-Site: same-origin
+    expect_status: 403
+    expect_header:
+      Content-Security-Policy: frame-src https://challenges.cloudflare.com
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: '&quot;providers&quot;:[&quot;turnstile&quot;,&quot;self_hold&quot;,&quot;pow_a11y&quot;]'
