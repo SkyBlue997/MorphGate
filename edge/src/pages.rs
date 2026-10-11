@@ -256,6 +256,27 @@ pub fn submit_ok_json(ret: &str, set_cookie: String, now_ms: i64) -> EdgeRespons
     EdgeResponse::new(200, JSON, body.to_string()).with("Set-Cookie", set_cookie)
 }
 
+/// 403 `{"v": 2, "error": "mg_proof_required", "now_ms": …, "request_id":
+/// …}` with `MG-Error` (Phase 2 spec §9.1, §11.2); with the in-place
+/// recovery `C` also `challenge`, `type: "pow"`, `pow` and its `ret` (I-54).
+pub fn proof_required_json(
+    request_id: &str,
+    now_ms: i64,
+    recovery: Option<(Shown<'_>, &str)>,
+) -> EdgeResponse {
+    let mut body = json!({
+        "v": JSON_V,
+        "error": "mg_proof_required",
+        "now_ms": now_ms,
+        "request_id": safe_id(request_id),
+    });
+    if let Some((shown, ret)) = recovery {
+        shown.describe(&mut body);
+        body["ret"] = json!(ret);
+    }
+    json_error(403, "mg_proof_required", &body)
+}
+
 /// 425 `{"v": 2, "error": "mg_too_early"}` (`Early-Data`, §10.3 step 1).
 pub fn too_early_json() -> EdgeResponse {
     json_error(

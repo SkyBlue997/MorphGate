@@ -12,8 +12,9 @@
 //!   `session` dimension without a valid clearance, and an `asn` dimension
 //!   on a site without a usable GeoLite2 ASN database.
 //! * `scope = global` limiters and the verdict `MGET` share ONE round trip
-//!   ([`StateHandle::round_trip1`], local fallback inside); `scope = local`
-//!   limiters only use the in-process table.
+//!   ([`StateHandle::round_trip1_v2`], local fallback inside), with the
+//!   `MG-Proof` `jti` check of a proof that passed (Phase 2 spec §9.2,
+//!   §14.3); `scope = local` limiters only use the in-process table.
 //! * Each limiter yields a `RateObservation` (utilization, exceeded, GCRA
 //!   wait, action, dry run) for the Decision Core; an exceeded one counts
 //!   `mg_ratelimit_exceeded_total{limiter}`, dry-run limiters included.
@@ -28,8 +29,8 @@ use crate::sites::{EnvRuntime, LimiterDim, LimiterScope, LimiterSpec};
 use mg_core::gcra::GcraOutcome;
 use mg_core::{EntityVerdict, Net, RateObservation};
 use mg_edge_core::state::{
-    LimitCheck, LimiterKey, RoundTrip1, StateHandle, StateMode, dims, entity_key, parse_verdict,
-    verdict_key,
+    JtiCheck, JtiOutcome, LimitCheck, LimiterKey, RoundTrip1V2, StateHandle, StateMode, dims,
+    entity_key, parse_verdict, verdict_key,
 };
 use std::net::IpAddr;
 
@@ -124,6 +125,8 @@ pub struct StateOutcome {
     pub verdicts: Vec<EntityVerdict>,
     /// Where the global limiters were counted (`None`: no round trip).
     pub mode: Option<StateMode>,
+    /// The answer of [`Plan::jti`] (Phase 2 spec §9.2).
+    pub jti: Option<JtiOutcome>,
 }
 
 /// One limiter observation from its GCRA outcome.
@@ -156,6 +159,8 @@ pub struct Plan<'a> {
     pub share_ip_verdicts: bool,
     /// Edge clock for `scope = local` limiters.
     pub now_us: u64,
+    /// The `jti` check of a proof that passed §6.7 (Phase 2 spec §9.2).
+    pub jti: Option<&'a JtiCheck>,
 }
 
 /// Runs the request's limiters and reads its verdicts (see the module
@@ -168,6 +173,7 @@ pub async fn run(state: &StateHandle, k_pseudo: &[u8; 32], plan: &Plan<'_>) -> S
         subject,
         share_ip_verdicts,
         now_us,
+        jti,
     } = *plan;
     // (limiter, check) in bundle order.
     let planned: Vec<(&LimiterSpec, LimitCheck)> = env
@@ -196,15 +202,21 @@ pub async fn run(state: &StateHandle, k_pseudo: &[u8; 32], plan: &Plan<'_>) -> S
 
     let mut out = StateOutcome::default();
     let mut global_outcomes = Vec::new().into_iter();
-    if !global.is_empty() || !verdict_keys.is_empty() {
+    if !global.is_empty() || !verdict_keys.is_empty() || jti.is_some() {
         let n = global.len();
+        let now_ms = i64::try_from(now_us / 1000).unwrap_or(i64::MAX);
         let r = state
-            .round_trip1(RoundTrip1 {
-                verdict_keys,
-                limits: global,
-            })
+            .round_trip1_v2(
+                RoundTrip1V2 {
+                    verdict_keys,
+                    limits: global,
+                    jti: jti.cloned(),
+                },
+                now_ms,
+            )
             .await;
         out.mode = Some(r.mode);
+        out.jti = r.jti;
         out.verdicts = r
             .verdicts
             .iter()
@@ -404,6 +416,7 @@ mod tests {
                 1,
                 false,
             ),
+            reads_proof: false,
         }
     }
 
@@ -435,6 +448,7 @@ mod tests {
                 subject: s,
                 share_ip_verdicts: false,
                 now_us: unix_now_us(),
+                jti: None,
             };
             rt.block_on(run(&state, &[3; 32], &plan))
         };
@@ -458,5 +472,40 @@ mod tests {
         assert!(!a.rate[0].exceeded && b.rate[0].exceeded);
         let c = run_once(subject(Some("2001:db8:1:3::a"), None));
         assert!(!c.rate[0].exceeded);
+    }
+
+    /// Phase 2 spec §9.2, §14.3: the `jti` check rides on the same round
+    /// trip, even without limiters or verdict keys; locally it is final only
+    /// with `local_replay_authoritative`.
+    #[test]
+    fn jti_check_in_the_round_trip() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let e = env(Vec::new());
+        let now_us = unix_now_us();
+        let iat = i64::try_from(now_us / 1_000_000).unwrap();
+        let check = JtiCheck::new("blog", &[3; 32], &"k".repeat(43), "A".repeat(22), iat);
+        let run_with = |state: &StateHandle| {
+            let plan = Plan {
+                site: "blog",
+                env: &e,
+                route_id: "login",
+                subject: subject(None, None),
+                share_ip_verdicts: false,
+                now_us,
+                jti: Some(&check),
+            };
+            rt.block_on(run(state, &[3; 32], &plan)).jti
+        };
+        let mut cfg = StateConfig::local([3; 32]);
+        cfg.local_replay_authoritative = true;
+        cfg.process_start_ms = 0;
+        let (_service, state) = StateService::new(cfg);
+        assert_eq!(run_with(&state), Some(JtiOutcome::Fresh));
+        assert_eq!(run_with(&state), Some(JtiOutcome::Replayed));
+        let (_service, state) = StateService::new(StateConfig::local([3; 32]));
+        assert_eq!(run_with(&state), Some(JtiOutcome::Unavailable));
     }
 }

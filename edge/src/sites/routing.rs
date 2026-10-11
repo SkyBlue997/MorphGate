@@ -25,8 +25,8 @@
 //! once.
 
 use super::convert::{EnvRuntime, RouteMode, RouteRuntime};
-use mg_core::ChallengeType;
 use mg_core::policy::challenge_rank;
+use mg_core::{ChallengeType, Channel};
 
 /// The route a request is attributed to.
 #[derive(Debug, Clone, Copy)]
@@ -47,6 +47,9 @@ pub struct RouteMatch<'a> {
     /// The highest `min_level` over every route matched by some candidate
     /// (Phase 2 spec §1.4 step 5, D-64).
     pub min_level: Option<ChallengeType>,
+    /// AND of `channel = web` over every route matched by some candidate:
+    /// one condition of an exempt navigation (Phase 2 spec D-40, §9.1).
+    pub all_web: bool,
 }
 
 impl RouteMatch<'_> {
@@ -88,6 +91,7 @@ pub fn select_route<'a>(
     let mut never_challenge = true;
     let mut proof_required = false;
     let mut min_level: Option<ChallengeType> = None;
+    let mut all_web = true;
     for candidate in &candidates {
         let Some((pos, route)) = eligible
             .iter()
@@ -102,6 +106,7 @@ pub fn select_route<'a>(
         never_challenge &= route.never_challenge;
         proof_required |= route.proof_required;
         min_level = higher_level(min_level, route.min_level);
+        all_web &= route.channel == Channel::Web;
         let better = match selected {
             None => true,
             Some((best_pos, best)) => {
@@ -122,6 +127,7 @@ pub fn select_route<'a>(
             never_challenge,
             proof_required,
             min_level,
+            all_web,
         },
         None => {
             let route = env
@@ -137,6 +143,7 @@ pub fn select_route<'a>(
                 never_challenge: route.never_challenge,
                 proof_required: route.proof_required,
                 min_level: route.min_level,
+                all_web: route.channel == Channel::Web,
             }
         }
     }
@@ -166,8 +173,8 @@ fn method_admits(route_method: &str, method: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mg_core::RouteSensitivity;
     use mg_core::policy::Glob;
-    use mg_core::{Channel, RouteSensitivity};
 
     fn route(name: &str, paths: &[&str], sensitivity: RouteSensitivity) -> RouteRuntime {
         RouteRuntime {
@@ -204,6 +211,7 @@ mod tests {
                 1,
                 false,
             ),
+            reads_proof: false,
         }
     }
 
@@ -409,6 +417,35 @@ mod tests {
         let m = pick(&e, "GET", "/beacon%2Fx", false);
         assert!(!m.never_challenge);
         assert!(!pick(&e, "GET", "/other", false).never_challenge);
+    }
+
+    /// Phase 2 spec D-40: an exempt navigation needs every matched route to
+    /// be a `web` route; one `api` route matched by another path view is
+    /// enough to require a proof.
+    #[test]
+    fn all_web_is_anded() {
+        let mut api = route("api", &["/api/**"], RouteSensitivity::Medium);
+        api.channel = Channel::Api;
+        let e = env(vec![
+            api,
+            route("page", &["/api%2Fx"], RouteSensitivity::High),
+            route("default", &["/**"], RouteSensitivity::Low),
+        ]);
+        assert!(pick(&e, "GET", "/home", false).all_web);
+        assert!(!pick(&e, "GET", "/api/x", false).all_web);
+        // The raw view selects "page" (more sensitive), the decoded view hits "api".
+        let m = pick(&e, "GET", "/api%2Fx", false);
+        assert_eq!(m.route.name, "page");
+        assert!(!m.all_web);
+        // No match: the default / fallback route's channel.
+        let only = env(vec![api_only()]);
+        assert!(pick(&only, "GET", "/x", false).all_web);
+    }
+
+    fn api_only() -> RouteRuntime {
+        let mut r = route("only", &["/only"], RouteSensitivity::High);
+        r.channel = Channel::Api;
+        r
     }
 
     #[test]

@@ -20,12 +20,13 @@
 use crate::context::{self, Facts};
 use crate::identity::{self, RdnsDispatcher};
 use crate::metrics::metrics;
+use crate::proof::{self, ProofOutcome, Thumbprint};
 use crate::ratelimit::{self, Plan, Subject};
 use crate::sites::{BundleRuntime, EnvRuntime};
 use mg_challenge::BindInputs;
 use mg_core::policy::{
     CrawlerAction, CrawlerPolicy, EngineConfig, NamedLists, Rule, SitePolicy, challenge_rank,
-    effective_challenge,
+    effective_challenge, proof_verification_needed,
 };
 use mg_core::{
     Action, ChallengeType, Decision, DecisionCore, FamilyMode, RequestContext, RequestExtras,
@@ -147,6 +148,12 @@ pub enum Enforcement {
     ChallengeClientIpUnknown,
     /// `Early-Data: 1` on a critical route: 425 (§9.9).
     TooEarly,
+    /// `Early-Data` on a `proof = required` route (Phase 2 spec §9.1, §11.2):
+    /// 425, JSON `mg_too_early` for requests that are not navigations.
+    ProofTooEarly,
+    /// 403 `mg_proof_required` (Phase 2 spec §9.1), answered by the proxy
+    /// (with the in-place recovery `C` when it applies).
+    ProofRequired,
 }
 
 impl Enforcement {
@@ -156,8 +163,8 @@ impl Enforcement {
             Self::Forward => None,
             Self::Block => Some(403),
             Self::RateLimit { .. } | Self::ChallengeClientIpUnknown => Some(429),
-            Self::Challenge(_) => Some(403),
-            Self::TooEarly => Some(425),
+            Self::Challenge(_) | Self::ProofRequired => Some(403),
+            Self::TooEarly | Self::ProofTooEarly => Some(425),
         }
     }
 }
@@ -184,6 +191,23 @@ pub struct EnforceInput<'a> {
     pub verify_floor: Option<ChallengeType>,
     /// Phase 2 spec §5.1: without it `interactive` is issued as `pow`.
     pub interactive_available: bool,
+    /// The request's `MG-Proof` as far as the execution layer needs it
+    /// (Phase 2 spec §9.1).
+    pub proof: ProofEnforce,
+}
+
+/// What the §9.1 execution of `proof = required` needs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProofEnforce {
+    /// A matched route has `proof = required` (schema 2 only).
+    pub required: bool,
+    /// An exempt request (D-40: GET / HEAD navigation on `web` routes, CORS
+    /// preflight).
+    pub exempt: bool,
+    /// `identity.proof.valid` (an unchecked `jti` counts as valid).
+    pub valid: bool,
+    /// The proof passed §6.7 but the `jti` replay store gave no answer.
+    pub unchecked: bool,
 }
 
 /// The §9.9 execution layer. Returns the decision to record (the engine's,
@@ -257,6 +281,13 @@ pub fn level_challenge(level: &TokenLevel) -> ChallengeType {
 }
 
 /// [`enforce`] for a request bound for the origin.
+///
+/// Phase 2 spec §9.1 on a `proof = required` route, for a request that is
+/// not exempt and whose decision would forward: `Early-Data` is 425; a
+/// proof whose `jti` could not be checked is 429 on a `fail_closed` route
+/// (`edge.proof_replay_unavailable`) and passes elsewhere; without a valid
+/// proof the decision becomes a 403 `edge.proof_required`. Under monitor
+/// the substitutions are only recorded (`dry_run`).
 fn enforce_route(engine: Decision, input: &EnforceInput<'_>) -> (Decision, Enforcement) {
     let mut d = engine;
     let denied = matches!(d.action, Action::Block | Action::RateLimit);
@@ -268,6 +299,31 @@ fn enforce_route(engine: Decision, input: &EnforceInput<'_>) -> (Decision, Enfor
             rule_id: Some(CLIENT_IP_UNKNOWN_RULE.to_string()),
             ..Decision::default()
         };
+    }
+    let forwarded = matches!(d.action, Action::Allow | Action::Tag | Action::Log);
+    let p = input.proof;
+    let proof_route = p.required && !p.exempt && !input.verify && forwarded;
+    if proof_route && input.early_data && !input.monitor {
+        return (d, Enforcement::ProofTooEarly);
+    }
+    if proof_route && p.unchecked && input.route.fail_closed {
+        d = Decision {
+            action: Action::RateLimit,
+            status: Some(429),
+            retry_after_s: Some(proof::PROOF_UNCHECKED_RETRY_S),
+            rule_id: Some(proof::PROOF_UNCHECKED_RULE.to_string()),
+            ..Decision::default()
+        };
+    } else if proof_route && !p.valid {
+        d = Decision {
+            action: Action::Block,
+            status: Some(403),
+            rule_id: Some(proof::PROOF_REQUIRED_RULE.to_string()),
+            ..Decision::default()
+        };
+        if !input.monitor {
+            return (d, Enforcement::ProofRequired);
+        }
     }
     if input.monitor || (input.never_challenge && d.action == Action::Challenge) {
         d.dry_run = true;
@@ -323,6 +379,24 @@ pub struct DecisionRecord {
     /// `fail_closed` route such a token is not a clearance
     /// (`identity::Acceptance`).
     pub token_replay_unchecked: bool,
+    /// The request's `MG-Proof` result (Phase 2 spec §9.1).
+    pub proof: ProofOutcome,
+    /// D-40 / §9.1: the request is exempt from `MG-Proof`.
+    pub proof_exempt: bool,
+    /// The thumbprint of the session key of a valid proof: a `C` issued
+    /// for this request is bound to it (`bind.jkt`, D-41, §7.1).
+    pub proof_jkt: Option<Thumbprint>,
+    /// edge.toml `force_monitor` (D-60): the decision event's
+    /// `forced_monitor`.
+    pub forced_monitor: bool,
+}
+
+impl DecisionRecord {
+    /// The decision is the §9.1 `edge.proof_required` substitution (the
+    /// decision event's top-level `proof_required: true`).
+    pub fn proof_required_applied(&self) -> bool {
+        self.decision.rule_id.as_deref() == Some(proof::PROOF_REQUIRED_RULE)
+    }
 }
 
 impl DecisionRecord {
@@ -377,6 +451,22 @@ pub async fn evaluate(
 ) -> DecisionRecord {
     let site = facts.site_id;
     let mut built = context::build(facts, &bundle.intel);
+    // Phase 2 spec §9.1: is the proof verified on this request?
+    let proof_exempt = proof::exempt(
+        built.ctx.http.navigation,
+        facts.method,
+        facts.all_routes_web,
+        &built.headers,
+    );
+    let proof_verified = proof_verification_needed(
+        bundle.schema_version,
+        proof_exempt,
+        facts.route.proof_required,
+        env.reads_proof,
+    );
+    if proof_verified {
+        built.missing = context::without_missing(&built.missing, "identity.proof");
+    }
     let ctx = &mut built.ctx;
 
     // Identity (§9.6): clearance, then the crawler claim.
@@ -399,6 +489,21 @@ pub async fn evaluate(
         identity::Acceptance::for_route(facts.route.fail_closed),
     );
     let token_replay_unchecked = clearance.replay_unchecked;
+    let proof_header = proof::header(facts.raw_headers);
+    let proof_check = proof_verified.then(|| {
+        proof::verify(
+            proof_header,
+            &proof::Request {
+                method: facts.method,
+                https: facts.visitor_https(),
+                host: facts.host,
+                path: facts.path,
+                now_s: facts.ts_ms.div_euclid(1000),
+            },
+            clearance.cnf_jkt.as_deref(),
+        )
+    });
+    let jti = proof_check.as_ref().and_then(|c| c.jti(site, svc.k_pseudo));
     ctx.identity.token = clearance.token;
     ctx.session_id = clearance.session;
     let now_us = ratelimit::unix_now_us();
@@ -435,10 +540,23 @@ pub async fn evaluate(
             subject,
             share_ip_verdicts: bundle.share_ip_verdicts,
             now_us,
+            jti: jti.as_ref(),
         },
     )
     .await;
     ctx.verdicts = state.verdicts;
+    let proof = proof_check.map_or(ProofOutcome::NotVerified, |c| c.outcome(state.jti));
+    if proof.verified() {
+        ctx.identity.proof = proof.fields(proof_header.present());
+        if proof == ProofOutcome::Unchecked
+            && let Err(e) = built.missing.insert("identity.proof.replayed")
+        {
+            log::error!("MissingSet: {e}");
+        }
+    }
+    let proof_required = facts.route.proof_required && !proof_exempt;
+    proof.count(proof_required);
+    let proof_jkt = clearance.cnf_jkt.filter(|_| proof.valid()).map(Thumbprint);
 
     // The Decision Core (§5.4-§5.7).
     let extras = RequestExtras {
@@ -487,6 +605,12 @@ pub async fn evaluate(
             verify: facts.verify,
             verify_floor,
             interactive_available: bundle.interactive_available,
+            proof: ProofEnforce {
+                required: facts.route.proof_required,
+                exempt: proof_exempt,
+                valid: proof.valid(),
+                unchecked: proof == ProofOutcome::Unchecked,
+            },
         },
     );
     DecisionRecord {
@@ -503,6 +627,10 @@ pub async fn evaluate(
         enforcement,
         bind,
         token_replay_unchecked,
+        proof,
+        proof_exempt,
+        proof_jkt,
+        forced_monitor: bundle.forced_monitor,
     }
 }
 
@@ -534,6 +662,7 @@ mod tests {
             verify: false,
             verify_floor: None,
             interactive_available: false,
+            proof: ProofEnforce::default(),
         }
     }
 
@@ -759,6 +888,84 @@ mod tests {
         assert_eq!(e, Enforcement::Forward);
         let (_, e) = enforce(block(), &input(&critical, true, true, false));
         assert_eq!(e, Enforcement::Block, "a denial stays a denial");
+    }
+
+    /// Phase 2 spec §9.1: the `proof = required` execution.
+    #[test]
+    fn proof_required_execution() {
+        let r = route(RouteSensitivity::Medium, false);
+        let fc = route(RouteSensitivity::Medium, true);
+        let with = |route, proof: ProofEnforce, monitor: bool, early: bool| EnforceInput {
+            proof,
+            ..input(route, true, early, monitor)
+        };
+        let req = |valid: bool, unchecked: bool| ProofEnforce {
+            required: true,
+            exempt: false,
+            valid,
+            unchecked,
+        };
+        // A valid proof forwards.
+        let (_, e) = enforce(Decision::allow(), &with(&r, req(true, false), false, false));
+        assert_eq!(e, Enforcement::Forward);
+        // No valid proof: 403 edge.proof_required, recorded as a block.
+        let (d, e) = enforce(
+            Decision::allow(),
+            &with(&r, req(false, false), false, false),
+        );
+        assert_eq!(e, Enforcement::ProofRequired);
+        assert_eq!(e.status(), Some(403));
+        assert_eq!(d.rule_id.as_deref(), Some(proof::PROOF_REQUIRED_RULE));
+        assert_eq!(d.action, Action::Block);
+        // Monitor only records it.
+        let (d, e) = enforce(Decision::allow(), &with(&r, req(false, false), true, false));
+        assert_eq!(e, Enforcement::Forward);
+        assert!(d.dry_run && d.rule_id.as_deref() == Some(proof::PROOF_REQUIRED_RULE));
+        // A challenge, block or rate limit is executed as decided.
+        let (_, e) = enforce(
+            Decision::challenge(ChallengeType::Pow),
+            &with(&r, req(false, false), false, false),
+        );
+        assert_eq!(e, Enforcement::Challenge(ChallengeType::Pow));
+        let (_, e) = enforce(block(), &with(&r, req(false, false), false, false));
+        assert_eq!(e, Enforcement::Block);
+        // Exempt requests and routes without proof are untouched.
+        let exempt = ProofEnforce {
+            exempt: true,
+            ..req(false, false)
+        };
+        let (_, e) = enforce(Decision::allow(), &with(&r, exempt, false, false));
+        assert_eq!(e, Enforcement::Forward);
+        let (_, e) = enforce(
+            Decision::allow(),
+            &with(&r, ProofEnforce::default(), false, false),
+        );
+        assert_eq!(e, Enforcement::Forward);
+        // Early-Data: 425 (enforce only).
+        let (_, e) = enforce(Decision::allow(), &with(&r, req(true, false), false, true));
+        assert_eq!((e, e.status()), (Enforcement::ProofTooEarly, Some(425)));
+        let (_, e) = enforce(Decision::allow(), &with(&r, req(true, false), true, true));
+        assert_eq!(e, Enforcement::Forward);
+        // An unchecked jti passes, except on a fail_closed route (429, 5 s).
+        let (_, e) = enforce(Decision::allow(), &with(&r, req(true, true), false, false));
+        assert_eq!(e, Enforcement::Forward);
+        let (d, e) = enforce(Decision::allow(), &with(&fc, req(true, true), false, false));
+        assert_eq!(
+            e,
+            Enforcement::RateLimit {
+                retry_after_s: proof::PROOF_UNCHECKED_RETRY_S
+            }
+        );
+        assert_eq!(d.rule_id.as_deref(), Some(proof::PROOF_UNCHECKED_RULE));
+        // The verify entry is never answered with mg_proof_required.
+        let (_, e) = enforce(
+            Decision::allow(),
+            &EnforceInput {
+                verify: true,
+                ..with(&r, req(false, false), false, false)
+            },
+        );
+        assert_eq!(e, Enforcement::Challenge(ChallengeType::Pow));
     }
 
     #[test]

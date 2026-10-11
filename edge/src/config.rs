@@ -36,6 +36,13 @@ pub const DEFAULT_GRACE_PERIOD_SECONDS: u64 = 10;
 /// Default seconds the runtimes get to wind down after the grace period.
 pub const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS: u64 = 5;
 
+/// Upper bound of the default `[events] shutdown_drain_ms` (Phase 2 spec
+/// §10.1).
+pub const DEFAULT_SHUTDOWN_DRAIN_MS: u64 = 2_000;
+
+/// `[valkey] local_jti_capacity` (Phase 2 spec §10.1).
+pub const LOCAL_JTI_CAPACITY: std::ops::RangeInclusive<usize> = 1_000..=10_000_000;
+
 /// `bundle_poll_seconds` range (§8.1); the poll loop itself does not clamp.
 pub const BUNDLE_POLL_SECONDS: std::ops::RangeInclusive<u64> = 2..=300;
 
@@ -299,6 +306,11 @@ pub struct SiteConfig {
     /// carries `MG-Origin-Auth`.
     #[serde(default)]
     pub origin_keys: Option<CredRef>,
+    /// Local emergency switch (Phase 2 spec §9.6, D-60): the whole site only
+    /// records, overriding the bundle's `monitor_only = false` and every
+    /// route's `mode: enforce`. Logged as a WARN at every load and hourly.
+    #[serde(default)]
+    pub force_monitor: bool,
 }
 
 fn default_bundle_timeout_ms() -> u64 {
@@ -370,6 +382,10 @@ pub struct ValkeyConfig {
     pub local_limiter_capacity: usize,
     #[serde(default = "ValkeyConfig::default_local_nonce_capacity")]
     pub local_nonce_capacity: usize,
+    /// The in-process `MG-Proof` `jti` set (Phase 2 spec §9.2, §10.1):
+    /// `1000..=10000000`.
+    #[serde(default = "ValkeyConfig::default_local_jti_capacity")]
+    pub local_jti_capacity: usize,
 }
 
 impl ValkeyConfig {
@@ -384,6 +400,9 @@ impl ValkeyConfig {
     }
     fn default_local_nonce_capacity() -> usize {
         mg_edge_core::state::DEFAULT_LOCAL_NONCE_CAPACITY
+    }
+    fn default_local_jti_capacity() -> usize {
+        mg_edge_core::state::DEFAULT_LOCAL_JTI_CAPACITY
     }
 }
 
@@ -606,11 +625,39 @@ impl EdgeConfig {
         self.events
             .validate()
             .map_err(|e| ConfigError::Invalid(format!("[events] {e}")))?;
+        if let Some(ms) = self.events.shutdown_drain_ms {
+            let max = self.max_shutdown_drain_ms();
+            if ms > max {
+                return invalid(format!(
+                    "[events] shutdown_drain_ms {ms} must be <= [server] grace_period_seconds * 1000 - 1000 = {max} \
+                     (the events of requests that end during the grace period must still be written)"
+                ));
+            }
+        }
         self.validate_intel()?;
         if self.sdk.dir.as_os_str().is_empty() {
             return invalid("[sdk] dir must not be empty");
         }
         Ok(())
+    }
+
+    /// `grace_period_seconds * 1000 - 1000` (at least 0): the longest shutdown
+    /// drain that still leaves the final flush time within the grace period
+    /// (Phase 2 spec §10.1).
+    fn max_shutdown_drain_ms(&self) -> u64 {
+        self.server
+            .grace_period_seconds
+            .saturating_mul(1000)
+            .saturating_sub(1000)
+    }
+
+    /// The shutdown drain in effect (Phase 2 spec §9.7, §10.1): `[events]
+    /// shutdown_drain_ms`, or when absent `min(2000, max(0,
+    /// grace_period_seconds * 1000 - 1000))`.
+    pub fn shutdown_drain_ms(&self) -> u64 {
+        self.events
+            .shutdown_drain_ms
+            .unwrap_or_else(|| self.max_shutdown_drain_ms().min(DEFAULT_SHUTDOWN_DRAIN_MS))
     }
 
     fn validate_listeners(&self) -> Result<(), ConfigError> {
@@ -815,6 +862,14 @@ impl EdgeConfig {
         if v.mode == ValkeyMode::Valkey && v.url.is_none() {
             return invalid("[valkey] url is required for mode = \"valkey\"");
         }
+        if !LOCAL_JTI_CAPACITY.contains(&v.local_jti_capacity) {
+            return invalid(format!(
+                "[valkey] local_jti_capacity {} must be {}..={}",
+                v.local_jti_capacity,
+                LOCAL_JTI_CAPACITY.start(),
+                LOCAL_JTI_CAPACITY.end()
+            ));
+        }
         // The remaining rules (URL shape, no password in the URL, non-zero
         // timeouts and capacities) are StateConfig::validate's; startup runs
         // it once the pseudonymization key is loaded.
@@ -1001,6 +1056,81 @@ dir = "/opt/morphgate/sdk"
         assert_eq!(cfg.intel, IntelConfig::default());
         assert_eq!(cfg.valkey.timeout_ms, 10);
         assert_eq!(cfg.valkey.local_nonce_capacity, 200_000);
+    }
+
+    /// Phase 2 spec §10.1: `shutdown_drain_ms` defaults from the grace
+    /// period and a set value may not exceed `grace * 1000 - 1000`.
+    #[test]
+    fn shutdown_drain_default_and_cross_check() {
+        let cfg = |server: &str, events: &str| {
+            EdgeConfig::from_toml_str(&format!(
+                "{VALID}\n[server]\n{server}\n[events]\n{events}\n"
+            ))
+        };
+        // Default grace 10 s: min(2000, 9000).
+        assert_eq!(cfg("", "").unwrap().shutdown_drain_ms(), 2_000);
+        assert_eq!(
+            cfg("grace_period_seconds = 2", "")
+                .unwrap()
+                .shutdown_drain_ms(),
+            1_000
+        );
+        for grace in [0, 1] {
+            let c = cfg(&format!("grace_period_seconds = {grace}"), "").unwrap();
+            assert_eq!(c.shutdown_drain_ms(), 0);
+            assert!(
+                cfg(
+                    &format!("grace_period_seconds = {grace}"),
+                    "shutdown_drain_ms = 0"
+                )
+                .is_ok()
+            );
+            let e = cfg(
+                &format!("grace_period_seconds = {grace}"),
+                "shutdown_drain_ms = 1",
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(e.contains("shutdown_drain_ms 1"), "{e}");
+        }
+        assert_eq!(
+            cfg("grace_period_seconds = 20", "shutdown_drain_ms = 10000")
+                .unwrap()
+                .shutdown_drain_ms(),
+            10_000
+        );
+        assert!(cfg("grace_period_seconds = 5", "shutdown_drain_ms = 4000").is_ok());
+        assert!(cfg("grace_period_seconds = 5", "shutdown_drain_ms = 4001").is_err());
+        // The edge-core range check still applies.
+        let e = cfg("grace_period_seconds = 30", "shutdown_drain_ms = 10001")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("[events]"), "{e}");
+    }
+
+    /// Phase 2 spec §10.1: `local_jti_capacity` and `force_monitor`.
+    #[test]
+    fn phase2_valkey_and_site_keys() {
+        let c = EdgeConfig::from_toml_str(VALID).unwrap();
+        assert_eq!(c.valkey.local_jti_capacity, 100_000);
+        assert!(!c.sites[0].force_monitor);
+        let with = |extra: &str| {
+            replace(
+                "mode = \"local\"\n",
+                &format!("mode = \"local\"\n{extra}\n"),
+            )
+        };
+        let c = EdgeConfig::from_toml_str(&with("local_jti_capacity = 1000")).unwrap();
+        assert_eq!(c.valkey.local_jti_capacity, 1_000);
+        for bad in ["999", "10000001"] {
+            let e = err(&with(&format!("local_jti_capacity = {bad}")));
+            assert!(e.contains("local_jti_capacity"), "{e}");
+        }
+        let forced = replace(
+            "seal_root = \"cred://mg-blog-seal-root\"",
+            "seal_root = \"cred://mg-blog-seal-root\"\nforce_monitor = true",
+        );
+        assert!(EdgeConfig::from_toml_str(&forced).unwrap().sites[0].force_monitor);
     }
 
     #[test]

@@ -83,8 +83,9 @@ pub fn bind_inputs(
     }
 }
 
-/// `identity.token` and the session of a request.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// `identity.token` and the session of a request. `Debug` shows neither
+/// the session nor the `cnf.jkt` (Phase 2 spec §2.4 item 10).
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Clearance {
     pub token: Token,
     /// The valid token's `sub` (`ctx.session_id`, `MG-Session`).
@@ -92,6 +93,27 @@ pub struct Clearance {
     /// The chosen token verified and carries `ruc` (issued without a replay
     /// check, I-30), whether or not the route accepted it.
     pub replay_unchecked: bool,
+    /// The valid token's `cnf.jkt` (Phase 2 spec D-46): the `expected_jkt`
+    /// of `MG-Proof` (§6.7). Never logged.
+    pub cnf_jkt: Option<String>,
+    /// The valid token's claims (Phase 2 spec §9.3: `/__mg/r` refreshes
+    /// them). `None` unless `token.status` is `valid`.
+    pub claims: Option<ClearanceClaims>,
+}
+
+impl fmt::Debug for Clearance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Clearance")
+            .field("token", &self.token)
+            .field(
+                "session",
+                &self.session.as_ref().map(|_| crate::logging::REDACTED),
+            )
+            .field("replay_unchecked", &self.replay_unchecked)
+            .field("bound", &self.cnf_jkt.is_some())
+            .field("claims", &self.claims)
+            .finish()
+    }
 }
 
 /// Which clearances the selected route accepts (I-30).
@@ -178,15 +200,23 @@ pub fn verify_clearance(
         },
         session: None,
         replay_unchecked: false,
+        cnf_jkt: None,
+        claims: None,
     };
     if let Some((claims, check)) = verified {
         out.replay_unchecked = claims.ruc;
         out.token.bind = check.token_bind();
         if status == TokenStatus::Valid {
+            let secs = |t: i64| u32::try_from(now_s.saturating_sub(t).max(0)).unwrap_or(u32::MAX);
             out.token.level = Some(claims.lvl);
-            out.token.age_s =
-                u32::try_from(now_s.saturating_sub(claims.iat).max(0)).unwrap_or(u32::MAX);
-            out.session = Some(claims.sub);
+            out.token.age_s = secs(claims.iat);
+            // Phase 2 spec §4.1: `identity.token.bound` and `level_age`
+            // (`now - lat`, `now - iat` for v1 tokens).
+            out.token.bound = claims.cnf_jkt().is_some();
+            out.token.level_age = secs(claims.level_at());
+            out.cnf_jkt = claims.cnf_jkt().map(str::to_owned);
+            out.session = Some(claims.sub.clone());
+            out.claims = Some(claims);
         }
     }
     out

@@ -192,6 +192,7 @@ impl Req {
             raw_headers: &self.headers,
             removed: &removed,
             expected_mask: 0,
+            all_routes_web: true,
         };
         crate::context::build(&facts, &crate::sites::Intel::default())
     }

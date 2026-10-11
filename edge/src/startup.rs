@@ -216,6 +216,9 @@ impl Startup {
                     ));
                 }
             }
+            if s.force_monitor {
+                warn(forced_monitor_warning(&s.id));
+            }
             interactive_warnings(
                 &s.id,
                 current.as_ref(),
@@ -305,6 +308,7 @@ fn state_config(
     state.local_replay_authoritative = v.local_replay_authoritative;
     state.local_limiter_capacity = v.local_limiter_capacity;
     state.local_nonce_capacity = v.local_nonce_capacity;
+    state.local_jti_capacity = v.local_jti_capacity;
     debug_assert!(matches!(state.mode, StateMode::Valkey | StateMode::Local));
     state.validate().map_err(|e| format!("[valkey] {e}"))?;
     Ok(state)
@@ -441,6 +445,17 @@ fn artifact_sha(vb: &VerifiedBundle, name: &str) -> String {
         .find(|a| a.name == name)
         .map(|a| a.sha256.clone())
         .unwrap_or_default()
+}
+
+/// The WARN of a site with edge.toml `force_monitor = true` (Phase 2 spec
+/// §9.6, D-60): at every load (`--check-config` counts it) and hourly while
+/// it is in effect.
+pub fn forced_monitor_warning(site: &str) -> String {
+    format!(
+        "site {site}: force_monitor = true in edge.toml: the whole site only records \
+         (every route is monitor, whatever the bundle says); remove it once a monitor \
+         bundle is deployed (D-60)"
+    )
 }
 
 /// Smallest `local_nonce_capacity` recommended with interactive challenges

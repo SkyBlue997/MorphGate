@@ -184,6 +184,13 @@ fn systemd_example_matches_the_unit() {
         stop < timeout,
         "grace + shutdown timeout ({stop}s) must be below TimeoutStopSec ({timeout}s)"
     );
+    // Phase 2 spec §9.7, §10.1: the event drain ends a second before the
+    // grace period does.
+    assert!(cfg.shutdown_drain_ms() + 1000 <= cfg.server.grace_period_seconds * 1000);
+    assert!(
+        !cfg.sites[0].force_monitor,
+        "the example never ships forced"
+    );
 
     // Every cred:// name has a LoadCredential(Encrypted)= line and vice versa.
     let loaded: BTreeSet<String> = ["LoadCredential", "LoadCredentialEncrypted"]

@@ -84,6 +84,7 @@ pub mod logging;
 pub mod metrics;
 pub mod mg_endpoints;
 pub mod pages;
+pub mod proof;
 pub mod proxy;
 pub mod ratelimit;
 pub mod renew;
@@ -150,6 +151,7 @@ pub(crate) mod test_support {
             bootstrap_owner_zones: Vec::new(),
             crawler_cache: mg_intel::CacheConfig::default(),
             sdk_manifest_v2: sdk_v2,
+            force_monitor: false,
         }
     }
 

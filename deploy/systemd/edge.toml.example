@@ -1,5 +1,7 @@
 # /etc/morphgate/edge.toml - mg-edge configuration v1 for deploy/systemd/mg-edge.service
-# (docs/impl/phase1-spec.md §8.1).
+# (docs/impl/phase1-spec.md §8.1; the Phase 2 keys of docs/impl/phase2-spec.md
+# §10.1 are optional, and a Phase 1 binary rejects them: remove them before a
+# rollback).
 #
 # Host-local settings only: listeners, sites (hosts, origin, where the signed
 # bundle comes from), credentials, state and event sinks. Every policy comes
@@ -91,6 +93,11 @@ seal_root  = "cred://mg-blog-seal-root"
 # origin can tell the MG-* headers came from this Edge (mgctl keys gen-origin;
 # the origin keeps a copy of the same file). Add its LoadCredentialEncrypted=.
 # origin_keys = "cred://mg-blog-origin-keys"
+# Emergency switch (Phase 2 spec §9.6, D-60): true makes the whole site only
+# record, whatever the bundle says (every route monitor). Logged as a WARN at
+# every load and hourly, mg_site_forced_monitor{site} = 1, and --check-config
+# counts it as a warning. Deploy a monitor bundle, then remove it again.
+force_monitor = false
 
 [bundle_client]                        # used for https:// bundle roots
 # ca_file = "/etc/morphgate/brain-ca.pem"
@@ -110,6 +117,9 @@ connect_timeout_ms = 500
 local_replay_authoritative = false     # true only when exactly one Edge serves these sites
 local_limiter_capacity = 200000
 local_nonce_capacity = 200000
+# In-process MG-Proof jti set (Phase 2 spec §9.2), 1000..10000000: at least
+# the active session keys times each key's requests within 40 s.
+local_jti_capacity = 100000
 
 [events]
 # http:// only to loopback / private / 100.64.0.0/10 IP literals (events carry
@@ -120,6 +130,11 @@ local_nonce_capacity = 200000
 vl_main  = "http://10.0.0.5:9428"
 vl_short = "http://10.0.0.5:9429"
 flush_interval_ms = 1000
+# On shutdown, keep writing events for at most this long once the proxies have
+# finished their requests (Phase 2 spec §9.7). Absent: min(2000,
+# grace_period_seconds * 1000 - 1000); a set value must be 0..10000 and at most
+# grace_period_seconds * 1000 - 1000.
+# shutdown_drain_ms = 2000
 
 [intel]
 dns_resolver = "system"
