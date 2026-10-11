@@ -45,14 +45,29 @@
 #
 # Zero-downtime binary/config upgrade (Pingora graceful upgrade):
 #   systemctl reload mg-edge
-# ExecReload first runs mg-edge --check-config: if the new configuration,
-# credentials or LKG are unusable, the reload fails there and the running
-# process keeps serving (systemd runs the next ExecReload= line only after the
-# previous one succeeded). Then it sends SIGQUIT to the running process, which
-# hands its listening sockets to the new process started with -u over the
-# upgrade socket, drains in-flight requests and exits. systemd follows the new
-# main PID through PIDFile. Plain `systemctl restart` drops connections; prefer
-# reload.
+# ExecReload runs mg-edge --check-config before it signals anything: if the
+# new configuration, credentials or LKG are unusable, the reload fails there
+# and the running process keeps serving (systemd runs the next ExecReload=
+# line only after the previous one succeeded). Then it sends SIGQUIT to the
+# running process, which hands its listening sockets to the new process
+# started with -u over the upgrade socket, drains in-flight requests and
+# exits. systemd follows the new main PID through PIDFile. Plain
+# `systemctl restart` drops connections; prefer reload.
+#
+# The first ExecReload= line is `mg-edge --version`, which reads no
+# credentials (and records the new binary's version in the journal):
+# systemd 255 (Ubuntu 24.04) sets up $CREDENTIALS_DIRECTORY for the second
+# and later ExecReload= lines only. In a unit with a mount namespace, as this
+# one has, the first line finds /run/credentials inaccessible, so a
+# --check-config there always fails with "Permission denied". systemd 256
+# and later give every line the credentials (docs/impl/phase1-spec.md I-41).
+#
+# Changed credentials (key rotation) take effect on reload with systemd 255,
+# which loads them again for every ExecReload= line after the first, and
+# with systemd 260 or later through RefreshOnReload=credentials below (older
+# versions log "Unknown key name" for it and go on). systemd 256 to 259 keep
+# the credentials loaded at start: there, run `systemctl restart mg-edge`
+# after changing one.
 #
 # /etc/morphgate/edge.toml must move Pingora's PID file and upgrade socket out
 # of /tmp (Pingora's defaults), which PrivateTmp= hides from systemd; the
@@ -85,9 +100,11 @@ PIDFile=/run/morphgate/mg-edge.pid
 # closed, or bootstrap-open with on_lkg_invalid = "open") and recover by
 # polling, which --check-config (exit 1) would prevent.
 ExecStart=/usr/local/bin/mg-edge -d --config /etc/morphgate/edge.toml
+ExecReload=/usr/local/bin/mg-edge --version
 ExecReload=/usr/local/bin/mg-edge --check-config --config /etc/morphgate/edge.toml
 ExecReload=/bin/kill -QUIT $MAINPID
 ExecReload=/usr/local/bin/mg-edge -u -d --config /etc/morphgate/edge.toml
+RefreshOnReload=credentials
 # SIGTERM = Pingora graceful shutdown (stop accepting, drain, exit).
 KillSignal=SIGTERM
 # Must exceed [server] grace_period_seconds + graceful_shutdown_timeout_seconds.

@@ -99,7 +99,7 @@ jq '.rules[0]' transform-rule.request-headers.json \
 
 - 只在 Edge 的 `edge.toml` 为该监听器配置了 `upstream_keys` 时部署；此后 Edge 拒绝（403）不带正确密钥头的请求，所以表达式必须与 Tier 0 规则一样覆盖站点全部主机名（模板为 `true`）。
 - 值取 `mgctl keys gen-upstream --out …` 打印到 stdout 的 `values[0]`（43 个 base64url 字符）。只在 Dashboard 或 API 请求里填写，**不要写回模板或提交到仓库**；模板里的 `REPLACE-ME …` 占位符永远不会被 Edge 接受，`mgctl cf audit` 第 6 项发现占位符时报错。
-- 轮换：`mgctl keys gen-upstream --rotate`（密钥文件保留新旧两个值）→ 更新每台 Edge 的 credential 并 reload → 把规则的值改成新的 `values[0]`。Edge 在此期间同时接受两个值。
+- 轮换：`mgctl keys gen-upstream --rotate`（密钥文件保留新旧两个值）→ 更新每台 Edge 的 credential 并 reload（systemd 256–259 上要 `systemctl restart mg-edge`，见 `deploy/systemd/mg-edge.service`） → 把规则的值改成新的 `values[0]`。Edge 在此期间同时接受两个值。
 - 已有 `http_request_late_transform` 入口规则集时，与 Tier 0 规则一样只追加这一条（`jq '.rules[0]' transform-rule.upstream-key.json | curl … /rules`）；把值替换后再提交。
 - `mgctl cf audit` 从不打印这个头的值。
 
