@@ -1,0 +1,24 @@
+# mg-nearline configuration (docs/impl/phase2-spec.md §13.5).
+# Install as /etc/morphgate/mg-nearline.yaml (mode 0644: it holds no secret;
+# the Valkey password comes from the systemd credential mg-nearline-valkey).
+# Unknown keys are errors. Only ${CREDENTIALS_DIRECTORY} is expanded in values.
+# Check with: mg-nearline --check-config --config /etc/morphgate/mg-nearline.yaml
+version: 1
+valkey:
+  url: "unix:///run/valkey/valkey.sock"     # or redis://127.0.0.1:6379/ ; loopback only
+  user: mg-nearline
+  password_file: "${CREDENTIALS_DIRECTORY}/mg-nearline-valkey"
+stream: {key: "mg:ev", group: nl, batch: 512, block_ms: 1000, reclaim_idle_ms: 60000, reclaim_every_s: 60}
+# One ACL key pattern ~mg:v:<site>:* per site (spec §13.6).
+sites: [blog]
+# verdict_events: {vl_main: "http://127.0.0.1:9428"}   # optional: kind=verdict lines to vl-main
+metrics_listen: "127.0.0.1:9902"
+windows: {max_keys: 200000, ipv6_prefix_factor: 4}
+# Every detector starts in shadow (log and metrics only). Switch one to
+# enforce only after a week of shadow verdicts without false positives (§19).
+detectors:
+  scanner:         {mode: shadow, bait_distinct: 2, distinct_404: 30, share_404: 0.6, risk: 80, ttl: 15m}
+  shared_token:    {mode: shadow, proof_mismatch: 3, distinct_prefix: 2, risk: 85, ttl: 1h}
+  challenge_abuse: {mode: shadow, fails: 30, max_pass_ratio: 0.1, risk: 70, ttl: 30m}
+  high_rate:       {mode: shadow, per_minute: 600, minutes: 5, shared_egress: 3, risk: 75, ttl: 15m}
+acceptance: {window_days: 7, min_denominator: 2000, max_keys_per_day: 200000}
