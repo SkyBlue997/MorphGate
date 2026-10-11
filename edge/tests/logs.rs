@@ -186,3 +186,89 @@ fn redacted_route_paths_stay_out_of_proxy_error_logs() {
     assert!(line.contains("GET /reset route="), "{line}");
     assert!(!log.contains(TOKEN), "tokenized path in the log:\n{log}");
 }
+
+/// Phase 2 spec §2.4 item 10 (`logs_never_contain_client_secrets`
+/// extended): at `trace` level, a v2 submission (session key JWK and
+/// signature), the clearance bound to its key and `MG-Proof` headers (valid,
+/// replayed, from another key, malformed) leave none of the proof, the JWK
+/// coordinates, the thumbprint, the signatures or the clearance in the log.
+#[test]
+fn logs_never_contain_proofs_keys_or_signatures() {
+    use common::interactive::{cookie, from_page, post_json, submission};
+    use mg_challenge::testkit::TestSessionKey;
+    let env = TestEnv::new("logs-proof");
+    let mut b = mg_edge_core::testkit::http::test_site_bundle_v2("blog", &common::HOSTS, 1);
+    b.monitor_only = false;
+    b.challenge.as_mut().unwrap().pow_bits = Some(PowBits {
+        low: 8,
+        medium: 8,
+        high: 8,
+        very_high: 8,
+    });
+    let mut api = route("api", &["/api/**"], S::Medium, false, false);
+    api.channel = mg_proto::v1::Channel::Api as i32;
+    api.proof = mg_proto::v1::ProofMode::Required as i32;
+    b.environments[0].routes = vec![
+        api,
+        route("members", &["/members/**"], S::Medium, true, false),
+        default_route(),
+    ];
+    env.write_lkg("blog", &sign(&b));
+    let config = env.default_config("").replace(
+        "[valkey]\nmode = \"local\"\n",
+        "[valkey]\nmode = \"local\"\nlocal_replay_authoritative = true\n",
+    );
+    let edge = env.spawn_logging(&env.write_config(&config), "trace");
+    edge.wait_metric("mg_config_version{site=\"blog\"}", 10, |v| v == 1.0);
+    std::thread::sleep(Duration::from_millis(1100));
+
+    let key = TestSessionKey::from_label("logs-proof");
+    let other = TestSessionKey::from_label("logs-proof-other");
+    let r = get(env.listen, "example.com", "/members/x", &browser(IP));
+    assert_eq!(r.status, 403);
+    let s = from_page(&r.body);
+    let sub = submission(&key, &s, "", "");
+    let sig = sub["sig"].as_str().unwrap().to_owned();
+    let r = post_json(&env, "/__mg/c", IP, challenge::CHROME, "", &sub);
+    assert_eq!(r.status, 200, "{}", r.body);
+    let clr = cookie(&r, "__Host-mg_clr").unwrap();
+    let token = clr.split_once('=').unwrap().1.to_owned();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let valid = key.proof("GET", "https://example.com/api/a", now + 5, &[1; 16]);
+    let foreign = other.proof("GET", "https://example.com/api/a", now, &[2; 16]);
+    for p in [valid.as_str(), valid.as_str(), foreign.as_str(), "x.y.z"] {
+        let r = get(
+            env.listen,
+            "example.com",
+            "/api/a",
+            &format!("{}Cookie: {clr}\r\nMG-Proof: {p}\r\n", browser(IP)),
+        );
+        assert!(r.status == 200 || r.status == 403, "{}", r.head);
+    }
+    let log = edge.log_text();
+    assert!(
+        log.contains("proof=valid") && log.contains("proof=replay"),
+        "{log}"
+    );
+    let proof_sig = valid.rsplit('.').next().unwrap().to_owned();
+    for (what, secret) in [
+        ("MG-Proof", valid.as_str()),
+        ("MG-Proof signature", proof_sig.as_str()),
+        ("foreign MG-Proof", foreign.as_str()),
+        ("JWK x", key.x()),
+        ("JWK y", key.y()),
+        ("thumbprint", key.thumbprint().as_str()),
+        ("other thumbprint", other.thumbprint().as_str()),
+        ("submission signature", sig.as_str()),
+        ("clearance token", token.as_str()),
+        ("client IP", IP),
+    ] {
+        assert!(
+            !log.contains(secret),
+            "{what} ({secret}) in the log:\n{log}"
+        );
+    }
+}

@@ -31,6 +31,9 @@ const FAMILIES: &[(&str, &[&str])] = &[
     ("mg_challenge_renew_total", &["result"]),
     ("mg_interactive_score", &["provider", "mode"]),
     ("mg_interactive_available", &["site"]),
+    // Phase 2 (WP-E2b, spec §15.5).
+    ("mg_proof_verify_total", &["result"]),
+    ("mg_site_forced_monitor", &["site"]),
     (
         "mg_upstream_auth_failures_total",
         &["listener", "profile", "reason"],
@@ -251,6 +254,9 @@ fn every_family_is_served_with_its_labels() {
         "mg_upstream_headers_stripped_total{profile=\"direct_tls\"}",
         "mg_listener_rejected_total{listener=\"tls\",site=\"blog\"}",
         "mg_cf_ip_filter_active{listener=\"cf-tunnel\"}",
+        "mg_proof_verify_total{result=\"missing\"}",
+        "mg_proof_verify_total{result=\"unchecked\"}",
+        "mg_site_forced_monitor{site=\"blog\"}",
     ] {
         assert_eq!(common::metric_value(&text, series), Some(0.0), "{series}");
     }

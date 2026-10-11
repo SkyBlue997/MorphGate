@@ -75,7 +75,12 @@ pub struct BundleRuntime {
     pub help_path: String,
     pub privacy_path: String,
     /// The site's monitor switch; a route's [`RouteMode`] overrides it.
+    /// With edge.toml `force_monitor` (D-60) it is `true` and every route is
+    /// [`RouteMode::Monitor`].
     pub monitor_only: bool,
+    /// edge.toml `[[sites]] force_monitor` (Phase 2 spec §9.6, D-60): the
+    /// whole site only records, whatever the bundle says.
+    pub forced_monitor: bool,
     /// Some route of some environment has `mode = enforce` (I-36): oversize
     /// requests, which skip route matching, are then rejected even under the
     /// site's monitor switch.
@@ -205,6 +210,10 @@ pub struct EnvRuntime {
     pub automation_allowlist_only: bool,
     /// Detectors, scorer and this environment's policy (§5.6).
     pub core: DecisionCore,
+    /// Some rule reads `identity.proof` (Phase 2 spec §9.1: the proof is
+    /// then verified even off `proof = required` routes); computed once from
+    /// the policy IR (`DecisionCore::reads_field`).
+    pub reads_proof: bool,
 }
 
 /// One route with its compiled patterns.
@@ -477,10 +486,14 @@ pub fn build_runtime(
         let at = |what: &str| format!("environments[{}].{what}", env.name);
         let mut routes = Vec::with_capacity(env.routes.len());
         for r in &env.routes {
-            routes.push(
-                convert_route(r, b.case_insensitive_paths, phase2)
-                    .map_err(|e| format!("{}: {e}", at(&format!("routes[{}]", r.name))))?,
-            );
+            let mut route = convert_route(r, b.case_insensitive_paths, phase2)
+                .map_err(|e| format!("{}: {e}", at(&format!("routes[{}]", r.name))))?;
+            // D-60: no route enforces while the site is forced to monitor
+            // (the I-36 oversize exception does not apply either).
+            if settings.force_monitor {
+                route.mode = RouteMode::Monitor;
+            }
+            routes.push(route);
         }
         let mut rules = Vec::with_capacity(env.rules.len());
         for r in &env.rules {
@@ -504,6 +517,7 @@ pub fn build_runtime(
             schema_version,
             interactive_available,
         );
+        let reads_proof = core.reads_field("identity.proof");
         environments.push(EnvRuntime {
             name: env.name.clone(),
             hosts: env.hosts.clone(),
@@ -512,6 +526,7 @@ pub fn build_runtime(
             limiters,
             automation_allowlist_only: env.automation_allowlist_only,
             core,
+            reads_proof,
         });
     }
 
@@ -555,7 +570,8 @@ pub fn build_runtime(
         default_lang,
         help_path,
         privacy_path,
-        monitor_only: b.monitor_only,
+        monitor_only: b.monitor_only || settings.force_monitor,
+        forced_monitor: settings.force_monitor,
         has_enforce_route,
         upstream_kind: kind,
         expected_mask: upstream.expected_mask,

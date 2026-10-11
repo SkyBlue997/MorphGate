@@ -243,6 +243,8 @@ pub fn evaluated(
     };
     let route = rec.route.name.clone();
     let replay_unchecked = rec.token_replay_unchecked;
+    let proof_required = rec.proof_required_applied();
+    let forced_monitor = rec.forced_monitor;
     let mut ctx = rec.ctx;
     if redact {
         ctx.http.path = redacted_path(&route);
@@ -269,6 +271,13 @@ pub fn evaluated(
             "token".into(),
             serde_json::json!({ "replay_unchecked": true }),
         );
+    }
+    // Phase 2 spec §15.3: the §9.1 substitution and D-60.
+    if proof_required {
+        extra.insert("proof_required".into(), Value::Bool(true));
+    }
+    if forced_monitor {
+        extra.insert("forced_monitor".into(), Value::Bool(true));
     }
     decision_record(f, event, &inputs, &route, extra)
 }
@@ -553,6 +562,10 @@ mod tests {
                 ctp: None,
             },
             token_replay_unchecked: false,
+            proof: crate::proof::ProofOutcome::NotVerified,
+            proof_exempt: false,
+            proof_jkt: None,
+            forced_monitor: false,
         }
     }
 

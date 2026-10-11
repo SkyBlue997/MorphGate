@@ -180,6 +180,10 @@ pub struct EdgeMetrics {
     pub edge_added_latency: HistogramVec,
     /// `mg_origin_connect_seconds{site}` (§13.7): new origin connections.
     pub origin_connect: HistogramVec,
+    /// `mg_proof_verify_total{result}` (Phase 2 spec §9.1).
+    pub proof_verify: IntCounterVec,
+    /// `mg_site_forced_monitor{site}` (Phase 2 spec §9.6, D-60).
+    pub site_forced_monitor: IntGaugeVec,
 }
 
 static METRICS: LazyLock<EdgeMetrics> = LazyLock::new(EdgeMetrics::register);
@@ -370,6 +374,16 @@ impl EdgeMetrics {
                 LATENCY_BUCKETS.to_vec()
             )
             .expect("register mg_origin_connect_seconds"),
+            proof_verify: counter!(
+                "mg_proof_verify_total",
+                "MG-Proof verifications by result (valid, missing, malformed, unbound, jkt, htm, htu, iat, sig, replay, unchecked).",
+                &["result"]
+            ),
+            site_forced_monitor: gauge!(
+                "mg_site_forced_monitor",
+                "1 while edge.toml force_monitor puts the whole site in monitor (D-60).",
+                &["site"]
+            ),
         }
     }
 
@@ -389,6 +403,7 @@ impl EdgeMetrics {
             h.with_label_values(&[site]);
         }
         self.interactive_available.with_label_values(&[site]);
+        self.site_forced_monitor.with_label_values(&[site]);
         for kind in LATENCY_KINDS {
             self.edge_added_latency.with_label_values(&[site, kind]);
         }
@@ -482,6 +497,9 @@ impl EdgeMetrics {
         }
         for result in RENEW_RESULTS {
             self.challenge_renew.with_label_values(&[result]);
+        }
+        for result in crate::proof::RESULTS {
+            self.proof_verify.with_label_values(&[result]);
         }
         for provider in ["self_hold", "pow_a11y"] {
             for mode in ["shadow", "enforce"] {

@@ -156,6 +156,13 @@ impl EdgeResponse {
         )
     }
 
+    /// The HTML answer to a navigation without the `MG-Proof` its
+    /// `proof = required` route needs (a form POST, Phase 2 spec §9.1): the
+    /// §9.9 block page format, 403.
+    pub fn proof_required_page(request_id: &str) -> Self {
+        Self::blocked(request_id, true)
+    }
+
     /// RATE_LIMIT (§9.9, §10.3): 429 + `Retry-After`, a short page ("请求过
     /// 多") with the request id, or `{"error":"mg_rate_limited",
     /// "retry_after":N,"request_id":"…"}`.
@@ -209,8 +216,16 @@ impl EdgeResponse {
             Enforcement::ChallengeClientIpUnknown => {
                 Self::rate_limited(request_id, CLIENT_IP_UNKNOWN_RETRY_S, navigation())
             }
-            Enforcement::Challenge(_) => Self::internal_unavailable(),
+            // Answered by the proxy (a `C`, or the recovery `C` of §9.1).
+            Enforcement::Challenge(_) | Enforcement::ProofRequired => Self::internal_unavailable(),
             Enforcement::TooEarly => Self::too_early(),
+            Enforcement::ProofTooEarly => {
+                if navigation() {
+                    Self::too_early()
+                } else {
+                    crate::pages::too_early_json()
+                }
+            }
         })
     }
 

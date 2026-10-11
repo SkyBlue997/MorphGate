@@ -31,6 +31,9 @@ use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+/// How often a site forced to monitor is logged again (Phase 2 spec §9.6).
+pub const FORCED_MONITOR_REMINDER: Duration = Duration::from_secs(3600);
+
 /// Capacity of the rDNS submission queue (a full queue drops the job,
 /// §9.6).
 pub const RDNS_QUEUE_CAPACITY: usize = 1024;
@@ -82,6 +85,34 @@ impl BackgroundService for BundleService {
             }
         };
         let mut loops = tokio::task::JoinSet::new();
+        // D-60: an hourly reminder while a site is forced to monitor.
+        let forced: Vec<String> = work
+            .sites
+            .iter()
+            .filter(|(_, s)| s.settings.force_monitor)
+            .map(|(_, s)| s.settings.id.clone())
+            .collect();
+        if !forced.is_empty() {
+            let mut shutdown = shutdown.clone();
+            loops.spawn(async move {
+                let mut tick = tokio::time::interval(FORCED_MONITOR_REMINDER);
+                tick.tick().await; // the start-up WARN was the first one
+                loop {
+                    tokio::select! {
+                        _ = tick.tick() => {
+                            for site in &forced {
+                                log::warn!("{}", crate::startup::forced_monitor_warning(site));
+                            }
+                        }
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+        }
         for (source, site) in work.sites {
             let apply = move |vb, artifacts| site.apply(&vb, &artifacts);
             loops.spawn(poll_loop(

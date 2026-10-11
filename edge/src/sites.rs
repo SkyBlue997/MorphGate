@@ -179,6 +179,9 @@ pub struct SiteSettings {
     /// one input of `interactive_available`. Set at start-up, with the
     /// directory (it never changes while the process runs).
     pub sdk_manifest_v2: bool,
+    /// edge.toml `force_monitor` (Phase 2 spec §9.6, D-60): every bundle
+    /// converts with the whole site in monitor.
+    pub force_monitor: bool,
 }
 
 /// The crawler verifier's cache settings from `[intel]` (§7.3, §9.6):
@@ -214,6 +217,7 @@ impl SiteSettings {
             bootstrap_owner_zones: site.bootstrap_owner_zones.clone(),
             crawler_cache: crawler_cache_config(&cfg.intel),
             sdk_manifest_v2: false,
+            force_monitor: site.force_monitor,
         }
     }
 }
@@ -278,6 +282,10 @@ impl Site {
             .interactive_available
             .with_label_values(&[&settings.id])
             .set(i64::from(available));
+        metrics()
+            .site_forced_monitor
+            .with_label_values(&[&settings.id])
+            .set(i64::from(settings.force_monitor));
         let sealer = Sealer::new(&settings.id, keys.seal.clone());
         Self {
             settings,

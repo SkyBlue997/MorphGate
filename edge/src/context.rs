@@ -29,7 +29,9 @@
 //! | `http.version` | `cloudflare` and `x-mg-cf-http-version` missing or invalid |
 //! | `http.header_order` | `cloudflare`; `direct_tls` over HTTP/2 |
 //! | `edge_tls[.*]` | `direct_tls` (all); `cloudflare` per missing header |
-//! | `identity.proof`, `identity.agent` | always (Phase 1, D-07) |
+//! | `identity.proof` | unless the Edge verifies the proof (Phase 2 spec §4.2, §9.1: schema 2, not an exempt navigation, a `proof = required` route or a rule reading it; `crate::decide`) |
+//! | `identity.proof.replayed` | verified, but the `jti` replay store gave no answer (§9.2) |
+//! | `identity.agent` | always (D-07) |
 //! | `identity.crawler.{claimed,operator,purpose,verified}` | no `crawler-registry` artifact |
 //! | `identity.crawler.cf_vbot[_cat]` | `direct_tls`; `cloudflare` without a valid `x-mg-cf-vbot` |
 
@@ -65,8 +67,10 @@ pub const MAX_COOKIE_SCAN: usize = 16 * 1024;
 /// Headers that never enter `req.headers` (§4.1).
 const PRIVATE_HEADERS: [&str; 3] = ["cookie", "authorization", "proxy-authorization"];
 
-/// Cloudflare's own cookies are never evidence (§9.5); nor is the Edge's
-/// clearance cookie.
+/// Cloudflare's own cookies are never evidence (§9.5); nor are the Edge's
+/// clearance cookie, its script-readable status cookie and the
+/// accessibility preference (Phase 2 spec §9.5: no policy field, event or
+/// detector may tell the visitors of the accessible path apart).
 fn is_excluded_cookie(name: &str) -> bool {
     matches!(
         name,
@@ -77,6 +81,8 @@ fn is_excluded_cookie(name: &str) -> bool {
             | "__cfseq"
             | "__cfwaitingroom"
             | mg_challenge::COOKIE_NAME
+            | mg_challenge::STATUS_COOKIE_NAME
+            | crate::interactive::A11Y_COOKIE
     ) || name.starts_with("cf_chl_")
 }
 
@@ -141,6 +147,20 @@ pub struct Facts<'a> {
     pub removed: &'a BTreeSet<String>,
     /// `SiteBundle.upstream.expected_mask`.
     pub expected_mask: u32,
+    /// Every matched route is a `web` route (Phase 2 spec D-40: one
+    /// condition of an exempt navigation).
+    pub all_routes_web: bool,
+}
+
+impl Facts<'_> {
+    /// The visitor's scheme is https: always on `direct_tls`, from the
+    /// authenticated `CF-Visitor` on `cloudflare` (Phase 2 spec §6.7 step 5).
+    pub fn visitor_https(&self) -> bool {
+        match self.profile {
+            ListenerProfile::DirectTls => true,
+            ListenerProfile::Cloudflare => self.cf.is_some_and(|c| c.visitor_https),
+        }
+    }
 }
 
 /// `<redacted ipv4>` / `<redacted ipv6>` for a client address in `Debug`
@@ -555,9 +575,9 @@ pub fn build(f: &Facts<'_>, intel: &Intel) -> Built {
         body_size: header(&headers, "content-length").and_then(|v| v.trim().parse().ok()),
         content_type: header(&headers, "content-type").and_then(content_type),
         early_data: early_data(f.raw_headers),
+        navigation: crate::enforce::is_navigation(&headers),
         priority: tier1.and_then(|t| t.priority.clone()),
         accept_encoding_orig: tier1.and_then(|t| t.accept_encoding_orig.clone()),
-        ..Default::default()
     };
 
     // identity: cf_vbot here; clearance and crawler in crate::identity.
@@ -603,10 +623,17 @@ pub fn build(f: &Facts<'_>, intel: &Intel) -> Built {
     }
 }
 
+/// `set` without `path` (Phase 2 spec §4.2: `identity.proof` is available
+/// once the Edge verifies the proof).
+pub fn without_missing(set: &MissingSet, path: &str) -> MissingSet {
+    let kept: Vec<&str> = set.paths().filter(|p| *p != path).collect();
+    missing_set(&kept)
+}
+
 /// A MissingSet of schema paths. Every path above is a §4.1 schema path
 /// (unit-tested); an unknown one would be a programming error and is logged
 /// rather than turned into a panic on the request path.
-fn missing_set(paths: &[&'static str]) -> MissingSet {
+fn missing_set(paths: &[&str]) -> MissingSet {
     let mut set = MissingSet::default();
     for p in paths {
         if let Err(e) = set.insert(p) {
@@ -729,6 +756,7 @@ mod tests {
                 raw_headers: &self.raw,
                 removed: &self.removed,
                 expected_mask: 0b111_1000_1010,
+                all_routes_web: true,
             }
         }
     }
@@ -820,6 +848,13 @@ mod tests {
         assert!(b.missing.is_missing("tls.version"));
         assert!(b.missing.is_missing("tls.ja4.value"));
         assert!(!b.missing.is_missing("http.version"));
+        // Phase 2 spec §4.1: no Sec-Fetch-Mode, Accept with text/html.
+        assert!(c.http.navigation);
+        // §4.2: removing `identity.proof` keeps everything else.
+        let verified = without_missing(&b.missing, "identity.proof");
+        assert!(!verified.is_missing("identity.proof.valid"));
+        assert_eq!(verified.len() + 1, b.missing.len());
+        assert!(verified.is_missing("identity.agent"));
     }
 
     /// §9.3.2: an unknown client IP makes the NETWORK inputs MISSING and
@@ -1024,6 +1059,14 @@ mod tests {
         );
         let long_name = format!("{}=1; ok=1", "n".repeat(65));
         assert_eq!(cookie_names(&[&long_name]), ["ok"]);
+        // Phase 2 spec §9.5: none of the Edge's three cookies is evidence;
+        // names are case-sensitive.
+        assert_eq!(
+            cookie_names(&[
+                "__Host-mg_clr=t; __Host-mg_st=1.2.1; __Host-mg_a11y=1; __host-mg_st=x"
+            ]),
+            ["__host-mg_st"]
+        );
         assert_eq!(content_type(" text/HTML ; q=1"), Some("text/html".into()));
         // Cookie fields are copied only as far as the 16 KiB scan reaches,
         // and a cut clearance cookie is still recognised as cut.

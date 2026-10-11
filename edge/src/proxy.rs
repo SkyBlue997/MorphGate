@@ -25,7 +25,8 @@
 //!      (rule_id bootstrap / lkg_invalid_open / hard.oversize_skipped)
 //! upstream_peer            -> the site's origin
 //! connected_to_upstream    -> origin connect time (new connections)
-//! upstream_request_filter  -> origin-form target, Host, MG-* / XFF / CF-* (§9.9)
+//! upstream_request_filter  -> origin-form target, Host, MG-* / XFF / CF-* (§9.9),
+//!                             without the Edge's cookies (Phase 2 D-61, schema 2)
 //! response_filter          -> strip MG-* / MG_* from the origin's response
 //! logging                  -> metrics (§13.7), events (§9.11, crate::events), debug line
 //! ```
@@ -767,6 +768,7 @@ impl EdgeProxy {
                     &removed,
                 );
                 facts.never_challenge = rm.never_challenge;
+                facts.all_routes_web = rm.all_web;
                 facts.verify = verify;
                 if verify {
                     facts.verify_min = mg_endpoints::verify_min(&target.query);
@@ -783,21 +785,27 @@ impl EdgeProxy {
                     dry_run: rec.decision.dry_run,
                     bundle_version: rec.bundle_version,
                 };
+                let input = |ty| ChallengeInput {
+                    site: &site,
+                    bundle,
+                    ctx,
+                    method: &method,
+                    target: decided,
+                    origin_form: &target.origin_form,
+                    raw: &raw,
+                    removed: &removed,
+                    rec: &rec,
+                    ty,
+                };
                 let answer = match rec.enforcement {
                     Enforcement::Challenge(ty) => {
-                        let (resp, how) = self.challenge(&ChallengeInput {
-                            site: &site,
-                            bundle,
-                            ctx,
-                            method: &method,
-                            target: decided,
-                            origin_form: &target.origin_form,
-                            raw: &raw,
-                            removed: &removed,
-                            rec: &rec,
-                            ty,
-                        });
+                        let (resp, how) = self.challenge(&input(ty));
                         ctx.challenge = Some(how);
+                        Some(resp)
+                    }
+                    Enforcement::ProofRequired => {
+                        let (resp, how) = self.proof_required(&input(mg_core::ChallengeType::Pow));
+                        ctx.challenge = how;
                         Some(resp)
                     }
                     e => EdgeResponse::for_enforcement(e, &ctx.request_id, || {
@@ -939,6 +947,7 @@ impl EdgeProxy {
             raw_headers: raw,
             removed,
             expected_mask: bundle.expected_mask,
+            all_routes_web: true,
         }
     }
 
@@ -974,11 +983,106 @@ impl EdgeProxy {
                 bind: &c.rec.bind,
                 client_ip: c.rec.ctx.net.ip,
                 a11y_pref: crate::interactive::a11y_pref(&cookies),
-                jkt: None,
+                // D-41, §7.1: bound to the key of a valid `MG-Proof`.
+                jkt: c.rec.proof_jkt.as_ref().map(|t| t.as_str()),
                 now_ms: unix_now_ms(),
             },
             &OsRng,
         )
+    }
+
+    /// The 403 `mg_proof_required` answer (Phase 2 spec §9.1): HTML in the
+    /// block page format for a navigation that is not exempt (a form POST),
+    /// otherwise JSON with `now_ms` and, for in-place recovery, a `pow` `C`
+    /// bound to the proof's key (`bind.jkt`) with its `ret` (I-54). Recovery
+    /// needs a valid clearance whose proof failed with `proof.unbound` or
+    /// `proof.jkt` (the visitor's key was cleared or replaced), a route that
+    /// asks for no more than `pow`, a known client IP, and a proof signature
+    /// that verifies (checked only now: the limiters already ran).
+    fn proof_required(&self, c: &ChallengeInput<'_>) -> (EdgeResponse, Option<ChallengeAnswer>) {
+        let headers = crate::context::req_headers(c.raw, c.removed);
+        let request_id = &c.ctx.request_id;
+        if is_navigation(&headers) {
+            return (EdgeResponse::proof_required_page(request_id), None);
+        }
+        let now_ms = unix_now_ms();
+        let rec = c.rec;
+        let level_ok = {
+            use mg_core::policy::{challenge_rank, effective_challenge};
+            let floor = rec
+                .route
+                .min_level
+                .unwrap_or(mg_core::ChallengeType::Invisible);
+            challenge_rank(effective_challenge(floor, c.bundle.interactive_available))
+                <= challenge_rank(mg_core::ChallengeType::Pow)
+        };
+        let eligible = rec.ctx.identity.token.status == mg_core::TokenStatus::Valid
+            && rec.proof.recoverable()
+            && level_ok
+            && rec.bind.ipp.is_some();
+        let key = eligible
+            .then(|| crate::proof::signing_key(crate::proof::header(c.raw)))
+            .flatten();
+        let Some(key) = key else {
+            return (
+                crate::pages::proof_required_json(request_id, now_ms, None),
+                None,
+            );
+        };
+        let cfg = &c.bundle.challenge;
+        let band = rec.risk.score.band();
+        let ret = challenge::challenge_ret(
+            c.method,
+            &c.target.path,
+            &c.target.query,
+            challenge::fallback_ret(cfg),
+        );
+        let issued = challenge::issue(
+            &challenge::IssueRequest {
+                sealer: &c.site.sealer,
+                host: &c.ctx.host,
+                route_class: c.ctx.route.as_ref().map_or("default", |r| r.name.as_str()),
+                ty: mg_core::ChallengeType::Pow,
+                band,
+                bits: challenge::difficulty(
+                    &challenge::pow_bits(cfg),
+                    mg_core::ChallengeType::Pow,
+                    band,
+                ),
+                ttl_s: cfg.ttl_s,
+                ret: &ret,
+                bind: &rec.bind,
+                jkt: Some(key.thumbprint()),
+                now_ms,
+            },
+            &OsRng,
+        );
+        match issued {
+            Ok(issued) => {
+                challenge::count_issued(&issued, "issued");
+                let how = ChallengeAnswer::Issued {
+                    ty: issued.ty,
+                    bits: issued.bits,
+                };
+                (
+                    crate::pages::proof_required_json(
+                        request_id,
+                        now_ms,
+                        Some((issued.shown(), &issued.ret)),
+                    ),
+                    Some(how),
+                )
+            }
+            Err(e) => {
+                // The answer stays a 403 without a `C`; the SDK then goes
+                // through `/__mg/v` (I-39).
+                log::error!("request_id={request_id} recovery challenge not issued: {e:?}");
+                (
+                    crate::pages::proof_required_json(request_id, now_ms, None),
+                    None,
+                )
+            }
+        }
     }
 
     /// `/__mg/c` (§10.1, §10.3): 404 while the site has no bundle
@@ -1172,6 +1276,15 @@ impl EdgeProxy {
             decision: ctx.decision_headers.as_ref(),
         }
         .apply(upstream_request)?;
+        // D-61: the origin never sees the Edge's cookies (schema 2 only).
+        let phase2 = ctx
+            .runtime
+            .as_ref()
+            .and_then(|r| r.bundle.as_ref())
+            .is_some_and(|b| b.phase2());
+        if phase2 {
+            headers::strip_edge_cookies(upstream_request)?;
+        }
         if let Some(keys) = ctx.site.as_ref().and_then(|s| s.keys.origin.as_ref()) {
             let now_s = u64::try_from(unix_now_ms() / 1000).unwrap_or(0);
             headers::sign_for_origin(
@@ -1439,7 +1552,7 @@ impl ProxyHttp for EdgeProxy {
             });
             let decision = ctx.evaluation.as_ref().map(|r| {
                 format!(
-                    " score={} class={} reasons={} token={} crawler={} hits={} enforcement={:?}",
+                    " score={} class={} reasons={} token={} crawler={} hits={} enforcement={:?} proof={}",
                     r.risk.score.get(),
                     r.risk.bot_class,
                     if r.risk.top_reasons.is_empty() {
@@ -1454,7 +1567,8 @@ impl ProxyHttp for EdgeProxy {
                         .verification
                         .map_or("-", |v| v.as_str()),
                     r.hits_summary(),
-                    r.enforcement
+                    r.enforcement,
+                    r.proof.label()
                 )
             });
             let challenge = ctx

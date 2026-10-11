@@ -290,6 +290,68 @@ impl OriginHeaders<'_> {
     }
 }
 
+/// The Edge's own cookies (Phase 2 spec §9.5, D-61): the clearance, its
+/// status cookie and the accessibility preference. Exact names: cookie names
+/// are case-sensitive.
+pub const EDGE_COOKIES: [&str; 3] = [
+    mg_challenge::COOKIE_NAME,
+    mg_challenge::STATUS_COOKIE_NAME,
+    crate::interactive::A11Y_COOKIE,
+];
+
+/// One `Cookie` field value without the pairs named in [`EDGE_COOKIES`]
+/// (D-61): `None` when nothing is removed (the value is forwarded as it
+/// is), otherwise the remaining pairs, each byte for byte and in order,
+/// joined by `;` with the separators that followed them; an empty result
+/// means the field is dropped. Works on bytes, so a value that is not UTF-8
+/// keeps its other pairs unchanged.
+pub fn without_edge_cookies(value: &[u8]) -> Option<Vec<u8>> {
+    let ows = |b: &u8| *b == b' ' || *b == b'\t';
+    let is_edge = |pair: &[u8]| {
+        let start = pair.iter().position(|b| !ows(b)).unwrap_or(pair.len());
+        let pair = &pair[start..];
+        let name = pair.split(|b| *b == b'=').next().unwrap_or_default();
+        let end = name.iter().rposition(|b| !ows(b)).map_or(0, |i| i + 1);
+        EDGE_COOKIES.iter().any(|c| c.as_bytes() == &name[..end])
+    };
+    let pairs: Vec<&[u8]> = value.split(|b| *b == b';').collect();
+    if !pairs.iter().any(|p| is_edge(p)) {
+        return None;
+    }
+    let kept: Vec<&[u8]> = pairs.into_iter().filter(|p| !is_edge(p)).collect();
+    let mut out = kept.join(&b';');
+    // The first kept pair may have followed a removed one ("a; b"): drop the
+    // separator's whitespace it inherited.
+    let lead = out.iter().position(|b| !ows(b)).unwrap_or(out.len());
+    out.drain(..lead);
+    Some(out)
+}
+
+/// D-61 (`schema_version = 2` only): removes [`EDGE_COOKIES`] from every
+/// `Cookie` field of the upstream request; the other pairs keep their bytes
+/// and order, and a field left empty is dropped. Returns whether anything
+/// was removed.
+pub fn strip_edge_cookies(req: &mut RequestHeader) -> pingora::Result<bool> {
+    let values: Vec<Vec<u8>> = req
+        .headers
+        .get_all("cookie")
+        .iter()
+        .map(|v| v.as_bytes().to_vec())
+        .collect();
+    let rewritten: Vec<Option<Vec<u8>>> = values.iter().map(|v| without_edge_cookies(v)).collect();
+    if rewritten.iter().all(Option::is_none) {
+        return Ok(false);
+    }
+    req.remove_header("cookie");
+    for (original, new) in values.into_iter().zip(rewritten) {
+        let v = new.unwrap_or(original);
+        if !v.is_empty() {
+            req.append_header("Cookie", pingora::http::header_value_from_slice(&v))?;
+        }
+    }
+    Ok(true)
+}
+
 /// `MG-Client-IP-Prefix` (I-40): the Edge's `ip` entity in CIDR form,
 /// `<address>/32` for IPv4 (IPv4-mapped IPv6 included) and the `/64` for
 /// IPv6, so an origin that limits by it is not evaded by rotating IPv6
@@ -349,6 +411,78 @@ mod tests {
         resp.insert_header("Content-Type", "text/plain").unwrap();
         assert_eq!(strip_edge_owned(&mut resp), 2);
         assert_eq!(resp.headers.len(), 1);
+    }
+
+    /// D-61 (Phase 2 spec §9.5): exact names only, the other pairs byte for
+    /// byte and in order, empty fields dropped.
+    #[test]
+    fn edge_cookies_are_removed_exactly() {
+        let strip =
+            |v: &str| without_edge_cookies(v.as_bytes()).map(|b| String::from_utf8(b).unwrap());
+        assert_eq!(strip("a=1; b=2"), None, "nothing to remove: unchanged");
+        assert_eq!(strip(""), None);
+        assert_eq!(strip("__Host-mg_clr=tok; a=1").as_deref(), Some("a=1"));
+        assert_eq!(
+            strip("a=1; __Host-mg_st=1.2.1; b=2").as_deref(),
+            Some("a=1; b=2")
+        );
+        assert_eq!(strip("a=1; __Host-mg_a11y=1").as_deref(), Some("a=1"));
+        // No space after the separator.
+        assert_eq!(strip("a=1;__Host-mg_clr=x;b=2").as_deref(), Some("a=1;b=2"));
+        // Repeated names: every instance goes.
+        assert_eq!(
+            strip("__Host-mg_clr=x; a=1; __Host-mg_clr=y; __Host-mg_clr=z").as_deref(),
+            Some("a=1")
+        );
+        // Only the Edge's cookies: the field becomes empty.
+        assert_eq!(
+            strip("__Host-mg_clr=x; __Host-mg_st=1").as_deref(),
+            Some("")
+        );
+        // Case variants and look-alikes are someone else's cookies.
+        assert_eq!(
+            strip("__host-mg_clr=x; __Host-mg_clr2=y; x__Host-mg_clr=z"),
+            None
+        );
+        // Odd spacing and an empty pair stay as they are.
+        assert_eq!(
+            strip("a=1 ;;  __Host-mg_clr = x ; b= 2").as_deref(),
+            Some("a=1 ;; b= 2")
+        );
+        // A long field with an Edge cookie in the middle.
+        let long = format!(
+            "{}; __Host-mg_clr=tok; z=9",
+            "k=v; ".repeat(2000).trim_end_matches("; ")
+        );
+        let want = format!("{}; z=9", "k=v; ".repeat(2000).trim_end_matches("; "));
+        assert_eq!(strip(&long), Some(want));
+        // Not UTF-8: the other bytes are kept.
+        assert_eq!(
+            without_edge_cookies(b"a=\xff; __Host-mg_clr=x"),
+            Some(b"a=\xff".to_vec())
+        );
+    }
+
+    #[test]
+    fn edge_cookies_are_stripped_from_every_field() {
+        let mut req = request(&[
+            ("Cookie", "a=1; __Host-mg_clr=tok"),
+            ("cookie", "__Host-mg_st=1.2.1"),
+            ("Cookie", "b=2"),
+            ("Accept", "*/*"),
+        ]);
+        assert!(strip_edge_cookies(&mut req).unwrap());
+        let cookies: Vec<&str> = req
+            .headers
+            .get_all("cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(cookies, ["a=1", "b=2"]);
+        assert_eq!(req.headers.get("accept").unwrap(), "*/*");
+        let mut plain = request(&[("Cookie", "a=1; b=2")]);
+        assert!(!strip_edge_cookies(&mut plain).unwrap());
+        assert_eq!(plain.headers.get("cookie").unwrap(), "a=1; b=2");
     }
 
     #[test]
