@@ -757,7 +757,10 @@ mod tests {
                 parse_turnstile_keys(&bytes, site).unwrap_or_else(|e| panic!("{}: {e}", c["file"]));
             let n = c["values"].as_u64().unwrap() as usize;
             assert_eq!(usize::from(k.previous().is_some()) + 1, n, "{}", c["file"]);
-            assert!(!format!("{k:?}").contains(k.current()));
+            assert_eq!(
+                format!("{k:?}"),
+                format!("TurnstileSecrets {{ values: {n} }}")
+            );
             // Another site never gets them.
             assert!(parse_turnstile_keys(&bytes, "shop").is_err());
         }
@@ -774,6 +777,10 @@ mod tests {
             let e = parse_turnstile_keys(&bytes, site).unwrap_err();
             assert!(!e.contains("secret-"), "{file}: {e}");
         }
+        // A one-character secret (a fuzzing find): `Debug` shows the count.
+        let one = br#"{"v": 1, "kind": "mg-turnstile-keys", "site": "blog", "values": ["t"]}"#;
+        let k = parse_turnstile_keys(one, site).unwrap();
+        assert_eq!(format!("{k:?}"), "TurnstileSecrets { values: 1 }");
         // The 64 KiB cap is read_secret's (I-14).
         let big = dir.join("valid/one-value.json");
         let tmp = std::env::temp_dir().join(format!("mg-ts-keys-{}", std::process::id()));

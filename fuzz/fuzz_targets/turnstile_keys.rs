@@ -13,8 +13,13 @@ use mg_edge::creds::parse_turnstile_keys;
 fuzz_target!(|data: &[u8]| {
     match parse_turnstile_keys(data, "blog") {
         Ok(secrets) => {
-            let shown = format!("{secrets:?}");
-            assert!(!shown.contains(secrets.current()));
+            // `Debug` is the count only (a one-character secret such as "t"
+            // would otherwise match the type name itself).
+            let n = 1 + usize::from(secrets.previous().is_some());
+            assert_eq!(
+                format!("{secrets:?}"),
+                format!("TurnstileSecrets {{ values: {n} }}")
+            );
         }
         Err(e) => {
             let _ = e.len();
