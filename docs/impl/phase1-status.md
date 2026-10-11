@@ -20,7 +20,8 @@
 | Phase 1 之后 | 裁决 I-39：fetch 被挑战后的验证入口 `GET /__mg/v?ret=`（按导航到 `ret` 决策；阻断、限速照常，其余一律 `pow` 挑战，`rule_id = edge.verify`；`ret` 解码后按 §6.4 校验，无效时用 `fallback_ret`；SDK `MorphGate.fetch()` / `verify()` / `verifyUrl()`，每个页面路径 60 秒只跳一次；Lab 无 JS 场景加一步） | 完成 | PR #8 |
 | Phase 1 之后 | 裁决 I-40：源站头 `MG-Client-IP-Prefix`（IPv4 `/32`、IPv6 所在 `/64`，未知时 `unknown`；列入 `MG-Origin-Auth` 签名，`kat.json` 增加 IPv6 向量） | 完成 | PR #9 |
 | Phase 1 之后 | 构建提交号：`mg-edge --version` 输出 `0.1.0 (<12 位提交号>)`，启动日志与 `mg_edge_info{commit}` 相同（`edge/build.rs`；没有 Git 检出时为 `unknown`，可用 `MG_EDGE_COMMIT` 指定） | 完成 | PR #9 |
-| Phase 1 之后 | 运维文档：单机形态（本机 Valkey + `local_replay_authoritative`，没有 VictoriaMetrics 时 `cf audit` 第 18 项用 `/metrics` 快照判定，01 §8）；mg-edge 日志写入独立的 journald 命名空间 `morphgate`，保留 14 天（`deploy/systemd/journald@morphgate.conf`） | 完成，待 PR 合并 | 见分支 `claude/bot-guard-takeover-zcsbs5` |
+| Phase 1 之后 | 运维文档：单机形态（本机 Valkey + `local_replay_authoritative`，没有 VictoriaMetrics 时 `cf audit` 第 18 项用 `/metrics` 快照判定，01 §8）；mg-edge 日志写入独立的 journald 命名空间 `morphgate`，保留 14 天（`deploy/systemd/journald@morphgate.conf`） | 完成 | PR #10 |
+| Phase 1 之后 | Lab 验收用例：`phase1-route-modes.yaml`（`mode: monitor` 路由与 `never_challenge` 路由只记录挑战并转发，阻断照常；客户端伪造的源站头被替换）；`lab-e2e` 的源站改用 `adapters/origin/` 参考实现校验 `MG-Origin-Auth`，绕过 Edge 的未签名与伪造请求 401 | 完成，待 PR 合并 | 见分支 `claude/bot-guard-takeover-zcsbs5` |
 
 ## 2. 当前代码状态
 

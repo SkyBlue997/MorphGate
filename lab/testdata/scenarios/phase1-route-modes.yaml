@@ -1,0 +1,110 @@
+# Route-level enforcement (docs/impl/phase1-spec.md I-36, I-37) and the
+# Edge -> origin authentication header (I-38) on an enforcing site.
+#
+# Run by scripts/lab-e2e.sh against lab/testdata/e2e/site.yaml (enforce),
+# whose policy challenges any request carrying X-Lab-Challenge
+# (lab/testdata/e2e/policies/production.yaml):
+#
+#   trial    /lab/trial/**   critical, mode: monitor   recorded, forwarded
+#   beacon   /lab/beacon/**  low, never_challenge      challenge recorded, forwarded; block applies
+#   default  /**             low                       challenged
+#
+#   mglab replay -map-host site.lab.test=127.0.0.1 -base http://site.lab.test:<edge port> \
+#     -var run=<id> lab/testdata/scenarios/phase1-route-modes.yaml
+#
+# The Lab origin answers only requests whose MG-Origin-Auth verifies with
+# the reference check (adapters/origin/verify-origin-auth.mjs) and otherwise
+# 401, so every "lab-e2e-origin" body below also shows the Edge signed it.
+# A forged MG-Origin-Auth or MG-Client-IP from the client is stripped by the
+# Edge (the request still verifies); the script sends unsigned and forged
+# requests to the origin directly and expects 401.
+#
+# CF-Connecting-IP stands in for cloudflared on the Edge's loopback listener;
+# every address is from a documentation range.
+name: phase1-route-modes
+description: A monitor route and a never_challenge route forward what an enforcing route challenges; a block still applies; the origin accepts only signed requests.
+vars:
+  run: manual   # path segment that ties the events to one run
+
+requests:
+  # 1. Control: the default route answers the marked request with a challenge.
+  - name: default route challenges the marked request
+    method: GET
+    path: /lab/other/${run}/1
+    headers: &marked
+      CF-Connecting-IP: 203.0.113.70
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36
+      Accept: application/json
+      X-Lab-Challenge: "1"
+    expect_status: 403
+    expect_header: {MG-Challenge: ""}
+    expect_body_contains: '"error":"mg_challenge"'
+
+  # 2. never_challenge (I-37): the same request is recorded and forwarded.
+  - name: never_challenge route forwards the marked request
+    method: GET
+    path: /lab/beacon/${run}/1
+    headers: *marked
+    expect_status: 200
+    expect_header_absent: [MG-Challenge]
+    expect_body_contains: lab-e2e-origin GET /lab/beacon/
+
+  # 3. ... but a BLOCK still applies there (an impersonating GPTBot).
+  - name: never_challenge route still blocks an impersonator
+    method: GET
+    path: /lab/beacon/${run}/2
+    headers:
+      CF-Connecting-IP: 192.0.2.210            # outside GPTBot's test ranges
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)
+      Accept: application/json
+    expect_status: 403
+    expect_body_contains: '"error":"mg_blocked"'
+
+  # 4. mode: monitor (I-36): a critical route that would challenge a client
+  #    without a clearance forwards it, as the members route does not.
+  - name: monitor route forwards a request without a clearance
+    method: GET
+    path: /lab/trial/${run}/home
+    headers: &browser
+      CF-Connecting-IP: 203.0.113.71
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36
+      Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+      Sec-Fetch-Mode: navigate
+      Sec-Fetch-Dest: document
+    expect_status: 200
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: lab-e2e-origin GET /lab/trial/
+  - name: monitor route forwards the marked request
+    method: GET
+    path: /lab/trial/${run}/data.json
+    headers:
+      <<: *marked
+      CF-Connecting-IP: 203.0.113.71
+    expect_status: 200
+    expect_header_absent: [MG-Challenge]
+    expect_body_contains: lab-e2e-origin GET /lab/trial/
+  - name: enforcing route still challenges the same client
+    method: GET
+    path: /lab/members/${run}/home
+    headers: *browser
+    expect_status: 403
+    expect_body_contains: data-mg-state="challenge"
+
+  # 5. A client's own MG-Origin-Auth and MG-* headers never reach the
+  #    origin: the Edge strips them and signs what it writes (I-38).
+  - name: forged origin headers from the client are replaced
+    method: GET
+    path: /lab/beacon/${run}/forged?x=1
+    headers:
+      CF-Connecting-IP: 203.0.113.72
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36
+      Accept: application/json
+      MG-Origin-Auth: v1;t=1;sig=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      MG-Client-IP: 10.0.0.1
+      MG-Client-IP-Prefix: 10.0.0.1/32
+    expect_status: 200
+    expect_body_contains: lab-e2e-origin GET /lab/beacon/

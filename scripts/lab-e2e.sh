@@ -11,23 +11,30 @@
 #   2. In a temp dir, with throwaway test keys (MGCTL_PASSPHRASE_FILE,
 #      MGCTL_AGE_WORK_FACTOR=10, --insecure-test-key; audit log in the temp
 #      dir): owner signing key, pseudonymisation key and the site keys of site
-#      "lab", exported with `mgctl keys export --out` as the Edge's credential
-#      files. Builds, signs and publishes an enforce bundle from
+#      "lab" and its origin keys (`mgctl keys gen-origin`), exported with
+#      `mgctl keys export --out` as the Edge's credential files. Builds, signs
+#      and publishes an enforce bundle from
 #      lab/testdata/e2e/site.yaml (host site.lab.test, test crawler registry
 #      with documentation ranges) into a file:// bundle root.
 #   3. Starts a temporary valkey-server on a unix socket in the temp dir (or
-#      uses MG_TEST_VALKEY_URL, which must be local), a python3 origin,
-#      and mg-edge with a `cloudflare` loopback listener, Valkey state, the
+#      uses MG_TEST_VALKEY_URL, which must be local), a Node origin that
+#      answers only requests whose MG-Origin-Auth passes the reference check
+#      (adapters/origin/verify-origin-auth.mjs, spec I-38) and 401 otherwise,
+#      and mg-edge with a `cloudflare` loopback listener, origin_keys, Valkey state, the
 #      static rDNS table lab/testdata/e2e/dns.json and a JSONL event file;
 #      waits until the Edge applied the bundle.
 #   4. Runs the scenarios through mglab (every request passes the Lab guard;
 #      site.lab.test is mapped to 127.0.0.1 with -map-host):
 #        lab/testdata/scenarios/phase1-impersonator.yaml
 #        lab/testdata/scenarios/phase1-nonjs-clearance.yaml
+#        lab/testdata/scenarios/phase1-route-modes.yaml
+#      and sends an unsigned and a forged request straight to the origin.
 #   5. Checks the event file with `mglab events` (D-22: 100 % of the settled
 #      impersonator requests classified impersonator; no challenge submission
-#      passed, nothing on the protected route forwarded) and the origin's
-#      request log, then prints a PASS / FAIL summary.
+#      passed, nothing on the protected route forwarded), the route-mode
+#      decisions (I-36, I-37: challenges on the monitor and never_challenge
+#      routes recorded as dry runs) and the origin's request log (only the
+#      two direct requests refused), then prints a PASS / FAIL summary.
 #   6. Stops every process and removes the temp dir on every exit path.
 #
 # Environment:
@@ -84,7 +91,7 @@ record() {
 [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || fail "MG_LAB_E2E_TIMEOUT must be numeric, got '$TIMEOUT'"
 
 # --- dependencies ----------------------------------------------------------------
-for tool in python3 go curl; do
+for tool in python3 go curl node; do
   command -v "$tool" >/dev/null || skip "$tool not found in PATH"
 done
 if [[ -n "${MG_TEST_VALKEY_URL:-}" ]]; then
@@ -246,6 +253,8 @@ step site keys gen --site "$SITE" --out-dir "$tmp/keys/$SITE" --date 20260927 --
 step keys export --in "$tmp/keys/$SITE/token.keys.json.age" --out "$tmp/creds/mg-$SITE-token-keys"
 step keys export --in "$tmp/keys/$SITE/seal.root.json.age" --out "$tmp/creds/mg-$SITE-seal-root"
 step keys export --in "$tmp/keys/pseudo.key.json.age" --out "$tmp/creds/mg-pseudo-key"
+step keys gen-origin --out "$tmp/keys/$SITE/origin-keys.json.age" --insecure-test-key
+step keys export --in "$tmp/keys/$SITE/origin-keys.json.age" --out "$tmp/creds/mg-$SITE-origin-keys"
 step bundle build --site-config "$E2E/site.yaml" --out-dir "$tmp/out" --version "$BUNDLE_VERSION"
 step bundle sign --in "$tmp/out/$SITE.sitebundle.pb" --key "$tmp/keys/lab-owner.key.age" --out "$tmp/out/$SITE.bundle"
 step bundle publish --in "$tmp/out/$SITE.bundle" --artifacts "$tmp/out/artifacts" --dest "$tmp/publish" \
@@ -272,37 +281,39 @@ else
   log "using Valkey at $valkey_url"
 fi
 
-# Answers every request itself (200) and logs what the Edge forwarded, with
-# the Edge's classification headers.
-cat >"$tmp/origin.py" <<'PY'
-import http.server, sys
+# Answers every request itself (200) once its MG-Origin-Auth passes the
+# reference check (spec I-38), 401 otherwise, and logs what the Edge
+# forwarded, with the Edge's classification headers.
+cat >"$tmp/origin.mjs" <<'JS'
+import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
+const [verifier, keyFile, port] = process.argv.slice(2);
+const { loadOriginKeys, verifyOriginAuth } = await import(pathToFileURL(verifier).href);
+const keys = loadOriginKeys(readFileSync(keyFile));
 
-    def answer(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        if n:
-            self.rfile.read(n)
-        body = ("lab-e2e-origin %s %s\n" % (self.command, self.path)).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Cache-Control", "private, no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
-
-    do_GET = do_HEAD = do_POST = answer
-
-    def log_message(self, fmt, *args):
-        h = self.headers
-        sys.stderr.write("ORIGIN %s %s class=%s verified=%s\n" % (
-            self.command, self.path, h.get("MG-Bot-Class", "-"), h.get("MG-Verified", "-")))
-
-http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
-PY
-python3 -u "$tmp/origin.py" "$ORIGIN_PORT" >"$tmp/origin.log" 2>&1 &
+createServer((req, res) => {
+  req.resume();
+  req.on("end", () => {
+    const h = (name) => req.headers[name];
+    const ok = verifyOriginAuth({ value: h("mg-origin-auth"), method: req.method, target: req.url, header: h, keys });
+    const line = ok
+      ? `ORIGIN ${req.method} ${req.url} class=${h("mg-bot-class") ?? "-"} verified=${h("mg-verified") ?? "-"}`
+      : `ORIGIN-REJECT ${req.method} ${req.url}`;
+    process.stderr.write(line + "\n");
+    const body = ok ? `lab-e2e-origin ${req.method} ${req.url}\n` : "origin auth failed\n";
+    res.writeHead(ok ? 200 : 401, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "private, no-store",
+      "Content-Length": Buffer.byteLength(body),
+    });
+    res.end(req.method === "HEAD" ? undefined : body);
+  });
+}).listen(Number(port), "127.0.0.1");
+JS
+node "$tmp/origin.mjs" "$ROOT/adapters/origin/verify-origin-auth.mjs" "$tmp/creds/mg-$SITE-origin-keys" "$ORIGIN_PORT" \
+  >"$tmp/origin.log" 2>&1 &
 origin_pid=$!
 wait_for_port origin "$ORIGIN_PORT" "$origin_pid"
 
@@ -338,6 +349,7 @@ bundle_poll_seconds = 2
 bootstrap = "closed"
 token_keys = "cred://mg-$SITE-token-keys"
 seal_root = "cred://mg-$SITE-seal-root"
+origin_keys = "cred://mg-$SITE-origin-keys"
 
 [pseudo]
 key = "cred://mg-pseudo-key"
@@ -398,6 +410,25 @@ replay() {
 }
 replay phase1-impersonator "$SCENARIOS/phase1-impersonator.yaml"
 replay phase1-nonjs-clearance "$SCENARIOS/phase1-nonjs-clearance.yaml"
+replay phase1-route-modes "$SCENARIOS/phase1-route-modes.yaml"
+
+# Straight to the origin, past the Edge (both loopback): without a valid
+# MG-Origin-Auth the origin refuses the request and its MG-* headers (I-38).
+origin_direct() { # origin_direct PATH [HEADER...] -> HTTP status
+  local path="$1" args=() h
+  shift
+  for h in "$@"; do args+=(-H "$h"); done
+  curl -sS --noproxy '*' --max-time 5 -o /dev/null -w '%{http_code}' "${args[@]}" \
+    "http://$HOST:$ORIGIN_PORT$path" 2>/dev/null || true
+}
+unsigned="$(origin_direct "/lab/direct/$RUN/unsigned" "MG-Client-IP: 203.0.113.80" "MG-Bot-Class: human")"
+forged="$(origin_direct "/lab/direct/$RUN/forged" "MG-Client-IP: 203.0.113.81" \
+  "MG-Origin-Auth: v1;t=$(date +%s);sig=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")"
+if [[ "$unsigned" == 401 && "$forged" == 401 ]]; then
+  record "origin: unsigned and forged MG-Origin-Auth sent past the Edge refused (401)" PASS
+else
+  record "origin: unsigned / forged requests past the Edge answered $unsigned / $forged, want 401" FAIL
+fi
 
 # Every request the Edge answered writes one access record (§13.4); wait
 # until the flusher wrote them all.
@@ -426,6 +457,47 @@ events_check "events: 100% of settled impersonator requests classified impersona
   -want-settled "$IMPERSONATOR_SETTLED" -want-verified "$CRAWLER_VERIFIED"
 events_check "events: no clearance for the non-JS client (no feedback pass, nothing forwarded)" \
   clearance -site "$SITE" -protected "/lab/members/$RUN/" -want-feedback "$CHALLENGE_SUBMISSIONS"
+
+# The route-mode decisions (I-36, I-37): the marked request on the
+# never_challenge route and both requests on the monitor route were decided
+# CHALLENGE as a dry run (and forwarded, which the scenario checks).
+if python3 - "$tmp/events.jsonl" "$RUN" >"$tmp/route-modes.out" 2>&1 <<'PY'
+import json, sys
+path, run = sys.argv[1], sys.argv[2]
+want = {f"/lab/beacon/{run}/1", f"/lab/trial/{run}/home", f"/lab/trial/{run}/data.json"}
+seen, bad = set(), []
+for line in open(path):
+    e = json.loads(line)
+    p = ((e.get("ctx") or {}).get("http") or {}).get("path")
+    if e.get("kind") != "decision" or p not in want:
+        continue
+    seen.add(p)
+    d = e.get("decision") or {}
+    if d.get("action") != "challenge" or d.get("dry_run") is not True:
+        bad.append(f"{p}: action={d.get('action')} dry_run={d.get('dry_run')}")
+missing = sorted(want - seen)
+print(f"route modes: {len(seen)} of {len(want)} decisions found, {len(bad)} not a dry-run challenge")
+for b in bad + [f"{m}: no decision event" for m in missing]:
+    print("  " + b)
+sys.exit(1 if bad or missing else 0)
+PY
+then
+  record "events: monitor and never_challenge routes recorded the challenges as dry runs (I-36, I-37)" PASS
+else
+  record "events: monitor and never_challenge routes recorded the challenges as dry runs (I-36, I-37)" FAIL
+fi
+sed 's/^/    /' "$tmp/route-modes.out" >&2
+
+# Every request the Edge forwarded carried a valid MG-Origin-Auth: the only
+# requests the origin refused are the two sent past the Edge.
+rejected="$(grep -c '^ORIGIN-REJECT ' "$tmp/origin.log" || true)"
+rejected_edge="$(grep '^ORIGIN-REJECT ' "$tmp/origin.log" | grep -v " /lab/direct/$RUN/" || true)"
+if [[ "$rejected" == 2 && -z "$rejected_edge" ]]; then
+  record "origin: every request from the Edge passed the MG-Origin-Auth check (I-38)" PASS
+else
+  printf '    refused:\n%s\n' "$(grep '^ORIGIN-REJECT ' "$tmp/origin.log")" >&2
+  record "origin: every request from the Edge passed the MG-Origin-Auth check (I-38)" FAIL
+fi
 
 # The origin must never see the protected route, /__mg/*, or a settled
 # impersonator request (only the pending warm-ups, and never with

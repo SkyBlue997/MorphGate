@@ -44,7 +44,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `make compose-check` / `make docs-check` | Validate the compose file; check relative links and anchors in root project Markdown files and docs/ |
 | `make dev-up` / `make dev-down` | Start / stop the dev environment (`COMPOSE_PROFILES=grafana,tunnel,lab` for the optional services) |
 | `make edge-run` / `make edge-smoke` | Run mg-edge with the dev config; loopback end-to-end smoke test |
-| `make lab-e2e` | Validation Lab end-to-end on loopback: test keys, a signed enforce bundle, Valkey, mg-edge and the Phase 1 scenarios (impersonating crawlers, no clearance without JavaScript); not part of `check`, CI runs it |
+| `make lab-e2e` | Validation Lab end-to-end on loopback: test keys, a signed enforce bundle, Valkey, mg-edge, an origin that checks `MG-Origin-Auth`, and the scenarios (impersonating crawlers, no clearance without JavaScript, route-level monitor and `never_challenge`); not part of `check`, CI runs it |
 | `make lab-egress-check` | Needs a Docker daemon (CI runs it): the Lab allowlist holds at the tool and network-egress layers |
 
 ## Design docs
