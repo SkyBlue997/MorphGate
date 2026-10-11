@@ -1,19 +1,19 @@
 # Phase 1 进度记录
 
-**更新时间**：2026-10-07
-**分支**：Phase 1 已通过 [PR #1](https://github.com/SkyBlue997/MorphGate/pull/1) 合并至 `master`（合并提交 `6395330`）；远程历史分支为 `phase-1/edge-behind-cloudflare`。
-**状态**：Stage 1–3 完成；下一步是所有者的运行步骤（规范 §17、§18）。
+**更新时间**：2026-10-12
+**分支**：Phase 1 已通过 [PR #1](https://github.com/SkyBlue997/MorphGate/pull/1) 合并至 `master`（合并提交 `30e3963`）；远程历史分支为 `phase-1/edge-behind-cloudflare`。2026-10-07 公开前重写过一次提交历史（只去掉提交说明中的尾注，文件树不变），之前记录的提交号都已失效，本文件中的提交号均为重写后的。
+**状态**：Stage 1–3 与 Phase 1 之后的增补（I-36..I-42）完成；所有者站点自 2026-09-28 起以 monitor 模式运行，下一步是按规范 §17、§18 完成验收。
 
 ## 1. 总体进度
 
 | 阶段 | 内容 | 状态 | 提交 |
 |---|---|---|---|
-| Phase 0 | 设计文档、ADR、monorepo 骨架 | 完成 | `2a4bc27` |
-| Phase 1 规范 | [phase1-spec.md](phase1-spec.md)（含集成者裁决 I-1..I-35） | 完成 | `3ee5b2d` … `230db47` |
-| Stage 1 | 11 个并行 WP：mg-core、mg-challenge、mg-intel、mg-edge-core（C1–C4）、Go 编译器 / mgctl / Cloudflare 与情报同步、Web SDK | 完成，逐个对抗验证 | `7e2fbee` |
-| Stage 2 | WP-CLEANUP（I-20..I-27）、WP-E1a 骨架、E1b 决策接线、E1c Challenge 端点、E1d 事件与指标；最终安全审查与本机端到端 | 完成，逐个对抗验证 | `12f52ba` |
-| 审查后修复 | I-29 额外删除客户端 IP / URL 改写 / 方法覆盖类请求头；I-30 重放未校验时签发的凭证（`ruc`）不被 fail_closed 路由接受；I-31 延迟指标按 `kind` 拆分；I-32 无 `env` 时不写 telemetry；测试端口竞争修复 | 完成 | `3dbb48e` |
-| Stage 3 | WP-L1（Lab 验收场景、`mglab events`、`scripts/lab-e2e.sh`、`make lab-e2e`、CI `lab-e2e` 作业）、WP-J1（`direct_tls` JA4 预研，ADR-0002 勘误）、WP-D1（设计文档勘误，含 I-8..I-32 的同步）；集成：裁决 I-33..I-35（接受阶段 2 的执行层细化、补齐正文未列的字段与接口、接受两项已知限制），`edge.toml.example` 的 AOP `client_ca` 注释改为所有者自有 CA 并加 `ja4_spike` 说明，07 / 01 / 04 / 09 / 10 / ADR-0005 与 JA4 结论对齐 | 完成 | 见本次提交 |
+| Phase 0 | 设计文档、ADR、monorepo 骨架 | 完成 | `bdc66c2` |
+| Phase 1 规范 | [phase1-spec.md](phase1-spec.md)（含集成者裁决 I-1..I-35） | 完成 | `a7a6fa0` … `88104ea` |
+| Stage 1 | 11 个并行 WP：mg-core、mg-challenge、mg-intel、mg-edge-core（C1–C4）、Go 编译器 / mgctl / Cloudflare 与情报同步、Web SDK | 完成，逐个对抗验证 | `ef6e21d` |
+| Stage 2 | WP-CLEANUP（I-20..I-27）、WP-E1a 骨架、E1b 决策接线、E1c Challenge 端点、E1d 事件与指标；最终安全审查与本机端到端 | 完成，逐个对抗验证 | `e6ab232` |
+| 审查后修复 | I-29 额外删除客户端 IP / URL 改写 / 方法覆盖类请求头；I-30 重放未校验时签发的凭证（`ruc`）不被 fail_closed 路由接受；I-31 延迟指标按 `kind` 拆分；I-32 无 `env` 时不写 telemetry；测试端口竞争修复 | 完成 | `35c6853` |
+| Stage 3 | WP-L1（Lab 验收场景、`mglab events`、`scripts/lab-e2e.sh`、`make lab-e2e`、CI `lab-e2e` 作业）、WP-J1（`direct_tls` JA4 预研，ADR-0002 勘误）、WP-D1（设计文档勘误，含 I-8..I-32 的同步）；集成：裁决 I-33..I-35（接受阶段 2 的执行层细化、补齐正文未列的字段与接口、接受两项已知限制），`edge.toml.example` 的 AOP `client_ca` 注释改为所有者自有 CA 并加 `ja4_spike` 说明，07 / 01 / 04 / 09 / 10 / ADR-0005 与 JA4 结论对齐 | 完成 | `1c6bf64` |
 | Phase 1 之后 | 裁决 I-36：路由级 `mode: monitor \| enforce`（`Route.mode`；Go 构建器、`mgctl bundle verify` 与审计、Edge 执行层；多路径视图取最严；站点 monitor 且有 enforce 路由时超限请求按 enforce 拒绝） | 完成 | PR #4 |
 | Phase 1 之后 | 裁决 I-37：路由级 `never_challenge`（`Route.never_challenge`；只允许 low / medium 且不 `require_clearance` 的路由；多路径视图取"与"；CHALLENGE 只记录，BLOCK / RATE_LIMIT 照常；Go 构建器、`mgctl bundle verify` 与审计、Edge 执行层） | 完成 | PR #6 |
 | Phase 1 之后 | 裁决 I-38：Edge → 源站认证头 `MG-Origin-Auth`（edge.toml `[[sites]] origin_keys`，`mg-origin-keys` 密钥文件；HMAC-SHA256 覆盖时间戳、方法、请求目标与 MG-* 头，60 秒时间窗；`mgctl keys gen-origin`；`adapters/origin` 源站参考校验；`kat.json` `origin_auth` 向量） | 完成 | PR #7 |
@@ -42,7 +42,7 @@ Stage 3 集成验证（2026-09-28，本机 macOS arm64，共享 `target/`）：
 | actionlint v1.7.12（`.github/workflows/ci.yml`） | 0 个问题（本机没有 shellcheck，`run` 脚本未经 shellcheck 检查） |
 | `ja4_spike` | 缺省关闭（`config::tests`）；非 `direct_tls` 监听器上 `--check-config` 退出 2；未开启的 `direct_tls` 监听器照常握手且事件中没有 JA4（`edge/tests/ja4_spike.rs`、`edge/tests/tls.rs`） |
 
-远端验证：合并提交 `639533074e9953b1f7339f1d5f8d3aacd31e1744` 的 [CI run 37568198825](https://github.com/SkyBlue997/MorphGate/actions/runs/37568198825) 已全部通过，包括 Rust fmt / clippy / test / wasm / edge smoke、MSRV 1.88、Go 与生成代码、Web SDK、Compose 与 Lab 网络隔离、文档脚本，以及依赖 Rust release 二进制和新构建 SDK 的 Lab 端到端作业。上表测试数量是 2026-09-28 的本机记录；远端各次运行以其日志为准。
+远端验证：合并提交 `30e3963e8963d3b8a77e9cb1b024ae9035306d2f`（重写前为 `6395330`，文件树相同，CI 运行页显示的是重写前的提交号）的 [CI run 37568198825](https://github.com/SkyBlue997/MorphGate/actions/runs/37568198825) 已全部通过，包括 Rust fmt / clippy / test / wasm / edge smoke、MSRV 1.88、Go 与生成代码、Web SDK、Compose 与 Lab 网络隔离、文档脚本，以及依赖 Rust release 二进制和新构建 SDK 的 Lab 端到端作业。上表测试数量是 2026-09-28 的本机记录；远端各次运行以其日志为准。
 
 ## 3. 验收状态与下一步
 
@@ -51,12 +51,12 @@ Stage 3 集成验证（2026-09-28，本机 macOS arm64，共享 `target/`）：
 | 冒充爬虫 100% 识别 | 本机证明：`make lab-e2e` 的 `phase1-impersonator` 与 `mglab events impersonator` | WP-L1（完成） |
 | 不执行 JS 的脚本客户端在 enforce 下拿不到凭证 | 本机证明：`phase1-nonjs-clearance` 与 `mglab events clearance`；`edge/tests/challenge_flow.rs` | WP-L1、WP-E1c（完成） |
 | JA4 预研结论写入 ADR-0002 | 完成：链路可行、默认关闭、每握手约 0.5 µs，不以原始 JA4 做 `bind.tfp` 硬绑定 | WP-J1（完成） |
-| monitor 模式经 Cloudflare 连续运行 ≥ 1 周 | 未开始 | 所有者（§17 第 6 步） |
+| monitor 模式经 Cloudflare 连续运行 ≥ 1 周 | 运行中：所有者站点自 2026-09-28 起经 Cloudflare Tunnel 以 monitor 模式运行（已超过 1 周），已更新到最新版；待核对该期间的指标 | 所有者（§17 第 6 步） |
 | 附加延迟 p99 < 5 ms（`kind="site"`，I-31） | 指标已提供，待生产 / staging 数据 | 所有者 |
 | `mgctl cf audit` 全绿 | 工具已实现，待真实 zone | 所有者（§17 第 8 步） |
 | 真人浏览回归无功能破坏 | 未开始 | 所有者（§17 第 7 步） |
 
-下一步是所有者的运行步骤（规范 §17 运行手册）：在真实 Cloudflare zone 上配置规则、monitor 模式运行 ≥ 1 周、浏览器回归、`cf audit` 全绿。远端 CI 的 `lab-e2e` 作业已通过；它使用回环测试环境，不替代真实站点验收。
+下一步是所有者的运行步骤（规范 §17 运行手册）：核对 monitor 期间的指标（附加延迟 p99、信号缺失率、`bad_secret_header`、外部 Worker 等应为 0 的计数）、浏览器回归、`cf audit` 全绿，之后再讨论切到 enforce。远端 CI 的 `lab-e2e` 作业已通过；它使用回环测试环境，不替代真实站点验收。
 
 ## 4. 已知的低优先级遗留
 
