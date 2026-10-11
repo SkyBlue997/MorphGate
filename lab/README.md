@@ -40,7 +40,7 @@ docker compose -f deploy/compose/docker-compose.yml --profile lab run --rm mglab
 |---|---|
 | `check [-config] [-map-host name=ip]… [-resolve] <url>` | 判断 URL 是否允许及原因；`-resolve` 另外解析并校验每个地址（不建立连接） |
 | `replay [-config] [-map-host name=ip]… [-base URL] [-rps N] [-var name=value]… <scenario>` | 按顺序回放场景 |
-| `events impersonator\|clearance … <events.jsonl>` | 检查 Edge 的 JSONL 事件文件（只读本地文件，不发流量），见下文 |
+| `events impersonator\|clearance\|providers\|nearline … <events.jsonl>…` | 检查 Edge 的 JSONL 事件文件（`nearline` 另读 mg-nearline 的 `kind=verdict` 行；只读本地文件，不发流量），见下文 |
 
 `-map-host name=ip`（可重复）只替换名字解析，相当于 `curl --resolve`：名字本身仍须在白名单内，映射出的地址与 DNS 应答一样按该名字的规则校验（`allow_hosts` / `allow_suffixes` 只能是回环 / 私有地址），连接前再查一次。所以映射不会让 Lab 到达白名单之外的目标；`site.lab.test=93.184.216.34` 在连接时被拒绝。
 
@@ -61,20 +61,24 @@ docker compose -f deploy/compose/docker-compose.yml --profile lab run --rm mglab
 | `expect_header_absent` | 请求 | 不得出现的响应头（最终响应与跟随的每一跳重定向都检查，所以 `Location` 表示没有发生重定向） |
 | `expect_cookie_absent` | 请求 | 不得被 `Set-Cookie` 设置的 Cookie 名（含跟随的重定向各跳；名字不区分大小写，手工解析，畸形行也算）；只报告名字，不打印值 |
 | `expect_body_contains` | 请求 | 响应正文前 1 MiB 须包含的子串 |
+| `expect_body_contains_all` | 请求 | 另外每一项都须包含的子串列表 |
+| `expect_body_excludes` | 请求 | 响应正文前 1 MiB 不得包含的子串列表 |
+| `expect_header_excludes` | 请求 | 头名 → 子串列表：最终响应与跟随的每一跳重定向中，该头的任何值都不得包含其中任一子串（头不存在即满足） |
 
 任一期望不满足计为 unexpected response，`replay` 退出码 1。
 
-## Phase 1 验收（`make lab-e2e`）
+## 端到端验收（`make lab-e2e`）
 
-规格 [§15 WP-L1、§18](../docs/impl/phase1-spec.md#wp-l1-validation-lab阶段-3)。`scripts/lab-e2e.sh` 全部在回环地址上运行：
+Phase 1 规格 [§15 WP-L1、§18](../docs/impl/phase1-spec.md#wp-l1-validation-lab阶段-3)，Phase 2 规格 [§17 WP-L2、§18、§20](../docs/impl/phase2-spec.md#wp-l2-validation-lab阶段-3)。`scripts/lab-e2e.sh` 全部在回环地址上运行，同一个 Edge 上有两个站点：`lab`（`testdata/e2e/site.yaml`，Phase 1 配置包，`schema_version = 1`）与 `labp2`（`testdata/e2e/site-p2.yaml`，交互式与 Turnstile，`schema_version = 2`）：
 
 | 步骤 | 内容 |
 |---|---|
-| 构建 | `go build` mgctl、mglab；mg-edge 取 `MG_EDGE_BIN`（CI：`rust` 作业上传的发布二进制），否则 `cargo build -p mg-edge`；SDK 目录取 `MG_LAB_SDK_DIR`，否则有 pnpm / node 时 `pnpm -C sdk/web run build`，否则 `edge/tests/fixtures/sdk`（`MG_LAB_SDK=fixture` 强制） |
-| 密钥与配置包 | 临时目录中用 `MGCTL_PASSPHRASE_FILE`、`MGCTL_AGE_WORK_FACTOR=10`、`--insecure-test-key` 生成所有者签名密钥、假名化密钥、站点 `lab` 的密钥与源站密钥（`keys gen-origin`），`keys export --out` 写成 Edge 的凭证文件；用 `testdata/e2e/site.yaml` build / sign / publish（enforce），审计日志也在临时目录并 `audit verify` |
-| 进程 | 临时 `valkey-server`（只监听临时目录中的 unix socket；或 `MG_TEST_VALKEY_URL`，必须在本机：回环地址的 `redis://` 或 `unix://`）、Node 源站（用参考实现 `adapters/origin/verify-origin-auth.mjs` 校验 `MG-Origin-Auth`，不通过时 401）、mg-edge（`cloudflare` 回环监听器、`origin_keys`、Valkey 状态、`static:testdata/e2e/dns.json`、JSONL 事件文件；二进制与 SDK 目录先复制到临时目录，并发的重新构建不影响本次运行）；等到站点 active、配置包版本生效、状态层为 valkey |
-| 场景 | mglab 经 guard 回放下表三个场景（`-map-host site.lab.test=127.0.0.1`、`-var run=<本次 id>`）；另用 curl 绕过 Edge 直接向源站发一个不带签名、一个伪造签名的请求，都应 401 |
-| 断言 | `mglab events impersonator` / `clearance` 检查事件文件；`trial`、`beacon` 路由上的挑战在决定事件中记为 `dry_run`；源站拒绝的只有那两个直连请求；源站日志中没有受保护路由、`/__mg`、已判定的冒充请求，已验证爬虫带 `MG-Verified` 到达；打印 PASS / FAIL 汇总 |
+| 构建 | `go build` mgctl、mg-nearline、mglab；mg-edge 取 `MG_EDGE_BIN`（CI：`rust` 作业上传的发布二进制），否则 `cargo build -p mg-edge`；SDK 目录取 `MG_LAB_SDK_DIR`，否则有 pnpm / node 时 `pnpm -C sdk/web run build`，否则 `edge/tests/fixtures/sdk`（`MG_LAB_SDK=fixture` 强制） |
+| 密钥与配置包 | 临时目录中用 `MGCTL_PASSPHRASE_FILE`、`MGCTL_AGE_WORK_FACTOR=10`、`--insecure-test-key` 生成所有者签名密钥、假名化密钥、源站密钥（`keys gen-origin`，两个站点共用）与两个站点各自的密钥，`keys export --out` 写成 Edge 的凭证文件，另写一个占位的 Turnstile secret 文件（§8.7 格式）；两个站点分别 build / sign / publish（enforce），审计日志也在临时目录并 `audit verify` |
+| 进程 | 临时 `valkey-server`（只监听临时目录中的 unix socket；或 `MG_TEST_VALKEY_URL`，必须在本机：回环地址的 `redis://` 或 `unix://`）、Node 源站（用参考实现 `adapters/origin/verify-origin-auth.mjs` 校验 `MG-Origin-Auth`，不通过时 401）、Node 接收端（代替 VictoriaLogs 接收 mg-nearline 的 `kind=verdict` 行；同时是 Turnstile siteverify 的回环 mock，记录每次调用，`MG_EDGE_TEST_OUTBOUND=1`，D-52）、mg-edge（`cloudflare` 回环监听器、两个站点、`origin_keys`、Valkey 状态、`static:testdata/e2e/dns.json`、JSONL 事件文件；二进制与 SDK 目录先复制到临时目录，并发的重新构建不影响本次运行）；等到两个站点 active、配置包版本生效、状态层为 valkey、`labp2` 的交互式可用（SDK 目录须为 manifest v2） |
+| 场景 | mglab 经 guard 回放下表的场景（`-map-host site.lab.test=127.0.0.1 -map-host p2.lab.test=127.0.0.1`、`-var run=<本次 id>`）；另用 curl 绕过 Edge 直接向源站发一个不带签名、一个伪造签名的请求，都应 401 |
+| 近线 | 启动 mg-nearline（与 Edge 同一个 Valkey 的缺省用户，消费组 `lab-<本次 id>`，`vl_main` 指向接收端），扫描器检测器先为 shadow：一个地址回放诱饵，等到 shadow verdict（`kind=verdict` 行与日志，不写 Valkey）；重启为 enforce：另一个地址回放诱饵，等到 verdict 写入；Edge 的 verdict 缓存（2 s）过期后回放 `phase2-nearline-after.yaml` |
+| 断言 | `mglab events impersonator` / `clearance` / `providers` / `nearline` 检查事件文件；`trial`、`beacon` 路由上的挑战在决定事件中记为 `dry_run`；源站拒绝的只有那两个直连请求；源站日志中没有受保护路由（`/lab/members/`、`/p2/`）、`/__mg`、已判定的冒充请求，已验证爬虫带 `MG-Verified` 到达，近线之后只有两个对照请求到达；siteverify mock 没有收到任何调用；打印 PASS / FAIL 汇总 |
 | 清理 | trap 停止全部进程并删除临时目录（`MG_LAB_E2E_KEEP=1` 保留） |
 
 缺少 python3 / go / curl / node / valkey-server（且无 `MG_TEST_VALKEY_URL`）/ cargo（且无 `MG_EDGE_BIN`）时打印 `SKIPPED: …` 并以 0 退出；`MG_LAB_E2E_REQUIRE=1`（CI）时改为失败。`MG_LAB_E2E_TIMEOUT` 为每个等待的秒数（缺省 60）。
@@ -84,5 +88,10 @@ docker compose -f deploy/compose/docker-compose.yml --profile lab run --rm mglab
 | `phase1-impersonator.yaml` | 声称 GPTBot（`ip_ranges`）、Googlebot（`ip_ranges_or_rdns`）、Applebot（`rdns`）但来自官方段之外或 rDNS 不成立（仿冒后缀 `evilgooglebot.com`（I-22）、无 PTR、正向不含该 IP、PTR 不在后缀内、IPv6、UA 填充到 512 字节之后、大写标记）：`ip_ranges` 从第一个请求起 403；rDNS 运营方每个地址先有一个热身请求（pending，转发），`delay_ms` 之后全部 403；注册表段内或 rDNS 成立的真爬虫放行 | 已定结果的冒充请求 13/13 为 `impersonator` 且 enforce 阻断；热身请求为 `declared_agent`、从不 `verified_crawler`（D-22）；每条访问记录都有决定事件；6 个真爬虫请求为 `verified_crawler` |
 | `phase1-route-modes.yaml` | 站点 enforce，策略对带 `X-Lab-Challenge` 的请求下 `pow` 挑战：缺省路由 → 403 挑战；`never_challenge` 路由 `beacon` → 200 转发，但冒充的 GPTBot 仍 403 阻断（I-37）；`mode: monitor` 的 critical 路由 `trial` → 无凭证与带标记的请求都 200 转发，同一客户端访问 enforce 的 `members` 仍 403（I-36）；客户端伪造的 `MG-Origin-Auth`、`MG-Client-IP` 被 Edge 删除，请求照常通过源站校验（I-38） | `beacon` 与 `trial` 上的 3 个请求的决定为 `challenge`、`dry_run = true`；Edge 转发的每个请求都通过源站校验 |
 | `phase1-nonjs-clearance.yaml` | 对 `require_clearance` 路由的 HTML 与 JSON 请求 → 403 挑战、无 `__Host-mg_clr`；提交录制的过期 C（表单）、伪造 C（JSON）、畸形 C → 403、无 Cookie、无 303；再次请求仍 403；HTTP 库 UA → 403；外部 zone `CF-Worker` → 403 | 没有 `outcome = pass` 的 feedback（3 条均为 fail）；`/__mg/c` 没有成功应答；受保护路由的请求没有被转发 |
+| `phase2-challenge-page.yaml` | `labp2` 的路由 `account`、`login` 都要求交互级凭证（`min_level: interactive`），Turnstile 只在 `login` 上、`selection: first`、`deny_countries: [CN]`：`account` 的挑战页与 JSON 挑战只有 `self_hold`、`pow_a11y`，页面不引用任何第三方源（脚本与链接同源，CSP 没有主机、通配符、`http(s):`、`ws(s):`、`strict-dynamic`、`frame-src`）；`login` 上 `CF-IPCountry: CN`、缺失、`XX`、`T1`、小写 `cn` 的页面、JSON 挑战与 `/__mg/v` 都不带 Turnstile，且页面同样不引用第三方源；`US`、`DE` 得到首位的 Turnstile（对照，CSP 含 `frame-src https://challenges.cloudflare.com`） | `login` 上的交互式挑战：允许的国家 3 个、首个 Provider 为 `turnstile`，拒绝或未知的国家 7 个、首个 Provider 都不是 `turnstile`（`mglab events providers`） |
+| `phase2-submissions.yaml` | 回放录制的交互式提交（2026-10-11 从一个已丢弃 seal root 的 Edge 录下的两个 C，配 `testdata/phase2/samples/submissions` 的会话密钥、签名、遥测与计数器）：同一请求体两次、篡改与截断的 C、C 未提供的 Provider（`turnstile`）、不存在的 Provider id、表单 v1 交互式提交、Turnstile 提交，以及录制与篡改的 C 的续期：全部 403、不设 Cookie、不跳转、不附新 C；外部 zone 的 `CF-Worker` 访问页面、`/__mg/v`、提交与续期都 403（D-23） | 8 条提交 feedback、2 条续期 feedback 全为 `fail`；`/__mg/c` 与 `/__mg/c/renew` 没有成功应答；`/p2/` 下没有请求被转发（`mglab events clearance`）；siteverify mock 没有收到调用 |
+| `phase2-nearline-baits.yaml` / `phase2-nearline-after.yaml` | HTTP 库客户端请求两个内置诱饵（`/.env.<id>`、`/.git/<id>/config`），shadow 与 enforce 各一个地址；之后三个地址各请求一次普通页面。Lab 的近线配置把扫描器 verdict 的风险设为 100（可配置的最大值，缺省 80） | shadow verdict 未写入、enforce verdict 已写入，各自距触发请求 ≤ 10 s（§20 的 p95）；`kind=verdict` 只有伪名键、没有 `scanner` 标签；enforce 地址的请求带该 verdict（来源 `nearline/scanner`）、分数高于对照、结果为挑战而不是阻断；shadow 地址与没有诱饵的地址不带 verdict、照常转发（`mglab events nearline`） |
 
-`testdata/e2e/`：`site.yaml`（站点 `lab`、主机 `site.lab.test`、`monitor_only: false`、路由 `members` 为 critical，`trial` 为 critical 且 `mode: monitor`，`beacon` 为 low 且 `never_challenge`，策略 `policies/production.yaml` 只有一条按 `X-Lab-Challenge` 挑战的规则，决定事件不采样）、`crawler-registry.test.json`（`test: true`，只用文档地址段；rDNS 后缀按 I-22 以 `.` 开头、至少两段标签）、`dns.json`（`StaticResolver` 表）。场景只针对这套配置与全新的 Edge（rDNS 缓存为空）。
+D-59：Lab 不含求解逻辑。能被 Edge 打开的 C 的重放、拼接、跨客户端与并发双提交在 `edge/tests` 中验证；Lab 只回放固定请求，录制的 C 在任何 Edge 上都打不开，所以提交都止于"打开 C"这一步（`ic.c_*`），`provider` 不在集合中（`ic.provider_not_offered`）由 `edge/src/mg_endpoints` 的单元测试覆盖。`site.yaml` 是 Phase 1 配置包：内置扫描诱饵只在 `schema_version = 2` 的配置包中生效，所以近线场景在 `labp2` 上运行。
+
+`testdata/e2e/`：`site.yaml`（站点 `lab`、主机 `site.lab.test`、`monitor_only: false`、路由 `members` 为 critical，`trial` 为 critical 且 `mode: monitor`，`beacon` 为 low 且 `never_challenge`，策略 `policies/production.yaml` 只有一条按 `X-Lab-Challenge` 挑战的规则，决定事件不采样）、`crawler-registry.test.json`（`test: true`，只用文档地址段；rDNS 后缀按 I-22 以 `.` 开头、至少两段标签）、`dns.json`（`StaticResolver` 表）、`site-p2.yaml`（站点 `labp2`、主机 `p2.lab.test`、`location_headers: true`、交互式评分 shadow、Turnstile 占位 sitekey）。场景只针对这套配置与全新的 Edge（rDNS 缓存为空）。

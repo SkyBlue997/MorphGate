@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,6 +35,10 @@ Usage:
   mglab events impersonator [-site ID] -impersonators PREFIX [-crawlers PREFIX]
                [-want-settled N] [-want-verified N] <events.jsonl>
   mglab events clearance [-site ID] -protected PREFIX [-want-feedback N] <events.jsonl>
+  mglab events providers [-site ID] -route ID [-offer CC,...] [-provider ID]
+               [-want-offered N] [-want-withheld N] <events.jsonl>
+  mglab events nearline [-site ID] [-detector NAME] -after PREFIX -shadow-ip IP
+               -enforce-ip IP [-fresh-ip IP] [-max-latency-ms N] <events.jsonl>...
 
 Without -config the built-in allowlist is used: localhost, *.test, *.localhost,
 127.0.0.0/8 and ::1 (see lab/config/lab.example.yaml).
@@ -43,11 +48,17 @@ Without -config the built-in allowlist is used: localhost, *.test, *.localhost,
   replay   send the scenario's recorded requests one by one to the base URL,
            rate-capped (default 5 req/s, hard maximum 50); -var sets a
            variable the scenario declares (e.g. a port or run id)
-  events   check the Edge's JSONL event file after a replay (reads a local
-           file, sends nothing): "impersonator" requires every settled fake
+  events   check the Edge's JSONL event file after a replay (reads local
+           files, sends nothing): "impersonator" requires every settled fake
            crawler request to be classified impersonator (D-22), "clearance"
-           requires that no challenge submission passed and that no request
-           to the protected route was forwarded
+           requires that no challenge submission or renewal passed and that
+           no request to the protected route was forwarded, "providers"
+           requires that only the -offer countries got a C offering the
+           external provider on the route, "nearline" (the Edge's events plus
+           mg-nearline's kind=verdict lines) requires a shadow verdict that
+           was not written, an enforce verdict that was, and the enforce
+           address's later request challenged with that verdict while the
+           controls are forwarded
 
 -map-host name=ip answers the lookup of an allowlisted name with a fixed
 address (like curl --resolve), e.g. site.lab.test=127.0.0.1 for a *.test site
@@ -242,9 +253,23 @@ func runReplay(ctx context.Context, args []string, stdout, stderr io.Writer, opt
 	return ExitOK
 }
 
+// csvList collects a comma-separated flag value.
+type csvList []string
+
+func (l *csvList) String() string { return strings.Join(*l, ",") }
+
+func (l *csvList) Set(s string) error {
+	for _, v := range strings.Split(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			*l = append(*l, v)
+		}
+	}
+	return nil
+}
+
 func runEvents(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "mglab events: expected impersonator or clearance")
+		fmt.Fprintln(stderr, "mglab events: expected impersonator, clearance, providers or nearline")
 		return ExitUsage
 	}
 	mode := args[0]
@@ -252,6 +277,12 @@ func runEvents(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var imp events.ImpersonatorOptions
 	var clr events.ClearanceOptions
+	var prv events.ProvidersOptions
+	var nl events.NearlineOptions
+	var offer csvList
+	var counts []*int
+	required := map[string]*string{}
+	maxFiles := 1
 	switch mode {
 	case "impersonator":
 		fs.StringVar(&imp.Site, "site", "", "only events of this site id")
@@ -259,47 +290,84 @@ func runEvents(args []string, stdout, stderr io.Writer) int {
 		fs.StringVar(&imp.Crawlers, "crawlers", "", "path prefix of the genuine crawlers' requests")
 		fs.IntVar(&imp.WantSettled, "want-settled", 0, "exact number of settled impersonator requests (0: at least one)")
 		fs.IntVar(&imp.WantVerified, "want-verified", 0, "exact number of verified genuine crawler requests (0: not checked)")
+		required["-impersonators"] = &imp.Impersonators
+		counts = []*int{&imp.WantSettled, &imp.WantVerified}
 	case "clearance":
 		fs.StringVar(&clr.Site, "site", "", "only events of this site id")
 		fs.StringVar(&clr.Protected, "protected", "", "path prefix of the require_clearance route (required)")
 		fs.IntVar(&clr.WantFeedback, "want-feedback", 0, "exact number of challenge submissions (0: at least one)")
+		required["-protected"] = &clr.Protected
+		counts = []*int{&clr.WantFeedback}
+	case "providers":
+		fs.StringVar(&prv.Site, "site", "", "only events of this site id")
+		fs.StringVar(&prv.Route, "route", "", "route id that offers the provider (required)")
+		fs.Var(&offer, "offer", "comma-separated countries that must be offered the provider; all others must not")
+		fs.StringVar(&prv.Provider, "provider", "turnstile", "external provider id")
+		fs.IntVar(&prv.WantOffered, "want-offered", 0, "exact number of challenges for allowed countries (0: at least one)")
+		fs.IntVar(&prv.WantWithheld, "want-withheld", 0, "exact number of challenges for other countries (0: at least one)")
+		required["-route"] = &prv.Route
+		counts = []*int{&prv.WantOffered, &prv.WantWithheld}
+	case "nearline":
+		fs.StringVar(&nl.Site, "site", "", "only events of this site id")
+		fs.StringVar(&nl.Detector, "detector", "scanner", "near-line detector")
+		fs.StringVar(&nl.After, "after", "", "path prefix of the requests sent after the verdicts (required)")
+		fs.StringVar(&nl.ShadowIP, "shadow-ip", "", "address that sent the baits in shadow mode (required)")
+		fs.StringVar(&nl.EnforceIP, "enforce-ip", "", "address that sent the baits in enforce mode (required)")
+		fs.StringVar(&nl.FreshIP, "fresh-ip", "", "address that sent no bait")
+		fs.Int64Var(&nl.MaxLatencyMS, "max-latency-ms", 0, "bound from the triggering request to its verdict (0: not checked)")
+		required["-after"], required["-shadow-ip"], required["-enforce-ip"] = &nl.After, &nl.ShadowIP, &nl.EnforceIP
+		maxFiles = 8
 	default:
-		fmt.Fprintf(stderr, "mglab events: unknown check %q (impersonator or clearance)\n", mode)
+		fmt.Fprintf(stderr, "mglab events: unknown check %q (impersonator, clearance, providers or nearline)\n", mode)
 		return ExitUsage
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return ExitUsage
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintf(stderr, "mglab events %s: expected exactly one event file\n", mode)
+	if fs.NArg() < 1 || fs.NArg() > maxFiles {
+		if maxFiles == 1 {
+			fmt.Fprintf(stderr, "mglab events %s: expected exactly one event file\n", mode)
+		} else {
+			fmt.Fprintf(stderr, "mglab events %s: expected 1-%d event files\n", mode, maxFiles)
+		}
 		return ExitUsage
 	}
-	if (mode == "impersonator" && imp.Impersonators == "") || (mode == "clearance" && clr.Protected == "") {
-		fmt.Fprintf(stderr, "mglab events %s: the path prefix flag is required\n", mode)
+	for _, name := range sortedFlags(required) {
+		if *required[name] == "" {
+			fmt.Fprintf(stderr, "mglab events %s: %s is required\n", mode, name)
+			return ExitUsage
+		}
+	}
+	for _, c := range counts {
+		if *c < 0 {
+			fmt.Fprintf(stderr, "mglab events %s: counts must not be negative\n", mode)
+			return ExitUsage
+		}
+	}
+	if nl.MaxLatencyMS < 0 {
+		fmt.Fprintf(stderr, "mglab events %s: -max-latency-ms must not be negative\n", mode)
 		return ExitUsage
 	}
-	if imp.WantSettled < 0 || imp.WantVerified < 0 || clr.WantFeedback < 0 {
-		fmt.Fprintf(stderr, "mglab events %s: counts must not be negative\n", mode)
-		return ExitUsage
-	}
-	f, err := os.Open(fs.Arg(0))
+	prv.Offer = offer
+	recs, err := events.ReadFiles(fs.Args()...)
 	if err != nil {
 		fmt.Fprintf(stderr, "mglab events %s: %v\n", mode, err)
 		return ExitUsage
 	}
-	recs, err := events.Read(f)
-	f.Close()
-	if err != nil {
-		fmt.Fprintf(stderr, "mglab events %s: %s: %v\n", mode, fs.Arg(0), err)
-		return ExitUsage
-	}
 	var summary fmt.Stringer
 	var problems []string
-	if mode == "impersonator" {
+	switch mode {
+	case "impersonator":
 		rep := events.CheckImpersonators(recs, imp)
 		summary, problems = rep, rep.Problems
-	} else {
+	case "clearance":
 		rep := events.CheckClearance(recs, clr)
+		summary, problems = rep, rep.Problems
+	case "providers":
+		rep := events.CheckProviders(recs, prv)
+		summary, problems = rep, rep.Problems
+	default:
+		rep := events.CheckNearline(recs, nl)
 		summary, problems = rep, rep.Problems
 	}
 	for _, p := range problems {
@@ -311,4 +379,13 @@ func runEvents(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "PASS  %s\n", summary)
 	return ExitOK
+}
+
+func sortedFlags(m map[string]*string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

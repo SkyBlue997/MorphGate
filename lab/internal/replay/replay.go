@@ -109,6 +109,16 @@ type Request struct {
 	// ExpectBodyContains must occur in the first MaxResponseBytes of the
 	// response body.
 	ExpectBodyContains string `yaml:"expect_body_contains"`
+	// ExpectBodyContainsAll lists further substrings that must each occur
+	// in the first MaxResponseBytes of the response body.
+	ExpectBodyContainsAll []string `yaml:"expect_body_contains_all"`
+	// ExpectBodyExcludes lists substrings that must not occur in the first
+	// MaxResponseBytes of the response body.
+	ExpectBodyExcludes []string `yaml:"expect_body_excludes"`
+	// ExpectHeaderExcludes maps a response header name to substrings that
+	// none of its values may contain, on the response or on any redirect
+	// leading to it (an absent header passes).
+	ExpectHeaderExcludes map[string][]string `yaml:"expect_header_excludes"`
 }
 
 // Load reads and validates a scenario file. Unknown fields are errors.
@@ -390,8 +400,32 @@ func (r *Request) validateExpectations() error {
 		}
 	}
 	if len(r.ExpectHeader) > MaxExpectations || len(r.ExpectHeaderAbsent) > MaxExpectations ||
-		len(r.ExpectCookieAbsent) > MaxExpectations {
+		len(r.ExpectCookieAbsent) > MaxExpectations || len(r.ExpectBodyContainsAll) > MaxExpectations ||
+		len(r.ExpectBodyExcludes) > MaxExpectations || len(r.ExpectHeaderExcludes) > MaxExpectations {
 		return fmt.Errorf("at most %d entries per expectation", MaxExpectations)
+	}
+	for k, subs := range r.ExpectHeaderExcludes {
+		if !headerName.MatchString(k) {
+			return fmt.Errorf("expect_header_excludes: invalid header name %q", k)
+		}
+		if len(subs) == 0 || len(subs) > MaxExpectations {
+			return fmt.Errorf("expect_header_excludes %q must list 1-%d substrings", k, MaxExpectations)
+		}
+		for _, v := range subs {
+			if v == "" || strings.ContainsAny(v, "\r\n\x00") {
+				return fmt.Errorf("expect_header_excludes %q: substrings must be non-empty, without CR, LF or NUL", k)
+			}
+		}
+	}
+	for _, list := range []struct {
+		name string
+		subs []string
+	}{{"expect_body_contains_all", r.ExpectBodyContainsAll}, {"expect_body_excludes", r.ExpectBodyExcludes}} {
+		for _, v := range list.subs {
+			if v == "" || len(v) > MaxVarBytes {
+				return fmt.Errorf("%s: substrings must be 1-%d bytes", list.name, MaxVarBytes)
+			}
+		}
 	}
 	for k, v := range r.ExpectHeader {
 		if !headerName.MatchString(k) {
@@ -525,8 +559,36 @@ func (r *Request) check(status int, header http.Header, body []byte, hops []hop)
 			}
 		}
 	}
+	for _, name := range sortedKeys(r.ExpectHeaderExcludes) {
+	header:
+		for i, h := range hops {
+			for _, v := range h.header.Values(name) {
+				for _, sub := range r.ExpectHeaderExcludes[name] {
+					if !strings.Contains(v, sub) {
+						continue
+					}
+					if i < len(hops)-1 {
+						out = append(out, fmt.Sprintf("header %s contains %q on the %d redirect", name, sub, h.status))
+					} else {
+						out = append(out, fmt.Sprintf("header %s contains %q", name, sub))
+					}
+					break header
+				}
+			}
+		}
+	}
 	if r.ExpectBodyContains != "" && !bytes.Contains(body, []byte(r.ExpectBodyContains)) {
 		out = append(out, fmt.Sprintf("body does not contain %q", r.ExpectBodyContains))
+	}
+	for _, sub := range r.ExpectBodyContainsAll {
+		if !bytes.Contains(body, []byte(sub)) {
+			out = append(out, fmt.Sprintf("body does not contain %q", sub))
+		}
+	}
+	for _, sub := range r.ExpectBodyExcludes {
+		if bytes.Contains(body, []byte(sub)) {
+			out = append(out, fmt.Sprintf("body contains %q", sub))
+		}
 	}
 	return out
 }

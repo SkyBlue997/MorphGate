@@ -1,8 +1,10 @@
 // Package events checks the Edge's JSONL event file (edge.toml
-// [events] file, docs/impl/phase1-spec.md §13) after a Validation Lab run.
+// [events] file, docs/impl/phase1-spec.md §13, docs/impl/phase2-spec.md §15)
+// and mg-nearline's kind=verdict lines after a Validation Lab run.
 //
-// It only reads a local file: it sends no traffic. The checks implement the
-// Phase 1 acceptance items of spec §18 for WP-L1:
+// It only reads local files: it sends no traffic. The checks implement the
+// Phase 1 acceptance items of spec §18 for WP-L1 (below) and the Phase 2
+// items of WP-L2 (phase2.go):
 //
 //   - Impersonators: every request from a fake crawler whose verification
 //     has settled is classified risk.bot_class == "impersonator" (100 %,
@@ -23,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -30,11 +33,16 @@ import (
 const MaxLineBytes = 1 << 20
 
 // Record is the subset of an event line the checks read. Field names follow
-// spec §13.2-§13.4.
+// spec §13.2-§13.4 (Phase 1) and §15 (Phase 2; kind=verdict comes from
+// mg-nearline, phase2-spec §13.4).
 type Record struct {
+	// File names the file the line came from (set by ReadFiles) and Line
+	// its line number.
+	File string `json:"-"`
 	Line int    `json:"-"`
 	Kind string `json:"kind"`
 	Site string `json:"site"`
+	TS   int64  `json:"ts"`
 
 	// kind=decision
 	Ctx      *DecisionCtx  `json:"ctx"`
@@ -48,10 +56,27 @@ type Record struct {
 	Route     string `json:"route"`
 	RequestID string `json:"request_id"`
 
-	// kind=feedback
+	// kind=feedback (Renew: a renewal's counted failure, phase2-spec §15.1)
 	Outcome     string   `json:"outcome"`
 	Type        string   `json:"type"`
 	ReasonCodes []string `json:"reason_codes"`
+	Renew       bool     `json:"renew"`
+
+	// kind=verdict (mg-nearline; Type above is the entity type and Risk
+	// carries the verdict's risk in Risk.Value)
+	VerdictFields
+}
+
+// VerdictFields are the kind=verdict fields besides type and risk:
+// EntityVerdict's, then detector, mode and written (phase2-spec §15.3).
+type VerdictFields struct {
+	Key      string   `json:"key"`
+	Labels   []string `json:"labels"`
+	Source   string   `json:"source"`
+	SiteID   string   `json:"site_id"`
+	Detector string   `json:"detector"`
+	Mode     string   `json:"mode"`
+	Written  bool     `json:"written"`
 }
 
 // DecisionCtx is the part of RequestContext the checks read.
@@ -65,6 +90,23 @@ type DecisionCtx struct {
 	Identity struct {
 		Crawler Crawler `json:"crawler"`
 	} `json:"identity"`
+	Net struct {
+		IP              string `json:"ip"`
+		Country         string `json:"country"`
+		UpstreamCountry string `json:"upstream_country"`
+	} `json:"net"`
+	// Verdicts are the near-line verdicts the Edge fetched for the request.
+	Verdicts []CtxVerdict `json:"verdicts"`
+}
+
+// CtxVerdict is one entry of ctx.verdicts (mg_core::EntityVerdict).
+type CtxVerdict struct {
+	Type   string   `json:"type"`
+	Key    string   `json:"key"`
+	Risk   int      `json:"risk"`
+	Labels []string `json:"labels"`
+	Source string   `json:"source"`
+	SiteID string   `json:"site_id"`
 }
 
 // Crawler is ctx.identity.crawler.
@@ -77,17 +119,33 @@ type Crawler struct {
 	OutsideRanges bool   `json:"outside_ranges"`
 }
 
-// Risk is the decision event's risk assessment.
+// Risk is the decision event's risk assessment (an object), or a verdict's
+// risk (a number, in Value).
 type Risk struct {
-	BotClass string  `json:"bot_class"`
-	Score    float64 `json:"score"`
+	BotClass   string   `json:"bot_class"`
+	Score      float64  `json:"score"`
+	TopReasons []string `json:"top_reasons"`
+	// Value is the risk of a kind=verdict line (0-100).
+	Value float64 `json:"-"`
+}
+
+// UnmarshalJSON accepts the decision event's object and the verdict's number.
+func (r *Risk) UnmarshalJSON(data []byte) error {
+	if t := strings.TrimSpace(string(data)); t != "" && t[0] != '{' && t != "null" {
+		return json.Unmarshal(data, &r.Value)
+	}
+	type plain Risk
+	return json.Unmarshal(data, (*plain)(r))
 }
 
 // DecisionPart is the decision event's decision.
 type DecisionPart struct {
-	Action string `json:"action"`
-	DryRun bool   `json:"dry_run"`
-	RuleID string `json:"rule_id"`
+	Action        string `json:"action"`
+	DryRun        bool   `json:"dry_run"`
+	RuleID        string `json:"rule_id"`
+	ChallengeType string `json:"challenge_type"`
+	// ProviderID is the first provider of an interactive C (phase2-spec §15.3).
+	ProviderID string `json:"provider_id"`
 }
 
 // Read parses a JSONL event file. Empty lines are skipped; any other line
@@ -116,6 +174,29 @@ func Read(r io.Reader) ([]Record, error) {
 			return nil, fmt.Errorf("an event line is longer than %d bytes", MaxLineBytes)
 		}
 		return nil, err
+	}
+	return out, nil
+}
+
+// ReadFiles reads and concatenates JSONL event files (for example the
+// Edge's event file and mg-nearline's verdict lines), in order. Each record
+// names its file.
+func ReadFiles(paths ...string) ([]Record, error) {
+	var out []Record
+	for _, p := range paths {
+		f, err := os.Open(p)
+		if err != nil {
+			return nil, err
+		}
+		recs, err := Read(f)
+		f.Close()
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+		for i := range recs {
+			recs[i].File = p
+		}
+		out = append(out, recs...)
 	}
 	return out, nil
 }
@@ -149,11 +230,17 @@ func (r *Record) requestID() string {
 }
 
 func (r *Record) describe() string {
-	path := r.Path
-	if r.Kind == "decision" {
-		path = r.decisionPath()
+	where := fmt.Sprintf("line %d", r.Line)
+	if r.File != "" {
+		where = fmt.Sprintf("%s:%d", r.File, r.Line)
 	}
-	return fmt.Sprintf("line %d (%s %s, request %s)", r.Line, r.Kind, path, r.requestID())
+	switch r.Kind {
+	case "verdict":
+		return fmt.Sprintf("%s (verdict %s %s %s)", where, r.Source, r.Mode, r.Key)
+	case "decision":
+		return fmt.Sprintf("%s (%s %s, request %s)", where, r.Kind, r.decisionPath(), r.requestID())
+	}
+	return fmt.Sprintf("%s (%s %s, request %s)", where, r.Kind, r.Path, r.requestID())
 }
 
 // ImpersonatorOptions selects the requests of the impersonator scenario.
@@ -311,15 +398,19 @@ type ClearanceOptions struct {
 	// scenario requests.
 	Protected string
 	// WantFeedback is the exact number of challenge submissions (feedback
-	// events) expected (0: at least one).
+	// events of POST /__mg/c, renewals not counted) expected (0: at least
+	// one).
 	WantFeedback int
 }
 
 // ClearanceReport is the outcome of CheckClearance.
 type ClearanceReport struct {
-	// Feedback events and how many of them passed.
-	Feedback, Passed int
-	// Access records of POST /__mg/c and of the protected route.
+	// Feedback events of submissions and how many of them passed; Renewals
+	// counts the feedback events of renewals (phase2-spec §15.1: only their
+	// counted failures are written).
+	Feedback, Passed, Renewals int
+	// Access records of POST /__mg/c and /__mg/c/renew, and of the
+	// protected route.
 	Submissions, Protected int
 	// Protected requests the Edge let through (allow / log / tag, or a
 	// status below 400) and submissions answered with a success status.
@@ -331,17 +422,26 @@ type ClearanceReport struct {
 func (r ClearanceReport) OK() bool { return len(r.Problems) == 0 }
 
 func (r ClearanceReport) String() string {
-	return fmt.Sprintf("clearance: %d challenge submission(s) (%d succeeded), %d feedback event(s), %d passed; %d request(s) to the protected route, %d forwarded",
-		r.Submissions, r.Succeeded, r.Feedback, r.Passed, r.Protected, r.Forwarded)
+	renewals := ""
+	if r.Renewals > 0 {
+		renewals = fmt.Sprintf(" (and %d of renewals)", r.Renewals)
+	}
+	return fmt.Sprintf("clearance: %d challenge submission(s) (%d succeeded), %d feedback event(s)%s, %d passed; %d request(s) to the protected route, %d forwarded",
+		r.Submissions, r.Succeeded, r.Feedback, renewals, r.Passed, r.Protected, r.Forwarded)
 }
 
-// submitPath is the challenge submission endpoint (spec §10.3).
-const submitPath = "/__mg/c"
+// The challenge submission endpoint (Phase 1 spec §10.3) and the renewal
+// of an interactive C (phase2-spec §7.4), which hands out a new C.
+const (
+	submitPath = "/__mg/c"
+	renewPath  = "/__mg/c/renew"
+)
 
 // CheckClearance checks that no clearance was issued: every feedback event
-// failed, no POST /__mg/c got a success answer (303 or 200), and no request
-// to the protected route was forwarded to the origin (decision allow, log or
-// tag, or an access status below 400).
+// failed, no POST /__mg/c got a success answer (303 or 200), no renewal
+// succeeded (a renewed C is as good as a solved challenge's next step), and
+// no request to the protected route was forwarded to the origin (decision
+// allow, log or tag, or an access status below 400).
 func CheckClearance(recs []Record, o ClearanceOptions) ClearanceReport {
 	var rep ClearanceReport
 	problem := func(format string, args ...any) { rep.Problems = append(rep.Problems, fmt.Sprintf(format, args...)) }
@@ -356,7 +456,11 @@ func CheckClearance(recs []Record, o ClearanceOptions) ClearanceReport {
 		}
 		switch r.Kind {
 		case "feedback":
-			rep.Feedback++
+			if r.Renew {
+				rep.Renewals++
+			} else {
+				rep.Feedback++
+			}
 			if r.Outcome == "pass" {
 				rep.Passed++
 				problem("%s: challenge submission passed (%s)", r.describe(), r.Type)
@@ -365,7 +469,7 @@ func CheckClearance(recs []Record, o ClearanceOptions) ClearanceReport {
 			}
 		case "access":
 			switch {
-			case r.Path == submitPath:
+			case r.Path == submitPath || r.Path == renewPath:
 				rep.Submissions++
 				if r.Status < 400 {
 					rep.Succeeded++

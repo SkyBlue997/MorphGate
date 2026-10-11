@@ -250,12 +250,16 @@ func (x *xorshift) next() uint64 {
 // Read and the checks return errors or problems, never panic, on mutated
 // event lines (wrong types, nulls, truncation, noise).
 func TestRandomEventsDoNotPanic(t *testing.T) {
-	data, err := os.ReadFile("testdata/phase1-run.jsonl")
-	if err != nil {
-		t.Fatal(err)
+	var lines []string
+	for _, f := range []string{"testdata/phase1-run.jsonl", "testdata/phase2-run.jsonl", "testdata/phase2-verdicts.jsonl"} {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, strings.Split(strings.TrimSpace(string(data)), "\n")...)
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	tokens := []string{"null", "{}", "[]", `"x"`, "1", "-1", "true", `"ctx":null`, `"risk":7`, `"decision":null`, `"crawler":null`, `"/lab/`, "}", "{", ",", `"`, "\n"}
+	tokens := []string{"null", "{}", "[]", `"x"`, "1", "-1", "true", `"ctx":null`, `"risk":7`, `"decision":null`, `"crawler":null`, `"/lab/`,
+		`"verdicts":null`, `"net":null`, `"verdicts":[{}]`, `"risk":{}`, `"mode":"enforce"`, `"ts":-1`, "}", "{", ",", `"`, "\n"}
 	x := xorshift(0x2545f4914f6cdd1d)
 	readable := 0
 	for i := 0; i < 10000; i++ {
@@ -285,6 +289,8 @@ func TestRandomEventsDoNotPanic(t *testing.T) {
 		readable++
 		_ = CheckImpersonators(recs, ImpersonatorOptions{Impersonators: "/lab/", Crawlers: "/lab/crawler/"})
 		_ = CheckClearance(recs, ClearanceOptions{Protected: "/lab/"})
+		_ = CheckProviders(recs, ProvidersOptions{Route: "login", Offer: []string{"US"}})
+		_ = CheckNearline(recs, NearlineOptions{After: "/nl/", ShadowIP: shadowIP, EnforceIP: enforceIP, FreshIP: freshIP, MaxLatencyMS: 1})
 	}
 	if readable < 100 {
 		t.Errorf("only %d of 10000 inputs were readable: the checks are untested", readable)

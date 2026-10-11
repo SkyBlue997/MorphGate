@@ -1,0 +1,64 @@
+# Phase 2 near-line end to end (docs/impl/phase2-spec.md §17 WP-L2, §13.3,
+# §13.4, D-53): what the near-line verdict changes. Replayed by
+# scripts/lab-e2e.sh against site labp2 after both bait rounds of
+# phase2-nearline-baits.yaml, once mg-nearline has written the enforce
+# verdict and the Edge's 2 s verdict cache has expired:
+#
+#   mglab replay -map-host p2.lab.test=127.0.0.1 -base http://p2.lab.test:<edge port> \
+#     -var run=<id> -var enforce_ip=203.0.113.121 -var shadow_ip=203.0.113.120 \
+#     -var fresh_ip=203.0.113.122 lab/testdata/scenarios/phase2-nearline-after.yaml
+#   mglab events nearline -site labp2 -after /nl/<id>/ -shadow-ip 203.0.113.120 \
+#     -enforce-ip 203.0.113.121 -fresh-ip 203.0.113.122 <events.jsonl> <verdicts.jsonl>
+#
+# The same HTTP-library request to an ordinary page (default route, low
+# sensitivity), from three addresses:
+#
+#   - the scanner caught in enforce mode: its ip verdict (source
+#     nearline/scanner, labels [nl_scanner]) raises the risk score into the
+#     high band, so the page is challenged. It is not blocked: a near-line
+#     verdict never carries the matrix's scanner label (D-53);
+#   - the scanner caught in shadow mode: nothing was written, the request is
+#     scored like any other and forwarded;
+#   - an address that sent no bait: forwarded.
+#
+# The Lab's mg-nearline configuration gives the scanner verdict risk 100
+# (the configurable maximum; default 80): even maximal near-line evidence
+# only raises the risk. With risk 80 the same request would go from score
+# 45 to 55, still the medium band, tagged and forwarded.
+name: phase2-nearline-after
+description: After an enforce scanner verdict the scanner's next request is challenged, not blocked; shadow verdicts change nothing.
+vars:
+  run: manual
+  enforce_ip: ~
+  shadow_ip: ~
+  fresh_ip: ~
+
+requests:
+  - name: scanner with an enforce verdict
+    method: GET
+    path: /nl/${run}/page
+    headers: &client
+      CF-Connecting-IP: ${enforce_ip}
+      CF-Visitor: '{"scheme":"https"}'
+      User-Agent: python-requests/2.32.3
+      Accept: '*/*'
+    expect_status: 403
+    expect_header: {MG-Challenge: ""}
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+  - name: scanner with a shadow verdict
+    method: GET
+    path: /nl/${run}/page
+    headers:
+      <<: *client
+      CF-Connecting-IP: ${shadow_ip}
+    expect_status: 200
+    expect_header_absent: [MG-Challenge]
+  - name: client without baits
+    method: GET
+    path: /nl/${run}/page
+    headers:
+      <<: *client
+      CF-Connecting-IP: ${fresh_ip}
+    expect_status: 200
+    expect_header_absent: [MG-Challenge]

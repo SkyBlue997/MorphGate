@@ -1,0 +1,83 @@
+# Validation Lab end-to-end site for the Phase 2 scenarios
+# (scripts/lab-e2e.sh; docs/impl/phase2-spec.md §17 WP-L2, §18, §20). The
+# script builds, signs and publishes it next to site.yaml with throwaway keys
+# and runs both sites on one mg-edge. Test use only: every host is *.test,
+# every address is loopback or a documentation range, and the Turnstile
+# sitekey and secret are placeholders: the Edge's siteverify URL is a
+# loopback mock, nothing contacts Cloudflare (D-52).
+#
+# Site "lab" (site.yaml) stays a Phase 1 bundle (schema_version 1, D-66);
+# this one carries Phase 2 keys, so its bundle has schema_version 2.
+version: 1
+site: labp2
+profile: cloudflare
+hosts: [p2.lab.test]
+allowed_listeners: [cf-tunnel]
+monitor_only: false                 # enforce: the scenarios check what the Edge answers
+
+cloudflare:
+  zone: lab.test
+  # The scenarios set CF-IPCountry: the Edge trusts it from the
+  # authenticated (loopback) upstream, the country source of §8.1.
+  location_headers: true
+  owner_zones: [lab.test]           # CF-Worker from any other zone gets 403 (D-23)
+  origin_mode: tunnel
+
+token:
+  active_kid: labp2-t-20260927      # scripts/lab-e2e.sh: mgctl site keys gen --date 20260927
+
+clearance:
+  refresh: false
+
+challenge:
+  # Room for repeated runs against a shared Valkey (MG_TEST_VALKEY_URL).
+  max_failures: 20
+  failure_window_s: 60
+  submit: {rate: 120, period_s: 60, burst: 20}
+  default_lang: en
+  interactive:
+    enabled: true                   # with the SDK's manifest v2: interactive challenges are available (§5.1)
+    scoring: {mode: shadow}
+    issue: {rate: 120/10m, burst: 60}
+    renew: {rate: 120/10m, burst: 60}
+
+# Turnstile (§8): offered first on route "login" only, never to a visitor
+# whose country is CN or unknown (deny_countries non-empty, §5.4 rule 2).
+providers:
+  - id: turnstile
+    enabled: true
+    sitekey: lab-test-sitekey
+    hostnames: [p2.lab.test]
+    routes: [login]
+    selection: first
+    mode: shadow
+    timeout_ms: 1000
+    fallback: self_hold
+    deny_countries: [CN]
+
+crawlers:
+  default_action: allow
+
+events: {allow_sample_rate: 1.0, access_log: true, stream: true}
+origin_headers: {scores: true, reasons: true, session: true}
+
+artifacts:
+  crawler_registry: crawler-registry.test.json   # test: true, documentation ranges
+
+environments:
+  - name: production
+    hosts: [p2.lab.test]
+    routes:
+      # An interactive clearance is required (D-64); Turnstile is not
+      # offered here, so its challenge page names no third party.
+      - name: account
+        paths: ["/p2/account", "/p2/account/**"]
+        methods: [GET, HEAD]
+        sensitivity: medium
+        min_level: interactive
+      # The same requirement; Turnstile is offered where §5.4 allows it.
+      - name: login
+        paths: ["/p2/login", "/p2/login/**"]
+        methods: [GET, HEAD]
+        sensitivity: medium
+        min_level: interactive
