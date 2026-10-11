@@ -71,17 +71,18 @@ docker compose -f deploy/compose/docker-compose.yml --profile lab run --rm mglab
 | 步骤 | 内容 |
 |---|---|
 | 构建 | `go build` mgctl、mglab；mg-edge 取 `MG_EDGE_BIN`（CI：`rust` 作业上传的发布二进制），否则 `cargo build -p mg-edge`；SDK 目录取 `MG_LAB_SDK_DIR`，否则有 pnpm / node 时 `pnpm -C sdk/web run build`，否则 `edge/tests/fixtures/sdk`（`MG_LAB_SDK=fixture` 强制） |
-| 密钥与配置包 | 临时目录中用 `MGCTL_PASSPHRASE_FILE`、`MGCTL_AGE_WORK_FACTOR=10`、`--insecure-test-key` 生成所有者签名密钥、假名化密钥与站点 `lab` 的密钥，`keys export --out` 写成 Edge 的凭证文件；用 `testdata/e2e/site.yaml` build / sign / publish（enforce），审计日志也在临时目录并 `audit verify` |
-| 进程 | 临时 `valkey-server`（只监听临时目录中的 unix socket；或 `MG_TEST_VALKEY_URL`，必须在本机：回环地址的 `redis://` 或 `unix://`）、python3 源站、mg-edge（`cloudflare` 回环监听器、Valkey 状态、`static:testdata/e2e/dns.json`、JSONL 事件文件；二进制与 SDK 目录先复制到临时目录，并发的重新构建不影响本次运行）；等到站点 active、配置包版本生效、状态层为 valkey |
-| 场景 | mglab 经 guard 回放下表两个场景（`-map-host site.lab.test=127.0.0.1`、`-var run=<本次 id>`） |
-| 断言 | `mglab events impersonator` / `clearance` 检查事件文件；源站日志中没有受保护路由、`/__mg`、已判定的冒充请求，已验证爬虫带 `MG-Verified` 到达；打印 PASS / FAIL 汇总 |
+| 密钥与配置包 | 临时目录中用 `MGCTL_PASSPHRASE_FILE`、`MGCTL_AGE_WORK_FACTOR=10`、`--insecure-test-key` 生成所有者签名密钥、假名化密钥、站点 `lab` 的密钥与源站密钥（`keys gen-origin`），`keys export --out` 写成 Edge 的凭证文件；用 `testdata/e2e/site.yaml` build / sign / publish（enforce），审计日志也在临时目录并 `audit verify` |
+| 进程 | 临时 `valkey-server`（只监听临时目录中的 unix socket；或 `MG_TEST_VALKEY_URL`，必须在本机：回环地址的 `redis://` 或 `unix://`）、Node 源站（用参考实现 `adapters/origin/verify-origin-auth.mjs` 校验 `MG-Origin-Auth`，不通过时 401）、mg-edge（`cloudflare` 回环监听器、`origin_keys`、Valkey 状态、`static:testdata/e2e/dns.json`、JSONL 事件文件；二进制与 SDK 目录先复制到临时目录，并发的重新构建不影响本次运行）；等到站点 active、配置包版本生效、状态层为 valkey |
+| 场景 | mglab 经 guard 回放下表三个场景（`-map-host site.lab.test=127.0.0.1`、`-var run=<本次 id>`）；另用 curl 绕过 Edge 直接向源站发一个不带签名、一个伪造签名的请求，都应 401 |
+| 断言 | `mglab events impersonator` / `clearance` 检查事件文件；`trial`、`beacon` 路由上的挑战在决定事件中记为 `dry_run`；源站拒绝的只有那两个直连请求；源站日志中没有受保护路由、`/__mg`、已判定的冒充请求，已验证爬虫带 `MG-Verified` 到达；打印 PASS / FAIL 汇总 |
 | 清理 | trap 停止全部进程并删除临时目录（`MG_LAB_E2E_KEEP=1` 保留） |
 
-缺少 python3 / go / curl / valkey-server（且无 `MG_TEST_VALKEY_URL`）/ cargo（且无 `MG_EDGE_BIN`）时打印 `SKIPPED: …` 并以 0 退出；`MG_LAB_E2E_REQUIRE=1`（CI）时改为失败。`MG_LAB_E2E_TIMEOUT` 为每个等待的秒数（缺省 60）。
+缺少 python3 / go / curl / node / valkey-server（且无 `MG_TEST_VALKEY_URL`）/ cargo（且无 `MG_EDGE_BIN`）时打印 `SKIPPED: …` 并以 0 退出；`MG_LAB_E2E_REQUIRE=1`（CI）时改为失败。`MG_LAB_E2E_TIMEOUT` 为每个等待的秒数（缺省 60）。
 
 | 场景 | 内容 | 事件断言 |
 |---|---|---|
 | `phase1-impersonator.yaml` | 声称 GPTBot（`ip_ranges`）、Googlebot（`ip_ranges_or_rdns`）、Applebot（`rdns`）但来自官方段之外或 rDNS 不成立（仿冒后缀 `evilgooglebot.com`（I-22）、无 PTR、正向不含该 IP、PTR 不在后缀内、IPv6、UA 填充到 512 字节之后、大写标记）：`ip_ranges` 从第一个请求起 403；rDNS 运营方每个地址先有一个热身请求（pending，转发），`delay_ms` 之后全部 403；注册表段内或 rDNS 成立的真爬虫放行 | 已定结果的冒充请求 13/13 为 `impersonator` 且 enforce 阻断；热身请求为 `declared_agent`、从不 `verified_crawler`（D-22）；每条访问记录都有决定事件；6 个真爬虫请求为 `verified_crawler` |
+| `phase1-route-modes.yaml` | 站点 enforce，策略对带 `X-Lab-Challenge` 的请求下 `pow` 挑战：缺省路由 → 403 挑战；`never_challenge` 路由 `beacon` → 200 转发，但冒充的 GPTBot 仍 403 阻断（I-37）；`mode: monitor` 的 critical 路由 `trial` → 无凭证与带标记的请求都 200 转发，同一客户端访问 enforce 的 `members` 仍 403（I-36）；客户端伪造的 `MG-Origin-Auth`、`MG-Client-IP` 被 Edge 删除，请求照常通过源站校验（I-38） | `beacon` 与 `trial` 上的 3 个请求的决定为 `challenge`、`dry_run = true`；Edge 转发的每个请求都通过源站校验 |
 | `phase1-nonjs-clearance.yaml` | 对 `require_clearance` 路由的 HTML 与 JSON 请求 → 403 挑战、无 `__Host-mg_clr`；提交录制的过期 C（表单）、伪造 C（JSON）、畸形 C → 403、无 Cookie、无 303；再次请求仍 403；HTTP 库 UA → 403；外部 zone `CF-Worker` → 403 | 没有 `outcome = pass` 的 feedback（3 条均为 fail）；`/__mg/c` 没有成功应答；受保护路由的请求没有被转发 |
 
-`testdata/e2e/`：`site.yaml`（站点 `lab`、主机 `site.lab.test`、`monitor_only: false`、路由 `members` 为 critical、决定事件不采样）、`crawler-registry.test.json`（`test: true`，只用文档地址段；rDNS 后缀按 I-22 以 `.` 开头、至少两段标签）、`dns.json`（`StaticResolver` 表）。场景只针对这套配置与全新的 Edge（rDNS 缓存为空）。
+`testdata/e2e/`：`site.yaml`（站点 `lab`、主机 `site.lab.test`、`monitor_only: false`、路由 `members` 为 critical，`trial` 为 critical 且 `mode: monitor`，`beacon` 为 low 且 `never_challenge`，策略 `policies/production.yaml` 只有一条按 `X-Lab-Challenge` 挑战的规则，决定事件不采样）、`crawler-registry.test.json`（`test: true`，只用文档地址段；rDNS 后缀按 I-22 以 `.` 开头、至少两段标签）、`dns.json`（`StaticResolver` 表）。场景只针对这套配置与全新的 Edge（rDNS 缓存为空）。

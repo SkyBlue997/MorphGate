@@ -40,11 +40,24 @@ artifacts:
 environments:
   - name: production
     hosts: [site.lab.test]
+    policies: [policies/production.yaml]
     routes:
       # critical: require_clearance and fail_closed (phase1-nonjs-clearance).
       - name: members
         paths: ["/lab/members", "/lab/members/**"]
         sensitivity: critical
+      # The same protection, monitored only (I-36, phase1-route-modes): every
+      # decision is recorded and the request forwarded.
+      - name: trial
+        paths: ["/lab/trial", "/lab/trial/**"]
+        sensitivity: critical
+        mode: monitor
+      # Scored and limited but never challenged (I-37, phase1-route-modes):
+      # a CHALLENGE is only recorded, a BLOCK still applies.
+      - name: beacon
+        paths: ["/lab/beacon", "/lab/beacon/**"]
+        sensitivity: low
+        never_challenge: true
       # Everything else (phase1-impersonator) is the appended default route
       # (/**, low): an rDNS warm-up request that is still pending is not
       # challenged just for the route.

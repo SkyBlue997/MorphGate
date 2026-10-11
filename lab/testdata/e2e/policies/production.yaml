@@ -1,0 +1,12 @@
+# Validation Lab policy (lab/testdata/e2e/site.yaml, environment production).
+# One custom rule gives phase1-route-modes a CHALLENGE on demand: a request
+# carrying X-Lab-Challenge is challenged on any route, so the scenario can
+# show where a challenge is only recorded (a never_challenge route, a monitor
+# route) and where it is answered (every other route).
+profile: cloudflare
+policies:
+  - id: lab-challenge-marked
+    phase: custom
+    expr: '"x-lab-challenge" in req.headers'
+    action: challenge
+    params: { type: pow }
