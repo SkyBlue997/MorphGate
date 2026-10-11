@@ -202,6 +202,7 @@ profile 预期提供而实际缺失的上游注入头（如认证通过的请求
 | `GET` / `HEAD /__mg/healthz` | 存活检查 | — | `no-store, private` | Phase 1；站点 503 时照常应答 |
 | `GET /__mg/s/{build}.js` | Web SDK 与 Challenge 组件（含 PoW Worker），文件名为内容哈希 | — | `public, max-age=31536000, immutable`，允许边缘缓存 | 核心包 ≤ 30 KB gzip；多态构建见 [04](04-challenge-and-tokens.md#8-morph-动态变形)（Phase 5）。Phase 1：只提供 SDK 目录 `manifest.json` 列出的文件（`mg.<hex16>.js`，内容 SHA-256 的前 16 个十六进制字符），启动时读入内存并校验 SHA-256 |
 | `POST /__mg/c` | 提交 Challenge 解答，成功则签发凭证 | 8 KB | `no-store, private` | 响应（导航 303 → `ret`、fetch 200 `{"ok":true}`、`mg_challenge_failed`、429）以 [04 §9](04-challenge-and-tokens.md#9-协议约定) 为准；验证顺序见 04 §4.1，提交格式见 [09](09-interactive-challenge.md) §4.4。Phase 1：正文须 5 s 内读完；站点没有生效的配置包而放行时（bootstrap-open、`lkg_invalid` 按 open 处理）404，`bootstrap_closed`、`lkg_invalid` 时 503（[规格 §10.3](impl/phase1-spec.md#103-post-mgc)） |
+| `GET` / `HEAD /__mg/v?ret=<path>` | fetch 被挑战后的验证入口：页面带着自己的路径导航过来，Edge 挑战，解出后回到 `ret` | — | `no-store, private` | 2026-10-11 增补（[规格 I-39、§10.5](impl/phase1-spec.md#105-get-mgvi-39)）：按导航到 `ret` 决策，阻断、限速照常，其余一律 `pow` 挑战；不用 `/__mg/r`，它留给下面的凭证刷新 |
 | `POST /__mg/c/renew` | 交互式 C 在寿命约 80% 时静默续期，返回新 C | 8 KB | `no-store, private` | 旧 nonce 以 `SET NX` 消费，不计失败；规则见 [04 §3.1](04-challenge-and-tokens.md#31-状态机)。Phase 1 返回 404 |
 | `POST /__mg/r` | 凭证静默刷新：持有证明 + 最新遥测，重新评分后签发 | 16 KB | `no-store, private` | 风险升高则拒绝刷新并要求 Challenge。Phase 1 返回 404 |
 | `POST /__mg/t` | 批量遥测上报（会话密钥签名） | 16 KB | `no-store, private` | 按会话限频。Phase 1 返回 404 |

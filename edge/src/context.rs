@@ -108,6 +108,9 @@ pub struct Facts<'a> {
     pub monitor: bool,
     /// A CHALLENGE is recorded and the request forwarded (I-37).
     pub never_challenge: bool,
+    /// `GET /__mg/v` (I-39): the facts describe a navigation to its `ret`,
+    /// and every answer that is not an enforced denial is a `pow` challenge.
+    pub verify: bool,
     pub profile: ListenerProfile,
     /// `loopback` / `origin_mtls` / `secret_header` / `none` (§9.2).
     pub auth_method: &'a str,
@@ -700,6 +703,7 @@ mod tests {
                 route: &self.route,
                 monitor: false,
                 never_challenge: false,
+                verify: false,
                 profile,
                 auth_method: if cf.is_some() { "loopback" } else { "none" },
                 cf,

@@ -20,8 +20,8 @@ export interface MgConfig {
   debug: boolean;
 }
 
-/** Endpoints under the prefix (docs/02 §3, docs/04 §9). */
-export type MgEndpoint = "c" | "c/renew" | "r" | "t";
+/** Endpoints under the prefix (docs/02 §3, docs/04 §9; `v` is the verify entry, I-39). */
+export type MgEndpoint = "c" | "c/renew" | "r" | "t" | "v";
 
 /**
  * Normalise a configured prefix. Only same-origin absolute paths are accepted

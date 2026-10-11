@@ -39,6 +39,20 @@ Edge serves the script under `/__mg/s/` on the protected site's own origin and r
 
 For fresh deployment keys, configuration and the checked systemd reload procedure, see the [getting-started guide](https://github.com/SkyBlue997/MorphGate/blob/master/docs/getting-started.md) and [example service](https://github.com/SkyBlue997/MorphGate/blob/master/deploy/systemd/mg-edge.service). Package installation and configuration validation do not establish live Cloudflare acceptance, browser compatibility or production readiness; those owner-operated checks remain required.
 
+## Challenged fetches (next release; Edge with spec I-39)
+
+A fetch from a page can receive the Edge's JSON challenge (`403`, `{"error":"mg_challenge",...}`). A script cannot solve it in place in Phase 1. Instead, the page navigates to `/__mg/v?ret=<its own path>`. The Edge challenges there, and the solved challenge returns to the page with a clearance that the fetch's route accepts. To use this, include the hashed script from `dist/sdk/manifest.json` on the site's pages and send requests through the SDK:
+
+```html
+<script data-cfasync="false" src="/__mg/s/mg.<hex16>.js"></script>
+<script>
+  const r = await window.MorphGate.fetch("/api/save", { method: "POST", body });
+  // On a MorphGate challenge the page is already navigating to /__mg/v.
+</script>
+```
+
+`MorphGate.verify()` sends the page there after the page's own response check, and `MorphGate.verifyUrl(ret)` builds the URL. Each page path navigates at most once per 60 s (sessionStorage `mg_verify:<path>`), so a fetch that is challenged again cannot loop the visitor.
+
 ## Developer reference
 
 The sections below describe source-tree development. Build and test commands require a repository checkout; the npm asset package excludes their source and tooling.
@@ -47,11 +61,11 @@ MorphGate 第一方 Web SDK。设计见 [04 §7](https://github.com/SkyBlue997/M
 
 ## 现状：Phase 1（`SDK_VERSION = "0.1.0-phase1"`）
 
-Phase 1 的 SDK 只做一件有网络副作用的事：在 Edge 下发的挑战页上完成无感 Challenge（SHA-256 PoW）并以表单导航提交 `POST /__mg/c`。遥测上传、会话密钥、`MG-Proof`、fetch 包装在 Phase 2。
+Phase 1 的 SDK 有网络副作用的事只有两件：在 Edge 下发的挑战页上完成无感 Challenge（SHA-256 PoW）并以表单导航提交 `POST /__mg/c`；站点页面用 `MorphGate.fetch()` 时，fetch 收到 JSON Challenge 就把页面导航到 `/__mg/v?ret=`（I-39）。遥测上传、会话密钥、`MG-Proof`、就地解挑战在 Phase 2。
 
 | 模块 | Phase 1 | 后续 |
 |---|---|---|
-| `index.ts` | 入口。文档中：从脚本标签 `data-mg-*` 读取配置，暴露只读的 `window.MorphGate`（`version`、`config`、`snapshot()`、`classifyResponse`），页面有 `#mg-challenge` 时运行挑战流程。Worker 中（`self instanceof WorkerGlobalScope`）：只安装 PoW 消息处理器 | Phase 2：静默刷新、遥测 |
+| `index.ts` | 入口。文档中：从脚本标签 `data-mg-*` 读取配置，暴露只读的 `window.MorphGate`（`version`、`config`、`snapshot()`、`classifyResponse`、`fetch()`、`verify()`、`verifyUrl()`），页面有 `#mg-challenge` 时运行挑战流程。Worker 中（`self instanceof WorkerGlobalScope`）：只安装 PoW 消息处理器 | Phase 2：静默刷新、遥测 |
 | `config.ts` | `data-mg-*` 解析、路径前缀规范化（只接受同源绝对路径） | |
 | `challenge.ts` | 挑战页客户端：读取并校验 `#mg-challenge` 的数据属性、SHA-256 自检、Worker / 主线程 PoW、组装提交 JSON、隐藏表单提交、失败页的一次自动重试、状态文字与重试链接 | Phase 2：交互式 Challenge、Provider |
 | `pow.ts` | `sha256-hashcash-v1`：前缀、midstate 搜索、校验、Worker 消息协议 | |
@@ -60,6 +74,7 @@ Phase 1 的 SDK 只做一件有网络副作用的事：在 Edge 下发的挑战�
 | `automation.ts` | 只读标准 `navigator.webdriver` | Phase 2：其他自动化特征 |
 | `behavior.ts` | 纯函数量化器：`logBucket`、`roundToStep`、`clamp`、`logHistogram` | Phase 2：指针 / 键盘 / 滚动 / 触控采集 |
 | `crypto.ts` | WebCrypto ECDSA P-256 会话密钥（`extractable: false`）、RFC 7638 JWK 指纹（`cnf.jkt`） | Phase 2：IndexedDB 持久化、`MG-Proof`（ES256 JWS） |
+| `verify.ts` | fetch 被挑战后的验证入口（I-39）：`verifyUrl`、`startVerify`（每个页面路径 60 秒只跳一次，没有 sessionStorage 时不跳）、`isMgChallenge`（读响应的副本） | Phase 2：就地解挑战 |
 | `transport.ts` | 识别 `cf-mitigated: challenge` → `upstream_challenge`；解析 MorphGate JSON（`mg_challenge` 等）；429 / 425 | Phase 2：fetch / XHR 包装、重试 |
 | `telemetry.ts` | 载荷类型、UTF-8 字节数、2 KB 预算检查与按序裁剪 | Phase 2：会话密钥签名、`POST /__mg/t` |
 

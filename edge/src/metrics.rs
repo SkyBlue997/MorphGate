@@ -57,14 +57,16 @@ pub const LATENCY_KINDS: [&str; 2] = ["site", "mg"];
 
 /// The `kind` of a request's added latency (I-31): `mg` for the Edge's own
 /// `/__mg/*` endpoints (health check, SDK files, `POST /__mg/c` with its
-/// body read, the reserved 404), `site` for every request of the site's own
+/// body read, the `/__mg/v` verify entry, the reserved 404), `site` for every request of the site's own
 /// paths, the ones the Phase 1 p99 < 5 ms target is about.
 pub fn latency_kind(route: RouteKind) -> &'static str {
     match route {
         RouteKind::Origin => LATENCY_KINDS[0],
-        RouteKind::Healthz | RouteKind::SdkFile | RouteKind::Submit | RouteKind::EdgeReserved => {
-            LATENCY_KINDS[1]
-        }
+        RouteKind::Healthz
+        | RouteKind::SdkFile
+        | RouteKind::Submit
+        | RouteKind::Verify
+        | RouteKind::EdgeReserved => LATENCY_KINDS[1],
     }
 }
 
@@ -551,6 +553,7 @@ mod tests {
             RouteKind::Healthz,
             RouteKind::SdkFile,
             RouteKind::Submit,
+            RouteKind::Verify,
             RouteKind::EdgeReserved,
         ] {
             assert_eq!(latency_kind(route), "mg", "{route:?}");

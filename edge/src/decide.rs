@@ -9,8 +9,9 @@
 //!   defaults, so EDGE_TLS stays in shadow unless the bundle says otherwise).
 //! * [`enforce`]: the §9.9 execution layer on top of the engine's decision:
 //!   monitor (record only), `fail_closed` routes with an unknown client IP
-//!   (429), a challenge for an unknown client IP (429, never a `C`), and
-//!   `Early-Data` on critical routes (425).
+//!   (429), a challenge for an unknown client IP (429, never a `C`),
+//!   `Early-Data` on critical routes (425), and the `/__mg/v` verify entry
+//!   (a `pow` challenge unless denied, I-39).
 //! * [`DecisionRecord`]: everything WP-E1d needs for the decision event.
 //! * [`evaluate`]: one request from the facts to the record (§1.4 steps
 //!   6-10): context, clearance, crawler, the state round trip, the Decision
@@ -32,6 +33,8 @@ use mg_proto::v1 as pb;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+/// `rule_id` of the `/__mg/v` verify entry's challenge (I-39).
+pub const VERIFY_RULE: &str = "edge.verify";
 /// `rule_id` of the §9.9 / D-23 substitutions for an unknown client IP.
 pub const CLIENT_IP_UNKNOWN_RULE: &str = "hard.client_ip_unknown";
 /// `Retry-After` of the unknown-client-IP answers (§9.3.2).
@@ -156,6 +159,8 @@ pub struct EnforceInput<'a> {
     /// The route never challenges (I-37): a CHALLENGE is recorded with
     /// `dry_run` and forwarded.
     pub never_challenge: bool,
+    /// `GET /__mg/v` (I-39): nothing is forwarded.
+    pub verify: bool,
 }
 
 /// The §9.9 execution layer. Returns the decision to record (the engine's,
@@ -174,7 +179,34 @@ pub struct EnforceInput<'a> {
 /// * `Early-Data: 1` on a critical route that would be forwarded: 425.
 /// * An action the Phase 1 Edge cannot execute (TARPIT, unspecified) is
 ///   never forwarded: it is answered like BLOCK (fail closed).
+/// * The `/__mg/v` verify entry (I-39): an enforced BLOCK or RATE_LIMIT
+///   stands; every other outcome (forwarded, monitor, `never_challenge`,
+///   425, a challenge of any type) becomes a `pow` challenge recorded as
+///   `rule_id = edge.verify` (429 without a `C` for an unknown client IP).
 pub fn enforce(engine: Decision, input: &EnforceInput<'_>) -> (Decision, Enforcement) {
+    let (d, enforcement) = enforce_route(engine, input);
+    if !input.verify
+        || matches!(
+            enforcement,
+            Enforcement::Block | Enforcement::RateLimit { .. }
+        )
+    {
+        return (d, enforcement);
+    }
+    let d = Decision {
+        rule_id: Some(VERIFY_RULE.to_string()),
+        ..Decision::challenge(ChallengeType::Pow)
+    };
+    let enforcement = if input.client_ip_known {
+        Enforcement::Challenge(ChallengeType::Pow)
+    } else {
+        Enforcement::ChallengeClientIpUnknown
+    };
+    (d, enforcement)
+}
+
+/// [`enforce`] for a request bound for the origin.
+fn enforce_route(engine: Decision, input: &EnforceInput<'_>) -> (Decision, Enforcement) {
     let mut d = engine;
     let denied = matches!(d.action, Action::Block | Action::RateLimit);
     if input.route.fail_closed && !input.client_ip_known && !denied {
@@ -392,6 +424,7 @@ pub async fn evaluate(
             early_data: built.ctx.http.early_data,
             monitor: facts.monitor,
             never_challenge: facts.never_challenge,
+            verify: facts.verify,
         },
     );
     DecisionRecord {
@@ -435,6 +468,7 @@ mod tests {
             early_data: early,
             monitor,
             never_challenge: false,
+            verify: false,
         }
     }
 
@@ -481,6 +515,65 @@ mod tests {
             &input(&r, true, false, false),
         );
         assert_eq!(e, Enforcement::Challenge(ChallengeType::Pow));
+    }
+
+    /// I-39: `/__mg/v` never forwards. Enforced denials stand; anything else
+    /// (allow, monitor, never_challenge, 425, an invisible challenge) is a
+    /// `pow` challenge recorded as `edge.verify`, 429 without a client IP.
+    #[test]
+    fn verify_entry_challenges_unless_denied() {
+        let low = route(RouteSensitivity::Low, false);
+        let critical = route(RouteSensitivity::Critical, false);
+        let verify = |r, ip, early, monitor| EnforceInput {
+            verify: true,
+            ..input(r, ip, early, monitor)
+        };
+        let challenged = |(d, e): (Decision, Enforcement)| {
+            assert_eq!(e, Enforcement::Challenge(ChallengeType::Pow));
+            assert_eq!(d.action, Action::Challenge);
+            assert_eq!(d.challenge_type, ChallengeType::Pow);
+            assert_eq!(d.rule_id.as_deref(), Some(VERIFY_RULE));
+            assert!(!d.dry_run);
+        };
+        challenged(enforce(
+            Decision::allow(),
+            &verify(&low, true, false, false),
+        ));
+        challenged(enforce(
+            Decision::challenge(ChallengeType::Invisible),
+            &verify(&low, true, false, false),
+        ));
+        challenged(enforce(
+            Decision::allow(),
+            &verify(&critical, true, true, false),
+        ));
+        // Monitor never denies, so its BLOCK is a challenge here too.
+        challenged(enforce(block(), &verify(&low, true, false, true)));
+        challenged(enforce(
+            Decision::challenge(ChallengeType::Pow),
+            &EnforceInput {
+                never_challenge: true,
+                ..verify(&low, true, false, false)
+            },
+        ));
+        let (d, e) = enforce(block(), &verify(&low, true, false, false));
+        assert_eq!((e, d.rule_id.as_deref()), (Enforcement::Block, Some("b")));
+        let rl = Decision {
+            action: Action::RateLimit,
+            status: Some(429),
+            retry_after_s: Some(7),
+            ..Decision::default()
+        };
+        let (_, e) = enforce(rl, &verify(&low, true, false, false));
+        assert_eq!(e, Enforcement::RateLimit { retry_after_s: 7 });
+        // D-23: no C without a client IP.
+        let (d, e) = enforce(Decision::allow(), &verify(&low, false, false, false));
+        assert_eq!(e, Enforcement::ChallengeClientIpUnknown);
+        assert_eq!(d.rule_id.as_deref(), Some(VERIFY_RULE));
+        let fc = route(RouteSensitivity::Low, true);
+        let (d, e) = enforce(Decision::allow(), &verify(&fc, false, false, false));
+        assert_eq!(e, Enforcement::RateLimit { retry_after_s: 5 });
+        assert_eq!(d.rule_id.as_deref(), Some(CLIENT_IP_UNKNOWN_RULE));
     }
 
     /// I-37: a never_challenge route records a CHALLENGE (`dry_run`) and

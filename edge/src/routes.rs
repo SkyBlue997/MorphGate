@@ -1,7 +1,8 @@
 //! Paths the Edge answers itself.
 //!
-//! `/__mg/*` is the Edge's reserved namespace (health, the SDK files and the
-//! challenge submission in Phase 1; the token endpoints in Phase 2). Requests
+//! `/__mg/*` is the Edge's reserved namespace (health, the SDK files, the
+//! challenge submission and the verify entry in Phase 1; the token endpoints
+//! in Phase 2). Requests
 //! under it never reach the origin; they are answered after the site is
 //! resolved (§9.4 step 4) and before route matching (§10.1). The endpoints
 //! are served only under their exact raw paths; every other spelling of the
@@ -27,6 +28,8 @@ pub const HEALTHZ_PATH: &str = "/__mg/healthz";
 pub const SUBMIT_PATH: &str = "/__mg/c";
 /// Prefix of the SDK files (§10.4): `/__mg/s/<file>`.
 pub const SDK_PREFIX: &str = "/__mg/s/";
+/// Verify entry for challenged fetches (§10.5, I-39): `/__mg/v?ret=<path>`.
+pub const VERIFY_PATH: &str = "/__mg/v";
 
 /// Who answers a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -37,6 +40,8 @@ pub enum RouteKind {
     SdkFile,
     /// `POST /__mg/c`: a challenge submission (§10.3).
     Submit,
+    /// `GET /__mg/v`: the verify entry (§10.5, I-39).
+    Verify,
     /// Any other path under `/__mg`: reserved, answered 404.
     EdgeReserved,
     /// Everything else: proxied to the origin.
@@ -49,7 +54,7 @@ impl RouteKind {
     pub const fn metric_label(self) -> &'static str {
         match self {
             Self::Healthz => "healthz",
-            Self::SdkFile | Self::Submit | Self::EdgeReserved => "edge",
+            Self::SdkFile | Self::Submit | Self::Verify | Self::EdgeReserved => "edge",
             Self::Origin => "origin",
         }
     }
@@ -57,8 +62,8 @@ impl RouteKind {
 
 /// Classifies a request path (without query string).
 ///
-/// Only the exact raw paths are endpoints: `/__mg/healthz`, `/__mg/c` and
-/// `/__mg/s/<file>` (the file name is checked against the SDK manifest by
+/// Only the exact raw paths are endpoints: `/__mg/healthz`, `/__mg/c`,
+/// `/__mg/v` and `/__mg/s/<file>` (the file name is checked against the SDK manifest by
 /// [`crate::mg_endpoints::sdk_file`]). A path is in the reserved namespace if
 /// its raw form, its RFC 3986 form or its Cloudflare form (see
 /// [`rfc3986_view`], [`cloudflare_view`]) is `/__mg` or starts with `/__mg/`
@@ -68,6 +73,8 @@ pub fn classify(path: &str) -> RouteKind {
         RouteKind::Healthz
     } else if path == SUBMIT_PATH {
         RouteKind::Submit
+    } else if path == VERIFY_PATH {
+        RouteKind::Verify
     } else if path.starts_with(SDK_PREFIX) {
         RouteKind::SdkFile
     } else if mg_core::paths::is_reserved(path) {
@@ -90,6 +97,8 @@ mod tests {
         assert_eq!(classify("/__mg/c"), RouteKind::Submit);
         assert_eq!(classify("/__mg/c/renew"), RouteKind::EdgeReserved);
         assert_eq!(classify("/__mg/r"), RouteKind::EdgeReserved);
+        assert_eq!(classify("/__mg/v"), RouteKind::Verify);
+        assert_eq!(classify("/__mg/v/"), RouteKind::EdgeReserved);
         assert_eq!(classify("/__mg/t"), RouteKind::EdgeReserved);
         assert_eq!(
             classify("/__mg/s/mg.0123456789abcdef.js"),
@@ -131,6 +140,8 @@ mod tests {
             "/__mg/%2e%2e",
             "/__mg/c/",
             "/__mg/%63",
+            "/__mg/%76",
+            "//__mg/v",
             "//__mg/s/mg.js",
             "/%5F%5Fmg/s/mg.js",
         ] {

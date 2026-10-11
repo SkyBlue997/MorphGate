@@ -6,9 +6,10 @@
 //! rules, the failure and issuance quotas, unknown client IPs, the replay
 //! store without Valkey (`FaultProxy`), a route removed by a newer bundle, a
 //! full local replay set, escalation after a failure, the https redirect of
-//! http visitors and `/__mg/c` in bootstrap. A clearance issued without a
-//! replay check (`ruc`, I-30) is accepted except on `fail_closed` routes,
-//! which challenge again (429 while the replay store is still unavailable).
+//! http visitors, `/__mg/c` in bootstrap and the `/__mg/v` verify entry
+//! (I-39). A clearance issued without a replay check (`ruc`, I-30) is
+//! accepted except on `fail_closed` routes, which challenge again (429
+//! while the replay store is still unavailable).
 //!
 //! The solver is `mg_challenge::pow_solve` (a test-only reference). Loopback
 //! only. Reason codes are read from the Edge's debug log line
@@ -1024,6 +1025,160 @@ fn full_local_replay_set() {
     assert_eq!(r.status, 429, "{}", r.head);
     assert!(r.header("set-cookie").is_none());
     assert!(line_of(&edge, &r).contains("reasons=ic.replay_unavailable"));
+}
+
+/// I-39: a page whose fetch got the JSON challenge goes to
+/// `/__mg/v?ret=<its path>`, which always challenges (`pow`, decided as a
+/// navigation to `ret`) unless the client is denied; the solved form returns
+/// to `ret` and the clearance then passes the fetch's route.
+#[test]
+fn verify_entry_challenges_and_returns() {
+    let env = TestEnv::new("chal-verify");
+    let mut b = bundle();
+    b.environments[0].rules.push(rule(
+        "no-entry",
+        "custom",
+        Action::Block,
+        glob(field("req.path"), "/blocked/**"),
+        &[],
+    ));
+    let edge = start(&env, &b);
+    let ip = "198.51.100.28";
+
+    // A fetch POST is challenged with the fallback return path.
+    let r = post(&env, "example.com", "/members/api", &fetcher(ip), b"{}");
+    assert_eq!(r.status, 403, "{}", r.head);
+    let v: Value = serde_json::from_str(&r.body).unwrap();
+    assert_eq!(
+        (v["error"].as_str(), v["ret"].as_str()),
+        (Some("mg_challenge"), Some("/"))
+    );
+
+    // The page goes to the verify entry with its own path.
+    let verify = "/__mg/v?ret=%2Fposts%2F7%3Fx%3D1%26y%3D%2520";
+    let r = get(env.listen, "example.com", verify, &browser(ip));
+    assert_eq!(r.status, 403, "{}", r.head);
+    assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
+    assert_eq!(r.header("cache-control"), Some("no-store, private"));
+    assert!(r.header("set-cookie").is_none());
+    let shown = from_page(&r.body);
+    assert_eq!(shown.ret, "/posts/7?x=1&y=%20");
+    assert_eq!(shown.ty, ChallengeType::Pow);
+    let claims = open(&shown.c, ChallengeType::Pow);
+    assert_eq!(claims.route_class, "default", "the route of ret");
+    assert_eq!(shown.bits, bits_of(claims.risk_band));
+    let line = line_of(&edge, &r);
+    assert!(
+        line.contains(" route=default rule=edge.verify action=challenge dry_run=false"),
+        "{line}"
+    );
+    let r = submit_form(&env, ip, CHROME, &solved(&shown, CHROME));
+    assert_eq!(r.status, 303, "{}\n{}", r.head, r.body);
+    assert_eq!(r.header("location"), Some("/posts/7?x=1&y=%20"));
+    let cookie = cookie_of(&r);
+    wait_log(&edge, &["submit=solved type=pow reasons=-"]);
+
+    // The pow clearance passes the route that challenged the fetch.
+    let with_cookie = format!("{}Cookie: {cookie}\r\n", fetcher(ip));
+    let r = post(&env, "example.com", "/members/api", &with_cookie, b"{}");
+    assert_eq!(r.status, 200, "{}\n{}", r.head, r.body);
+    // The entry challenges even with a clearance: the page only comes here
+    // after a fetch was challenged.
+    let r = get(
+        env.listen,
+        "example.com",
+        verify,
+        &format!("{}Cookie: {cookie}\r\n", browser(ip)),
+    );
+    assert_eq!(r.status, 403);
+    assert!(r.body.contains("data-mg-c=\""));
+
+    // A script's own request gets the JSON challenge.
+    let r = get(env.listen, "example.com", "/__mg/v?ret=%2Fa", &fetcher(ip));
+    assert_eq!(r.status, 403);
+    assert_eq!(r.header("mg-challenge"), Some("pow"));
+    let v: Value = serde_json::from_str(&r.body).unwrap();
+    assert_eq!(v["ret"], "/a");
+
+    // An invalid or foreign ret is the fallback, never a redirect elsewhere.
+    for bad in [
+        "%2F%2Fevil.example%2F",
+        "https%3A%2F%2Fevil.example",
+        "%2F__mg%2Fc",
+        "",
+    ] {
+        let r = get(
+            env.listen,
+            "example.com",
+            &format!("/__mg/v?ret={bad}"),
+            &browser(ip),
+        );
+        assert_eq!(r.status, 403, "{bad}");
+        assert_eq!(from_page(&r.body).ret, "/", "{bad}");
+    }
+
+    // A denied client stays denied: the block of ret's path, no C.
+    let r = get(
+        env.listen,
+        "example.com",
+        "/__mg/v?ret=%2Fblocked%2Fx",
+        &browser(ip),
+    );
+    assert_eq!(r.status, 403, "{}", r.head);
+    assert!(!r.body.contains("data-mg-c="), "{}", r.body);
+    assert!(line_of(&edge, &r).contains(" rule=no-entry action=block"));
+
+    // An http visitor is sent to the https entry itself.
+    let http = browser(ip).replace(
+        "CF-Visitor: {\"scheme\":\"https\"}",
+        "CF-Visitor: {\"scheme\":\"http\"}",
+    );
+    let r = get(env.listen, "example.com", verify, &http);
+    assert_eq!(r.status, 308, "{}", r.head);
+    assert_eq!(
+        r.header("location").map(str::to_owned),
+        Some(format!("https://example.com{verify}"))
+    );
+
+    // Only GET and HEAD.
+    let r = post(&env, "example.com", "/__mg/v", &fetcher(ip), b"{}");
+    assert_eq!(r.status, 405);
+    assert_eq!(r.header("allow"), Some("GET, HEAD"));
+    assert!(env.origin.seen().iter().all(|s| !s.line.contains("__mg")));
+}
+
+/// I-39: a monitor site challenges on `/__mg/v` too (nothing is forwarded);
+/// without a bundle the entry is 404.
+#[test]
+fn verify_entry_in_monitor_and_bootstrap() {
+    let env = TestEnv::new("chal-verify-mon");
+    let mut b = bundle();
+    b.monitor_only = true;
+    let _edge = start(&env, &b);
+    let r = get(
+        env.listen,
+        "example.com",
+        "/__mg/v?ret=%2Fa",
+        &browser("198.51.100.29"),
+    );
+    assert_eq!(r.status, 403, "{}", r.head);
+    assert_eq!(from_page(&r.body).ret, "/a");
+
+    let env = TestEnv::new("chal-verify-boot");
+    let edge = env.spawn(&env.write_config(&env.default_config("")));
+    edge.wait_metric(
+        "mg_site_state{site=\"blog\",state=\"bootstrap_open\"}",
+        10,
+        |v| v == 1.0,
+    );
+    let r = get(
+        env.listen,
+        "example.com",
+        "/__mg/v?ret=%2Fa",
+        &browser("198.51.100.29"),
+    );
+    assert_eq!(r.status, 404, "{}", r.head);
+    assert!(env.origin.seen().is_empty());
 }
 
 /// D-32: an http visitor's GET is redirected to https instead of being
