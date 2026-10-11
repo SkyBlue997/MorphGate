@@ -20,7 +20,7 @@ ifeq ($(origin OPENSSL_DIR),undefined)
 endif
 
 .PHONY: help proto rust-check wasm-check go-check web-check adapters-check compose-check \
-        docs-check check dev-up dev-down edge-run edge-smoke lab-egress-check lab-e2e audit
+        docs-check check dev-up dev-down edge-run edge-smoke lab-egress-check lab-e2e audit fuzz fuzz-lock-check
 
 help: ## List targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-z][a-z0-9-]*:.*## / { printf "  %-17s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -30,6 +30,7 @@ proto: ## Regenerate Go protobuf code into control-plane/gen (Rust codegen runs 
 
 rust-check: ## cargo fmt --check, clippy -D warnings, cargo test (whole workspace)
 	cargo fmt --all --check
+	cargo fmt --check --manifest-path fuzz/Cargo.toml
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo test --workspace
 
@@ -106,3 +107,25 @@ audit: ## Dependency audit: cargo-deny (deny.toml), govulncheck, pnpm audit
 	cd control-plane && go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 	cd lab && go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 	pnpm -C sdk/web audit
+
+# Versions match .github/workflows/fuzz.yml. Needs a nightly toolchain and
+# cargo-fuzz, so it is not part of `check`; CI runs it daily and on PRs that
+# touch a parser crate. New inputs go to fuzz/corpus/<target>/ (ignored);
+# fuzz/seeds/<target>/ is read only. A crash stops with its reproducer in
+# fuzz/artifacts/<target>/: `cargo +$(FUZZ_TOOLCHAIN) fuzz run <target> <file>`.
+FUZZ_TOOLCHAIN := nightly-2026-10-11
+CARGO_FUZZ_VERSION := 0.13.2
+FUZZ_SECONDS := 60
+FUZZ_TARGETS := cf_headers request_limits bundle_verify paths_ret sealed_open clearance_token client_hello submission
+
+fuzz-lock-check: ## fuzz/Cargo.lock pins the same versions as Cargo.lock (plus the fuzzing crates)
+	scripts/check-fuzz-lock.sh
+
+fuzz: fuzz-lock-check ## Fuzz every parser target for FUZZ_SECONDS each (nightly + cargo-fuzz)
+	@command -v cargo-fuzz >/dev/null || { echo "fuzz: install cargo-fuzz: cargo install cargo-fuzz --version $(CARGO_FUZZ_VERSION) --locked"; exit 1; }
+	@for t in $(FUZZ_TARGETS); do \
+	  mkdir -p fuzz/corpus/$$t fuzz/seeds/$$t; \
+	  echo "== $$t ($(FUZZ_SECONDS) s)"; \
+	  cargo +$(FUZZ_TOOLCHAIN) fuzz run -O $$t fuzz/corpus/$$t fuzz/seeds/$$t -- \
+	    -max_total_time=$(FUZZ_SECONDS) -rss_limit_mb=2048 -print_final_stats=1 || exit 1; \
+	done

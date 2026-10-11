@@ -25,6 +25,7 @@
 | Phase 1 之后 | 依赖审计：`deny.toml` 与 `.github/workflows/audit.yml`（cargo-deny、govulncheck、`pnpm audit`；每个 PR 与每周）、`make audit`；首轮发现已处理：SDK 构建依赖 source-map-js 升到 1.2.2（GHSA-68fv-2mgg-jv7q，只影响构建工具）；yoke-derive 0.8.3 已撤回，升到 0.8.4；derivative 无人维护（RUSTSEC-2024-0388，只有固定版本的 pingora-core 用到，记入 `deny.toml` 的 ignore）；Go 1.25 已停止维护，govulncheck 报 9 个标准库漏洞，Go 升到 1.27 | 完成 | PR #12 |
 | Phase 1 之后 | 裁决 I-41：`mg-edge.service` 的 `ExecReload=` 第一行改为不读凭据的 `mg-edge --version`（systemd 255 不给第一行凭据，`--check-config` 在第一行必然失败，reload 做不成），并加 `RefreshOnReload=credentials`；轮换后凭据何时生效按 systemd 版本写进单元注释与 §17 | 完成，已在 systemd 255 的真实主机上验证 reload | PR #13 |
 | Phase 1 之后 | 裁决 I-42：`mg_upstream_signal_missing_total` 改为与 `mg_requests_total` 同口径（只计到达决策步骤的请求），`/__mg/*` 请求和提前应答的请求不再推高缺失率；`cf audit` 只读 token 的权限名实测后写入 `adapters/cloudflare/README.md`，`managed_headers` 的提示改为 Bot Management Read（真实站点反馈） | 完成 | PR #14 |
+| Phase 1 之后 | 覆盖率引导的模糊测试：`fuzz/`（cargo-fuzz，8 个目标：Cloudflare 头、请求限制与主机解析、配置包验签、密封 Challenge、凭证与 Cookie、路径视图与 `ret`、ClientHello / JA4、Challenge 提交；种子在 `fuzz/seeds/`）、`make fuzz`、`.github/workflows/fuzz.yml`（每天，以及改动解析器的 PR）；`edge-core` 的 `testkit::upstream` 抽出 Cloudflare 头不变式供随机输入测试与 cargo-fuzz 共用 | 完成 | PR #15 |
 
 ## 2. 当前代码状态
 

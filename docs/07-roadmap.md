@@ -204,7 +204,7 @@ docs/                         design docs + adr/
 ## 贯穿各阶段
 
 - 每个阶段结束做一次安全自审，更新 STRIDE 威胁模型。
-- 解析器持续模糊测试（`x-mg-cf-*` 等上游头、ClientHello、Challenge 提交、策略包）。Phase 1 的做法：每个解析器都有固定种子、≥ 10,000 个输入的随机输入测试（断言返回错误而不 panic），随 `make check` 运行。
+- 解析器持续模糊测试（`x-mg-cf-*` 等上游头、ClientHello、Challenge 提交、策略包）。Phase 1 的做法：每个解析器都有固定种子、≥ 10,000 个输入的随机输入测试（断言返回错误而不 panic），随 `make check` 运行；Phase 1 之后另加覆盖率引导的 cargo-fuzz 目标（`fuzz/`，`make fuzz`，CI 每天运行）。
 - 新检测能力一律 shadow → dry-run → 灰度；`EDGE_TLS` 与交互评分先 shadow。
 - 所有测试流量只发往 Validation Lab 白名单内的自有目标（`localhost`、`*.test`、登记的自有 staging 主机）；白名单在工具配置与网络出口两层强制，白名单外的主机一律拒绝。
 - Pingora 升级单独进行：先在分支上适配 mg-edge 并跑完整回归，再改 pin。

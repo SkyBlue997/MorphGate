@@ -1,0 +1,2 @@
+application/json; charset=utf-8
+{"c":"AAAA","n":"123","env":{"v":1,"ua":{"brands":[],"mobile":false,"platform":"macOS"},"languages":["zh-CN"]},"auto":{"webdriver":false}}

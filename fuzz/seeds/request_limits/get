@@ -1,0 +1,8 @@
+GET
+/account/login
+next=%2Fa&x=1
+host: Example.COM.
+user-agent: Mozilla/5.0
+accept: text/html
+accept-language: ja
+cookie: a=b

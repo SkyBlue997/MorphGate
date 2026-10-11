@@ -3,12 +3,8 @@
 //! xorshift generates ≥ 10,000 header lists; nothing panics and every parsed
 //! value satisfies its §9.3 validation rule.
 
-use mg_core::IpSource;
-use mg_edge_core::upstream::{
-    CfHeaders, ClientIp, CloudflareSite, connection_listed, hop_by_hop, is_upstream_family,
-    parse_cloudflare, secret_header_ok,
-};
-use std::collections::HashSet;
+use mg_edge_core::testkit::upstream::check_upstream_steps;
+use mg_edge_core::upstream::{CloudflareSite, secret_header_ok};
 
 const ITERATIONS: usize = 20_000;
 
@@ -74,6 +70,8 @@ const NAMES: &[&str] = &[
     "x-forwarded-for",
     "true-client-ip",
     "forwarded",
+    "content-length",
+    "transfer-encoding",
 ];
 
 const VALUES: &[&str] = &[
@@ -113,6 +111,8 @@ const VALUES: &[&str] = &[
     "%",
     "%C3",
     "upgrade, mg-client-ip",
+    // Framing fields are listed but never removed (found by cargo-fuzz).
+    "keep-alive, transfer-encoding, Content-Length",
     "websocket",
     "",
 ];
@@ -178,96 +178,6 @@ fn name(rng: &mut XorShift) -> String {
         .collect()
 }
 
-fn check_invariants(cf: &CfHeaders, site: &CloudflareSite<'_>) {
-    let ascii_in = |s: &str, max: usize, allowed: &dyn Fn(u8) -> bool| {
-        !s.is_empty() && s.len() <= max && s.bytes().all(allowed)
-    };
-    match cf.client_ip {
-        ClientIp::Known(ip, source) => {
-            assert!(matches!(
-                source,
-                IpSource::CfConnectingIp | IpSource::CfConnectingIpv6
-            ));
-            // Mapped addresses are always restored.
-            assert_eq!(ip, ip.to_canonical());
-            if source == IpSource::CfConnectingIpv6 {
-                assert!(site.pseudo_ipv4_overwrite);
-            }
-        }
-        // §9.3 table: missing or invalid → client_ip_header_missing = true.
-        ClientIp::Unknown { header_missing } => assert!(header_missing),
-    }
-    if let Some(ray) = &cf.cf_ray {
-        assert!(ascii_in(ray, 64, &|b| b.is_ascii_alphanumeric() || b == b'-'));
-    }
-    if let Some(tls) = &cf.edge_tls {
-        assert_ne!(*tls, mg_core::EdgeTls::default());
-        for hash in [&tls.ciphers_sha1, &tls.ext_sha1].into_iter().flatten() {
-            assert_eq!(hash.len(), 28, "{hash}");
-        }
-        if let Some(len) = tls.hello_len {
-            assert!((1..=65_535).contains(&len));
-        }
-        if let Some(v) = &tls.version {
-            assert!(v.len() <= 16);
-        }
-    }
-    if let Some(rtt) = cf.rtt_ms {
-        assert!((1..=60_000).contains(&rtt));
-    }
-    if let Some(asn) = cf.upstream_asn {
-        assert!(asn >= 1);
-    }
-    if !site.location_headers {
-        assert!(cf.upstream_country.is_none());
-        assert!(cf.upstream_region.is_none());
-        assert!(cf.upstream_timezone.is_none());
-    }
-    if let Some(country) = &cf.upstream_country {
-        assert_eq!(country.len(), 2);
-        assert_ne!(country, "XX");
-    }
-    if let Some(cat) = &cf.cf_vbot_cat {
-        assert!(cat.len() <= 64);
-    }
-    if let Some(names) = &cf.header_names {
-        assert!(!names.is_empty() && names.len() <= 128);
-        let distinct: HashSet<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
-        assert_eq!(distinct.len(), names.len());
-        assert!(names.iter().all(|n| !n.is_empty() && n.len() <= 64));
-    }
-    if let Some(t1) = &cf.tier1 {
-        assert!(site.tier1);
-        if let Some(org) = &t1.as_org {
-            assert!(!org.is_empty() && org.len() <= 256);
-            assert!(!org.chars().any(char::is_control));
-        }
-        if let Some(ae) = &t1.accept_encoding_orig {
-            assert!(ascii_in(ae, 256, &|b| (0x20..=0x7e).contains(&b)));
-        }
-        if let Some(p) = &t1.priority {
-            assert!(p.len() <= 128);
-        }
-    }
-    let known = [
-        "tls-version",
-        "tls-cipher",
-        "tls-ciphers-sha1",
-        "tls-ext-sha1",
-        "tls-hello-len",
-        "tls-random",
-        "http-version",
-        "rtt",
-        "quic-rtt",
-        "asn",
-        "vbot",
-        "hdr-names",
-    ];
-    let distinct: HashSet<&str> = cf.missing_signals.iter().copied().collect();
-    assert_eq!(distinct.len(), cf.missing_signals.len());
-    assert!(cf.missing_signals.iter().all(|s| known.contains(s)));
-}
-
 #[test]
 fn random_headers_never_panic_and_parse_only_valid_values() {
     let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
@@ -291,41 +201,9 @@ fn random_headers_never_panic_and_parse_only_valid_values() {
             pseudo_ipv4_overwrite: rng.chance(2),
         };
 
-        let cf = parse_cloudflare(&slices, &site);
-        check_invariants(&cf, &site);
-        let _ = format!("{cf:?}");
+        let cf = check_upstream_steps(&slices, &site);
         known_ips += usize::from(cf.client_ip.ip().is_some());
         parsed_tls += usize::from(cf.edge_tls.is_some());
-
-        for (name, _) in &slices {
-            let _ = is_upstream_family(name);
-        }
-        let listed = connection_listed(&slices);
-        let distinct: HashSet<&String> = listed.iter().collect();
-        assert_eq!(distinct.len(), listed.len());
-        assert!(
-            listed
-                .iter()
-                .all(|n| !n.is_empty() && *n == n.to_ascii_lowercase())
-        );
-        let hop = hop_by_hop(&slices);
-        assert_eq!(hop[0], "connection");
-        let distinct: HashSet<&String> = hop.iter().collect();
-        assert_eq!(distinct.len(), hop.len());
-        // Step 3 never removes a trusted name before step 4 parses it; every
-        // listed name is removed by step 3 or by step 5.
-        assert!(hop.iter().all(|n| !is_upstream_family(n)));
-        assert!(
-            listed
-                .iter()
-                .all(|n| hop.contains(n) || is_upstream_family(n) || n == "upgrade")
-        );
-        let kept: Vec<(&str, &[u8])> = slices
-            .iter()
-            .copied()
-            .filter(|(n, _)| !hop.iter().any(|h| n.eq_ignore_ascii_case(h)))
-            .collect();
-        assert_eq!(parse_cloudflare(&kept, &site), cf);
 
         let accepted = vec![value(&mut rng), value(&mut rng)];
         let presented = slices.first().map(|(_, v)| *v);
