@@ -1,0 +1,119 @@
+name: Fuzz
+
+# Coverage-guided fuzzing (cargo-fuzz / libFuzzer) of the parsers that read
+# untrusted input: Cloudflare's x-mg-cf-* headers, request limits, signed
+# bundles, sealed challenges, clearance tokens, /__mg paths and `ret`,
+# ClientHello / JA4 and challenge submissions (fuzz/). Each target runs for
+# FUZZ_SECONDS, daily and on pull requests that touch a parser crate or
+# fuzz/. A crash fails the job and uploads the reproducer; `make fuzz` runs
+# the same locally.
+
+on:
+  pull_request:
+    paths:
+      - "core/**"
+      - "challenge/**"
+      - "edge-core/**"
+      - "edge/**"
+      - "proto/**"
+      - "fuzz/**"
+      - "Cargo.lock"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per target"
+        default: "120"
+
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs (the comment names the
+# release the SHA was taken from); bump SHA and comment together.
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in step with the Makefile's fuzz target. cargo-fuzz comes from
+  # crates.io, which checks each crate against the SHA-256 in its index
+  # (--locked uses the tool's own Cargo.lock); the nightly toolchain comes
+  # from rustup, which verifies the SHA-256 of every component.
+  FUZZ_TOOLCHAIN: nightly-2026-10-11
+  CARGO_FUZZ_VERSION: "0.13.2"
+  FUZZ_SECONDS: ${{ github.event.inputs.seconds || (github.event_name == 'schedule' && '300') || '60' }}
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.group }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: edge-core
+            targets: cf_headers request_limits bundle_verify paths_ret
+          - group: challenge-edge
+            targets: sealed_open clearance_token client_hello submission
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - name: Install ${{ env.FUZZ_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "${FUZZ_TOOLCHAIN}" --profile minimal
+          rustup run "${FUZZ_TOOLCHAIN}" rustc --version
+
+      # boring-sys (pulled in by mg-edge) compiles BoringSSL from source.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache: false
+
+      - name: BoringSSL build dependencies
+        run: |
+          if ! command -v cmake >/dev/null || ! command -v clang >/dev/null \
+             || ! ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+          fi
+
+      # Caches ~/.cargo/bin (cargo-fuzz) and fuzz/target.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz
+          shared-key: fuzz-${{ env.FUZZ_TOOLCHAIN }}
+
+      - name: Install cargo-fuzz ${{ env.CARGO_FUZZ_VERSION }}
+        run: |
+          if [ "$(cargo fuzz --version 2>/dev/null)" != "cargo-fuzz ${CARGO_FUZZ_VERSION}" ]; then
+            cargo install cargo-fuzz --version "${CARGO_FUZZ_VERSION}" --locked --force
+          fi
+          cargo fuzz --version
+
+      - name: Fuzz ${{ matrix.targets }} for ${{ env.FUZZ_SECONDS }} s each
+        env:
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          case "${FUZZ_SECONDS}" in ''|*[!0-9]*) echo "::error::seconds must be a number"; exit 1 ;; esac
+          make fuzz FUZZ_TOOLCHAIN="${FUZZ_TOOLCHAIN}" FUZZ_SECONDS="${FUZZ_SECONDS}" FUZZ_TARGETS="${TARGETS}"
+
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts-${{ matrix.group }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,91 @@
+# Coverage-guided fuzz targets for the parsers that read untrusted input
+# (cargo-fuzz / libFuzzer; docs/10-threat-model.md). Its own workspace and
+# lock file: it needs a nightly toolchain and is not part of `make check`.
+#   cargo +nightly fuzz run <target>            (from the repository root)
+#   make fuzz FUZZ_SECONDS=60                   (every target for a while)
+# .github/workflows/fuzz.yml runs every target daily and on PRs that touch
+# a parser crate.
+
+[package]
+name = "mg-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+mg-core = { path = "../core" }
+mg-proto = { path = "../proto/rust" }
+mg-challenge = { path = "../challenge" }
+mg-edge-core = { path = "../edge-core", features = ["testkit"] }
+mg-edge = { path = "../edge" }
+base64 = "0.23.1"
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+pasetors = { version = "0.8.1", default-features = false, features = ["std", "v4"] }
+prost = "0.14.1"
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "cf_headers"
+path = "fuzz_targets/cf_headers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "request_limits"
+path = "fuzz_targets/request_limits.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle_verify"
+path = "fuzz_targets/bundle_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sealed_open"
+path = "fuzz_targets/sealed_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clearance_token"
+path = "fuzz_targets/clearance_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "paths_ret"
+path = "fuzz_targets/paths_ret.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_hello"
+path = "fuzz_targets/client_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "submission"
+path = "fuzz_targets/submission.rs"
+test = false
+doc = false
+bench = false

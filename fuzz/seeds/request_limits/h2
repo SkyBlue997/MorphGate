@@ -1,0 +1,6 @@
+POST
+/__mg/c
+
+:authority: example.com:443
+content-type: application/x-www-form-urlencoded
+content-length: 42

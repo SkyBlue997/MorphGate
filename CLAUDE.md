@@ -13,7 +13,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 
 | Path | Contents |
 |---|---|
-| `Cargo.toml` | Rust workspace (edition 2024, MSRV 1.88): `core`, `challenge`, `intel`, `edge-core`, `edge`, `proto/rust` |
+| `Cargo.toml` | Rust workspace (edition 2024, MSRV 1.88): `core`, `challenge`, `intel`, `edge-core`, `edge`, `proto/rust` (`fuzz/` is a separate workspace) |
 | `core/` | `mg-core`: pure Decision Core. No I/O, threads, tokio or wall clock (time is passed in); must build for `wasm32-unknown-unknown` |
 | `edge/` | `mg-edge`: Pingora (`=0.9.0`, BoringSSL) binary. All Pingora-specific code stays here. Dev config in `edge/config/edge.dev.toml` |
 | `challenge/` | `mg-challenge` (Phase 1): sealed challenges, epoch keys, SHA-256 PoW, PASETO v4.local clearance tokens. No I/O; time and RNG are injected |
@@ -28,7 +28,8 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `deploy/intel/` | Owner-maintained crawler registry source (`crawler-registry.yaml`), input to `mgctl crawler sync` |
 | `deploy/compose/` | Dev environment: Valkey, PostgreSQL, VictoriaMetrics, VictoriaLogs (`vl-main` 30d, `vl-short` 7d), mock origin; optional profiles `grafana`, `tunnel` (cloudflared) and `lab` (Validation Lab on an internal network) |
 | `deploy/systemd/` | `mg-edge.service` (Pingora graceful upgrade via `systemctl reload`), `edge.toml.example` and `journald@morphgate.conf` (the Edge's own journald namespace, 14-day retention), kept in sync by `edge/tests/shipped_configs.rs` |
-| `scripts/` | `gen-proto.sh`, `check_doc_links.py`, `edge-smoke.sh`, `lab-e2e.sh`, `lab-egress-check.sh` |
+| `fuzz/` | cargo-fuzz targets for the parsers that read untrusted input (own workspace; its lock file is `Cargo.lock` plus the fuzzing crates, checked by `make fuzz-lock-check`; nightly only, not in `make check`); `seeds/` is committed, `corpus/` and `artifacts/` are not |
+| `scripts/` | `gen-proto.sh`, `check_doc_links.py`, `check-fuzz-lock.sh`, `edge-smoke.sh`, `lab-e2e.sh`, `lab-egress-check.sh` |
 | `testdata/` | Cross-component fixtures: `phase1/kat.json` (crypto / PoW / key known-answer vectors), `phase1/keys/` and `phase1/artifacts/` (canonical valid and invalid key-file and artifact samples), `policy-ir/` (Go ↔ Rust policy IR conformance); `core/testdata/gcra-cases.json` is shared by Rust and the Valkey Lua script |
 
 ## Commands
@@ -46,6 +47,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `make edge-run` / `make edge-smoke` | Run mg-edge with the dev config; loopback end-to-end smoke test |
 | `make lab-e2e` | Validation Lab end-to-end on loopback: test keys, a signed enforce bundle, Valkey, mg-edge, an origin that checks `MG-Origin-Auth`, and the scenarios (impersonating crawlers, no clearance without JavaScript, route-level monitor and `never_challenge`); not part of `check`, CI runs it |
 | `make lab-egress-check` | Needs a Docker daemon (CI runs it): the Lab allowlist holds at the tool and network-egress layers |
+| `make fuzz` | Run every cargo-fuzz target for `FUZZ_SECONDS` (default 60) each; needs the pinned nightly and cargo-fuzz (versions in the Makefile and `.github/workflows/fuzz.yml`). Not part of `check`; CI runs it daily and on PRs that touch a parser crate |
 | `make audit` | Dependency audit, needs the network: `cargo deny check` (`deny.toml`: RustSec advisories, licenses, sources), govulncheck on both Go modules, `pnpm audit` for the Web SDK. Not part of `check`; `.github/workflows/audit.yml` runs it on every PR and weekly |
 
 ## Design docs

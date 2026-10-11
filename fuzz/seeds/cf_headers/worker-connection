@@ -1,0 +1,23 @@
+cf-connecting-ip: 203.0.113.7
+cf-ray: 8a1b2c3d4e5f6a7b-SJC
+cf-visitor: {"scheme":"https"}
+cf-ipcountry: HK
+cf-region-code: HCW
+cf-timezone: Asia/Hong_Kong
+x-mg-cf-tls-version: TLSv1.3
+x-mg-cf-tls-cipher: AEAD-AES128-GCM-SHA256
+x-mg-cf-tls-ciphers-sha1: 3zN0vNnT0h1r1TmXnq4B3Ic1S0c=
+x-mg-cf-tls-ext-sha1: AAECAwQFBgcICQoLDA0ODxAREhM=
+x-mg-cf-tls-hello-len: 512
+x-mg-cf-tls-random: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+x-mg-cf-http-version: HTTP/3
+x-mg-cf-rtt: 23
+x-mg-cf-quic-rtt: 0
+x-mg-cf-asn: 64500
+x-mg-cf-vbot: false
+x-mg-cf-vbot-cat: Search Engine Crawler
+x-mg-cf-hdr-names: Host,User-Agent,Accept,Accept-Language
+cf-worker: example.com
+connection: keep-alive, CF-Worker, x-mg-cf-rtt
+cf-pseudo-ipv4: 240.0.0.1
+cf-connecting-ipv6: 2001:db8::1

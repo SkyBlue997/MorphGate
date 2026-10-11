@@ -2,5 +2,6 @@
 //! (feature `testkit`; docs/impl/phase1-spec.md §16). Loopback only.
 
 pub mod http;
+pub mod upstream;
 pub mod valkey;
 pub mod vl;

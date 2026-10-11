@@ -1,0 +1,5 @@
+GET
+http://example.com/x
+
+absolute-form: example.com
+host: other.example
