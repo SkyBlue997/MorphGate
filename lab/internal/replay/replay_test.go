@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -395,6 +396,13 @@ func TestExpectations(t *testing.T) {
 			// A redirect to a page that also answers 403: only the hop
 			// shows that a redirect happened.
 			http.Redirect(w, r, "/page", http.StatusSeeOther)
+		case "/csp":
+			w.Header().Add("Content-Security-Policy", "default-src 'none'; script-src 'nonce-n'")
+			w.Header().Add("Content-Security-Policy", "frame-ancestors 'none'")
+			io.WriteString(w, `<script src="/__mg/s/mg.js"></script>`)
+		case "/csp-hop":
+			w.Header().Set("Content-Security-Policy", "frame-src https://challenges.cloudflare.com")
+			http.Redirect(w, r, "/csp", http.StatusSeeOther)
 		}
 	}))
 	defer srv.Close()
@@ -426,6 +434,20 @@ func TestExpectations(t *testing.T) {
 		{"header on a redirect hop", Request{Path: "/submit", ExpectStatus: 403, ExpectBodyContains: `data-mg-state="challenge"`,
 			ExpectHeaderAbsent: []string{"Location"}}, []string{"(after 303)", "header Location present on the 303 redirect"}},
 		{"redirect without absent expectation", Request{Path: "/submit", ExpectStatus: 403}, nil},
+		{"phase 2 expectations met", Request{Path: "/csp",
+			ExpectHeaderExcludes:  map[string][]string{"Content-Security-Policy": {"http:", "frame-src", "*"}, "X-Absent": {"x"}},
+			ExpectBodyContainsAll: []string{"<script", `src="/__mg/s/`},
+			ExpectBodyExcludes:    []string{`src="http`, "challenges.cloudflare.com"}}, nil},
+		{"header excludes, second value", Request{Path: "/csp",
+			ExpectHeaderExcludes: map[string][]string{"content-security-policy": {"frame-ancestors"}}},
+			[]string{`header content-security-policy contains "frame-ancestors"`}},
+		{"header excludes on a redirect hop", Request{Path: "/csp-hop",
+			ExpectHeaderExcludes: map[string][]string{"Content-Security-Policy": {"challenges.cloudflare.com"}}},
+			[]string{`header Content-Security-Policy contains "challenges.cloudflare.com" on the 303 redirect`}},
+		{"body contains all", Request{Path: "/csp", ExpectBodyContainsAll: []string{"<script", "turnstile", "nonce"}},
+			[]string{`body does not contain "turnstile"`, `body does not contain "nonce"`}},
+		{"body excludes", Request{Path: "/csp", ExpectBodyExcludes: []string{"/__mg/s/", "absent"}},
+			[]string{`body contains "/__mg/s/"`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -468,6 +490,13 @@ func TestExpectationValidation(t *testing.T) {
 		{"negative delay", func(r *Request) { r.DelayMS = -1 }, "delay_ms -1"},
 		{"long delay", func(r *Request) { r.DelayMS = MaxDelayMS + 1 }, "delay_ms 10001"},
 		{"long path", func(r *Request) { r.Path = "/" + strings.Repeat("a", MaxPathBytes) }, "path longer than"},
+		{"bad excluded header", func(r *Request) { r.ExpectHeaderExcludes = map[string][]string{"X Y": {"a"}} }, "invalid header name"},
+		{"no excluded substrings", func(r *Request) { r.ExpectHeaderExcludes = map[string][]string{"X-Y": {}} }, "must list 1-"},
+		{"empty excluded substring", func(r *Request) { r.ExpectHeaderExcludes = map[string][]string{"X-Y": {""}} }, "non-empty"},
+		{"excluded substring LF", func(r *Request) { r.ExpectHeaderExcludes = map[string][]string{"X-Y": {"a\nb"}} }, "without CR, LF or NUL"},
+		{"empty body substring", func(r *Request) { r.ExpectBodyExcludes = []string{""} }, "expect_body_excludes: substrings must be"},
+		{"long body substring", func(r *Request) { r.ExpectBodyContainsAll = []string{strings.Repeat("a", MaxVarBytes+1)} }, "expect_body_contains_all: substrings must be"},
+		{"too many body substrings", func(r *Request) { r.ExpectBodyExcludes = make([]string, MaxExpectations+1) }, "at most"},
 	}
 	for _, tc := range cases {
 		s := &Scenario{Name: "v", Requests: []Request{{Method: "GET", Path: "/"}}}
@@ -535,6 +564,67 @@ func TestPhase1Scenarios(t *testing.T) {
 		}
 	}
 }
+
+// The Phase 2 scenarios (spec §17 WP-L2) load, declare their variables,
+// resolve, and keep to their paths; every request to a protected route or
+// an endpoint forbids the clearance cookie, and no scenario carries a
+// solved challenge (D-59: every submission's C is a recording that no Edge
+// can open).
+func TestPhase2Scenarios(t *testing.T) {
+	for _, tc := range []struct {
+		file     string
+		vars     map[string]string
+		requests int
+		prefixes []string
+	}{
+		{"phase2-challenge-page.yaml", map[string]string{"run": "r1"}, 12,
+			[]string{"/p2/account/r1/", "/p2/login/r1/", "/__mg/v?ret=%2Fp2%2Flogin%2Fr1%2F"}},
+		{"phase2-submissions.yaml", map[string]string{"run": "r1"}, 16,
+			[]string{"/p2/account/r1/", "/__mg/c", "/__mg/v?ret=%2Fp2%2Faccount%2Fr1%2F"}},
+		{"phase2-nearline-baits.yaml", map[string]string{"run": "r1", "ip": "203.0.113.120"}, 2,
+			[]string{"/.env.r1", "/.git/r1/"}},
+		{"phase2-nearline-after.yaml", map[string]string{"run": "r1", "enforce_ip": "203.0.113.121",
+			"shadow_ip": "203.0.113.120", "fresh_ip": "203.0.113.122"}, 3, []string{"/nl/r1/"}},
+	} {
+		s, err := Load("../../testdata/scenarios/" + tc.file)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.file, err)
+		}
+		if len(s.Requests) != tc.requests {
+			t.Fatalf("%s: %d requests", tc.file, len(s.Requests))
+		}
+		if _, err := s.Resolve(map[string]string{"run": "r1"}); len(tc.vars) > 1 && err == nil {
+			t.Errorf("%s: resolves without its required variables", tc.file)
+		}
+		rs, err := s.Resolve(tc.vars)
+		if err != nil {
+			t.Fatalf("%s: Resolve: %v", tc.file, err)
+		}
+		for i, r := range rs.Requests {
+			if !slices.ContainsFunc(tc.prefixes, func(p string) bool { return strings.HasPrefix(r.Path, p) }) {
+				t.Errorf("%s: requests[%d] path %q outside %v", tc.file, i, r.Path, tc.prefixes)
+			}
+			if !strings.HasPrefix(r.Headers["CF-Connecting-IP"], "203.0.113.") || r.ExpectStatus == 0 {
+				t.Errorf("%s: requests[%d] lacks a documentation-range CF-Connecting-IP or expect_status", tc.file, i)
+			}
+			if strings.Contains(r.Path+r.Body+strings.Join(slices.Collect(maps.Values(r.Headers)), ""), "${") {
+				t.Errorf("%s: requests[%d] still has a variable", tc.file, i)
+			}
+			if strings.HasPrefix(r.Path, "/__mg/") || strings.HasPrefix(r.Path, "/p2/") {
+				if !slices.Contains(r.ExpectCookieAbsent, "__Host-mg_clr") || r.ExpectStatus < 400 {
+					t.Errorf("%s: requests[%d] (%s) does not expect a refusal without __Host-mg_clr", tc.file, i, r.Name)
+				}
+			}
+			if r.Method == "POST" && !strings.Contains(r.Body, recordedC) {
+				t.Errorf("%s: requests[%d] (%s) does not carry the recorded C", tc.file, i, r.Name)
+			}
+		}
+	}
+}
+
+// recordedC is the start of both C recorded for phase2-submissions.yaml
+// (version 1, kid e20737): a C from an Edge whose seal root is gone.
+const recordedC = "CAESBmUyMDczNxoY"
 
 // xorshift is the deterministic generator of the random-input tests
 // (docs/impl/phase1-spec.md §2.4 item 3).

@@ -179,6 +179,7 @@ func TestCheckMapHost(t *testing.T) {
 
 func TestEvents(t *testing.T) {
 	sample := "../events/testdata/phase1-run.jsonl"
+	p2run, p2verdicts := "../events/testdata/phase2-run.jsonl", "../events/testdata/phase2-verdicts.jsonl"
 	cases := []struct {
 		args []string
 		code int
@@ -195,6 +196,23 @@ func TestEvents(t *testing.T) {
 		{[]string{"impersonator", "-impersonators", "/x/"}, ExitUsage, ""},
 		{[]string{"other"}, ExitUsage, ""},
 		{nil, ExitUsage, ""},
+		// Phase 2 (spec §17 WP-L2).
+		{[]string{"providers", "-site", "labp2", "-route", "login", "-offer", "US, DE", "-want-offered", "3", "-want-withheld", "7", p2run},
+			ExitOK, "PASS  providers: turnstile first in 3 interactive challenge(s) for allowed countries, withheld from 7"},
+		{[]string{"providers", "-site", "labp2", "-route", "login", "-offer", "US,DE,CN", p2run}, ExitDenied, "country CN was not offered turnstile"},
+		{[]string{"providers", "-offer", "US", p2run}, ExitUsage, ""},
+		{[]string{"providers", "-route", "login", "-want-offered", "-2", p2run}, ExitUsage, ""},
+		{[]string{"providers", "-route", "login", p2run, p2verdicts}, ExitUsage, ""},
+		{[]string{"nearline", "-site", "labp2", "-after", "/nl/sample/", "-shadow-ip", "203.0.113.120", "-enforce-ip", "203.0.113.121",
+			"-fresh-ip", "203.0.113.122", "-max-latency-ms", "10000", p2run, p2verdicts},
+			ExitOK, "PASS  nearline/scanner: 1 shadow and 1 enforce verdict(s)"},
+		{[]string{"nearline", "-site", "labp2", "-after", "/nl/sample/", "-shadow-ip", "203.0.113.121", "-enforce-ip", "203.0.113.120", p2run, p2verdicts},
+			ExitDenied, "does not carry the enforce nearline/scanner verdict"},
+		{[]string{"nearline", "-after", "/nl/", "-shadow-ip", "203.0.113.120", p2run}, ExitUsage, ""},
+		{[]string{"nearline", "-after", "/nl/", "-shadow-ip", "a", "-enforce-ip", "b", "-max-latency-ms", "-1", p2run}, ExitUsage, ""},
+		{[]string{"nearline", "-after", "/nl/", "-shadow-ip", "a", "-enforce-ip", "b"}, ExitUsage, ""},
+		{[]string{"clearance", "-site", "labp2", "-protected", "/p2/", "-want-feedback", "8", p2run},
+			ExitOK, "8 feedback event(s) (and 2 of renewals), 0 passed"},
 	}
 	for _, tc := range cases {
 		code, out, errOut := runWith(nil, append([]string{"events"}, tc.args...)...)
