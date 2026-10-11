@@ -61,4 +61,7 @@ func TestGolden(t *testing.T) {
 	compareGolden(t, "golden-norules.bundle", goldenBundle(t, "site.yaml"))
 	// WP-G1 has landed (§2.1), so the rules bundle is required as well.
 	compareGolden(t, "golden-rules.bundle", goldenBundle(t, "site-rules.yaml"))
+	// Phase 2 spec §17 WP-G4: every §10.2 key, an interactive limiter and the
+	// Turnstile provider; the Phase 1 golden bundles above stay byte-identical.
+	compareGolden(t, "golden-phase2.bundle", goldenBundle(t, "site-phase2.yaml"))
 }

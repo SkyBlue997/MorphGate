@@ -30,13 +30,15 @@ var UpstreamProfiles = func() []string {
 var CheckedProfiles = []string{"cloudflare", "direct_tls"}
 
 // alwaysMissing lists, per UpstreamProfile, the field prefixes that are
-// MISSING on every request of that profile in Phase 1, with a hint (spec §4.4;
-// docs/03 §3.1 per-signal table, docs/08 §2.5, D-07).
+// MISSING on every request of that profile, with a hint (Phase 1 spec §4.4;
+// docs/03 §3.1 per-signal table, docs/08 §2.5, D-07). Phase 2 (spec §4.2)
+// removed identity.proof: it is MISSING only on exempt navigations (D-40), on
+// requests where the Edge does not verify proofs, and under schema_version 1
+// bundles (D-66), which the bundle builder reports.
 var alwaysMissing = map[string][]struct{ prefix, hint string }{
 	"cloudflare": {
 		{"tls", "Cloudflare terminates the visitor's TLS; edge_tls.* is the weak, shadow-first substitute"},
 		{"http.header_order", "Cloudflare does not preserve header order"},
-		{"identity.proof", "proof of possession arrives in Phase 2"},
 		{"identity.agent", "agent identities arrive in Phase 3"},
 	},
 	"direct_tls": {
@@ -44,9 +46,61 @@ var alwaysMissing = map[string][]struct{ prefix, hint string }{
 		{"identity.crawler.cf_vbot", "the verified-bot flag is only forwarded by Cloudflare"},
 		{"identity.crawler.cf_vbot_cat", "the verified-bot category is only forwarded by Cloudflare"},
 		{"tls.ja4", "JA4 is a Phase 1 spike only"},
-		{"identity.proof", "proof of possession arrives in Phase 2"},
 		{"identity.agent", "agent identities arrive in Phase 3"},
 	},
+}
+
+// Phase2Fields are the policy fields introduced in Phase 2 (spec §4.1; the
+// entries of testdata/policy-ir/fields.json with "phase": 2). A bundle whose
+// rules read one of them is written with schema_version 2: only a Phase 2
+// Edge evaluates them.
+var Phase2Fields = []string{
+	"http.navigation",
+	"identity.token.bound",
+	"identity.token.level_age",
+	"identity.proof.present",
+	"identity.proof.replayed",
+}
+
+// NavigationField is the client-controlled navigation test (spec §4.1).
+const NavigationField = "http.navigation"
+
+// ProofField is the namespace of the MG-Proof results (spec §4.1).
+const ProofField = "identity.proof"
+
+// checkNavigation enforces spec §4.2 for http.navigation: like Sec-Fetch-*
+// and Accept it is controlled by the client, so an allow rule conditioned on
+// it is an error (an attacker adds one request header to match it) and any
+// other rule that uses it gets a warning.
+func checkNavigation(r *Rule, refs exprRefs, diags *Diagnostics) {
+	used := slices.ContainsFunc(append(slices.Clone(refs.reads), refs.tests...), func(p string) bool {
+		return underPath(p, NavigationField)
+	})
+	if !used {
+		return
+	}
+	if r.Action == "allow" {
+		diags.errorf(r.File, r.exprPos, r.ID, "expr",
+			"an allow rule must not depend on %s: the client sets it (Sec-Fetch-Mode, Accept), so adding one request header would match the rule (spec §4.2)", NavigationField)
+		return
+	}
+	diags.warnf(r.File, r.exprPos, r.ID, "expr",
+		"%s comes from the client's own request headers; it is a hint, not a security boundary (spec §4.2)", NavigationField)
+}
+
+// checkProofBlock hints that a block rule conditioned on a present but
+// invalid MG-Proof also hits ordinary visitors whose session key was cleared
+// (Safari's 7-day storage limit, private windows: proof.jkt); such conditions
+// belong in challenge rules (spec §4.2).
+func checkProofBlock(r *Rule, refs exprRefs, diags *Diagnostics) {
+	if r.Action != "block" {
+		return
+	}
+	all := append(slices.Clone(refs.reads), refs.tests...)
+	if slices.Contains(all, "identity.proof.present") && slices.Contains(all, "identity.proof.valid") {
+		diags.warnf(r.File, r.exprPos, r.ID, "expr",
+			"identity.proof.present && !identity.proof.valid also matches ordinary visitors whose session key was cleared (Safari's 7-day limit, private windows); use action challenge for such conditions, not block (spec §4.2)")
+	}
 }
 
 // Cloudflare's verified-bot fields: corroboration only (docs/05 §3.4, docs/06 §2).

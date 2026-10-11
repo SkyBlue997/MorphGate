@@ -611,6 +611,6 @@ func TestDispatchErrors(t *testing.T) {
 	} {
 		e.expect(cli.ExitUsage, tc.want, tc.args...)
 	}
-	e.expect(cli.ExitFailed, "not a schema_version 1 SiteBundle", "bundle", "sign", "--in", phase1Keys+"/owner-test.pub", "--key", "k", "--out", e.path("o"))
+	e.expect(cli.ExitFailed, "is not a SiteBundle", "bundle", "sign", "--in", phase1Keys+"/owner-test.pub", "--key", "k", "--out", e.path("o"))
 
 }

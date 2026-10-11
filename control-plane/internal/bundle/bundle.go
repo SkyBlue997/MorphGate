@@ -84,6 +84,10 @@ type builder struct {
 	lists    map[string][]string
 	// Policy and list file bytes in order of appearance, for source_digest.
 	policySources, listSources [][]byte
+	// phase2Rule names the first rule that reads a Phase 2 policy field
+	// (schema_version 2); proofRules the rules that read identity.proof.*.
+	phase2Rule string
+	proofRules []string
 }
 
 func (b *builder) problem(format string, args ...any) {
@@ -146,6 +150,7 @@ func Build(site *sitecfg.Site, opts BuildOptions) (*BuildResult, error) {
 	artifacts := map[string]string{}
 	sb.Artifacts = b.artifacts(artifacts)
 	sb.SourceDigest = b.sourceDigest()
+	b.schema(sb)
 
 	if len(b.problems) > 0 {
 		return nil, &BuildError{Problems: b.problems}
@@ -262,6 +267,8 @@ func (b *builder) environment(env sitecfg.Environment) *morphgatev1.Environment 
 			RedactPath:       r.RedactPath,
 			Mode:             routeMode(r.Mode),
 			NeverChallenge:   r.NeverChallenge,
+			Proof:            proofMode(r.Proof),
+			MinLevel:         minLevel(r.MinLevel),
 		})
 	}
 	for _, l := range env.RateLimits {

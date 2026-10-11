@@ -53,7 +53,8 @@ var (
 		"identity.crawler_failed", "external.cf_vbot",
 	}
 	// LimiterChallengeTypes are the challenge types a rate limiter may issue.
-	LimiterChallengeTypes = []string{"invisible", "pow"}
+	// interactive is a Phase 2 value (schema_version 2, spec §10.2).
+	LimiterChallengeTypes = []string{"invisible", "pow", "interactive"}
 )
 
 // ArtifactKeys maps the artifacts.* keys to ArtifactRef names, in the order of
@@ -124,6 +125,10 @@ type Site struct {
 	ListFiles            []ListFile  // list_files, declaration order
 	Artifacts            []Artifact  // ArtifactKeys order
 	Environments         []Environment
+	Providers            []Provider // Phase 2 (spec §8.2)
+	// Phase2Keys lists the Phase 2 keys and values that appear in the YAML,
+	// as dotted paths; any of them makes the bundle schema_version 2.
+	Phase2Keys []string
 }
 
 // Cloudflare is the cloudflare: section (profile cloudflare only).
@@ -150,6 +155,10 @@ func (t Token) KIDs() []string { return append([]string{t.ActiveKID}, t.VerifyKI
 type Clearance struct {
 	TTLInvisibleS, TTLPowS, SessionMaxS uint32
 	CTPShadow                           bool
+	// Phase 2 (spec §10.2, D-47).
+	TTLInteractiveS, TTLInteractiveA11yS, TTLInteractiveExtS uint32
+	Refresh                                                  bool
+	RefreshMaxInteractiveS, RefreshMaxExtS, RefreshMaxPowS   uint32
 }
 
 // PowBits is the PoW difficulty per risk band.
@@ -170,6 +179,11 @@ type Challenge struct {
 	FailureWindowS uint32
 	Submit         Rate
 	Issue          Issue
+	// Phase 2 (spec §10.2).
+	DefaultLang string // zh-CN | en
+	HelpPath    string // validated like ret
+	PrivacyPath string // validated like ret
+	Interactive Interactive
 }
 
 // Scoring is the scoring: section (spec §5.7 initial values by default).
@@ -193,6 +207,10 @@ type Crawlers struct {
 type Events struct {
 	AllowSampleRate   float64
 	AccessLog, Stream bool
+	// Phase 2 (spec §10.2, §13.1, D-48).
+	TelemetryBehavior   bool
+	ScannerBaitsBuiltin bool
+	ScannerBaitsExtra   []string
 }
 
 // OriginHeaders is the origin_headers: section.
@@ -249,6 +267,10 @@ type Route struct {
 	// telemetry. Only on low and medium routes without require_clearance.
 	NeverChallenge bool
 	Implicit       bool
+	// Proof is "off" or "required" (Phase 2 D-40); MinLevel is "" or the
+	// lowest clearance level the route accepts (D-64).
+	Proof    string
+	MinLevel string
 }
 
 // RateLimit is one rate_limits: entry.
@@ -266,7 +288,7 @@ type RateLimit struct {
 type OnExceed struct {
 	Action      string  // signal | challenge | rate_limit | block
 	Weight      float64 // signal
-	Type        string  // challenge: invisible | pow
+	Type        string  // challenge: invisible | pow | interactive (Phase 2)
 	RetryAfterS uint32  // rate_limit; 0 = computed from GCRA
 }
 
@@ -275,13 +297,17 @@ func defaultChallenge() Challenge {
 	return Challenge{
 		TTLS: 120, PowBits: PowBits{14, 16, 18, 20}, FallbackRet: "/",
 		MaxFailures: 5, FailureWindowS: 600,
-		Submit: Rate{Rate: 30, PeriodS: 60, Burst: 10},
-		Issue:  Issue{PerIPP: 60, PerASN: 600, PeriodS: 3600},
+		Submit:      Rate{Rate: 30, PeriodS: 60, Burst: 10},
+		Issue:       Issue{PerIPP: 60, PerASN: 600, PeriodS: 3600},
+		DefaultLang: "zh-CN", HelpPath: "/", PrivacyPath: "/",
+		Interactive: defaultInteractive(),
 	}
 }
 
 func defaultClearance() Clearance {
-	return Clearance{TTLInvisibleS: 1800, TTLPowS: 1800, SessionMaxS: 86400, CTPShadow: true}
+	return Clearance{TTLInvisibleS: 1800, TTLPowS: 1800, SessionMaxS: 86400, CTPShadow: true,
+		TTLInteractiveS: 1800, TTLInteractiveA11yS: 900, TTLInteractiveExtS: 1800,
+		RefreshMaxInteractiveS: 14400, RefreshMaxExtS: 7200, RefreshMaxPowS: defaultRefreshMaxPowS(1800)}
 }
 
 // DefaultZ0 are the prior log-odds per route sensitivity (spec §5.7).
@@ -363,11 +389,12 @@ func Parse(file string, data []byte) (*Site, []Diagnostic) {
 		File: file, Dir: filepath.Dir(file), Raw: bytes.Clone(data),
 		MonitorOnly: true, Challenge: defaultChallenge(), Clearance: defaultClearance(),
 		Scoring: defaultScoring(), Crawlers: Crawlers{DefaultAction: "allow", Purposes: map[string]string{}},
-		Events:        Events{AllowSampleRate: 0.1, AccessLog: true, Stream: true},
+		Events:        Events{AllowSampleRate: 0.1, AccessLog: true, Stream: true, ScannerBaitsBuiltin: true},
 		OriginHeaders: OriginHeaders{Scores: true, Reasons: false, Session: true},
 	}
 	p.parseSite(o, s)
 	o.finish()
+	s.Phase2Keys = p.phase2Keys
 	return s, p.diags
 }
 
@@ -491,6 +518,10 @@ func (p *parser) parseSite(o *object, s *Site) {
 	if hostsNode != nil && envNode != nil {
 		p.checkHostPartition(envNode, s)
 	}
+	// After the environments: providers name their routes.
+	if v := p.phase2(o, "providers"); v != nil {
+		s.Providers = p.parseProviders(v, s)
+	}
 }
 
 // hostList reads a list of lower-case host names (no port, no trailing dot).
@@ -607,6 +638,7 @@ func (p *parser) parseClearance(n *yaml.Node, c *Clearance) {
 	if v := o.get("ctp_shadow"); v != nil {
 		c.CTPShadow, _ = p.boolean(v, "clearance.ctp_shadow")
 	}
+	p.parseClearancePhase2(o, c)
 	if c.SessionMaxS != 0 && (c.SessionMaxS < c.TTLInvisibleS || c.SessionMaxS < c.TTLPowS) {
 		p.errorf(n, "clearance.session_max_s: %d is shorter than a clearance TTL (ttl_invisible_s %d, ttl_pow_s %d)", c.SessionMaxS, c.TTLInvisibleS, c.TTLPowS)
 	}
@@ -674,6 +706,7 @@ func (p *parser) parseChallenge(n *yaml.Node, c *Challenge) {
 			p.checkGCRA(v, "challenge.issue (per_asn)", Rate{c.Issue.PerASN, c.Issue.PeriodS, c.Issue.PerASN})
 		}
 	}
+	p.parseChallengePhase2(o, c)
 	// The failure limiters mg.c.fail / mg.c.fail.prefix derive from these (D-28).
 	p.checkGCRA(n, "challenge failure quota", Rate{c.MaxFailures, c.FailureWindowS, c.MaxFailures})
 	p.checkGCRA(n, "challenge failure quota per prefix", Rate{4 * c.MaxFailures, c.FailureWindowS, 4 * c.MaxFailures})
@@ -819,6 +852,7 @@ func (p *parser) parseEvents(n *yaml.Node, e *Events) {
 	if v := o.get("stream"); v != nil {
 		e.Stream, _ = p.boolean(v, "events.stream")
 	}
+	p.parseEventsPhase2(o, e)
 }
 
 func (p *parser) parseOriginHeaders(n *yaml.Node, h *OriginHeaders) {

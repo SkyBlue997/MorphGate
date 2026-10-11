@@ -398,8 +398,8 @@ func TestBuildPolicyWarningsAndFilters(t *testing.T) {
 		t.Errorf("rules %v (disabled dropped, expiry at build time is expired)", got)
 	}
 	all := strings.Join(res.Warnings, "\n")
-	// The D-08 warning comes from the compiler (WP-G1) or, failing that, the builder.
-	for _, w := range []string{"(D-08)", `params.limiter "other" is not a rate limiter`} {
+	// The D-08 warning comes from the builder: it depends on challenge.interactive.enabled.
+	for _, w := range []string{"runs as pow while challenge.interactive.enabled is false (D-08", `params.limiter "other" is not a rate limiter`} {
 		if !strings.Contains(all, w) {
 			t.Errorf("missing warning %q in:\n%s", w, all)
 		}

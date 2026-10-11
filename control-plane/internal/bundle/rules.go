@@ -107,10 +107,8 @@ func (b *builder) checkRule(where string, cr *policy.CheckedRule, env sitecfg.En
 		switch {
 		case set && !slices.Contains(phase1ChallengeTypes, t):
 			fail("params.type %q is not available in Phase 1 (%s)", t, strings.Join(phase1ChallengeTypes, ", "))
-		case t == "interactive" && !slices.ContainsFunc(diags, func(d policy.Diagnostic) bool {
-			return d.RuleID == cr.ID && d.Severity == policy.SeverityWarning && strings.Contains(d.Message, "interactive")
-		}):
-			b.warn("%s: params.type interactive runs as pow in Phase 1 (D-08)", where)
+		case t == "interactive" && !b.site.Challenge.Interactive.Enabled:
+			b.warn("%s: params.type interactive runs as pow while challenge.interactive.enabled is false (D-08, Phase 2 spec §5.1)", where)
 		}
 	case "tag":
 		if l, set := cr.Params["label"]; !set || !tagLabelPattern.MatchString(l) {
@@ -134,6 +132,12 @@ func (b *builder) checkRule(where string, cr *policy.CheckedRule, env sitecfg.En
 		if _, found := b.lists[name]; !found {
 			fail("list(%q) is not defined in lists or list_files", name)
 		}
+	}
+	if f := readsPhase2Field(cr.Fields); f != "" && b.phase2Rule == "" {
+		b.phase2Rule = fmt.Sprintf("%s reads %s", where, f)
+	}
+	if readsProof(cr.Fields) {
+		b.proofRules = append(b.proofRules, where)
 	}
 	return ok
 }

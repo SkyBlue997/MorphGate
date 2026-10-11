@@ -54,6 +54,10 @@ Usage:
   mgctl cf audit [flags]
   mgctl cf ips sync [flags]
   mgctl crawler sync [flags]
+  mgctl turnstile widgets --account <id> --cf-token-file <file.age>
+  mgctl turnstile secret import --account <id> --sitekey <k> --site <site> --out <file> --cf-token-file <file.age>
+  mgctl turnstile secret rotate --account <id> --sitekey <k> --keys <file> [--invalidate-immediately] --cf-token-file <file.age>
+  mgctl turnstile secret drop-previous --keys <file>
 
 policy flags:
   -profile cloudflare|direct_tls   UpstreamProfile for files without a top-level profile: key
@@ -129,6 +133,8 @@ func RunEnv(args []string, env cli.Env) int {
 		return runCF(args[1:], r.env)
 	case "crawler":
 		return intelsync.RunCrawler(args[1:], r.env)
+	case "turnstile":
+		return r.runTurnstile(args[1:])
 	}
 	fmt.Fprintf(stderr, "mgctl: unknown command %q\n\n", args[0])
 	fmt.Fprintf(stderr, usage, policy.DefaultMaxCost)
