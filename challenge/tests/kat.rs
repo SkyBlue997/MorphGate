@@ -63,11 +63,21 @@ fn epoch_keys() {
 }
 
 /// §6.1: the accepted epoch window around day boundaries.
+///
+/// The Phase 1 `accepted_epochs` section is void (Phase 2 spec §6.1, D-42:
+/// the previous epoch is now accepted for 605 s, not 125 s), so its vectors
+/// are skipped; `kat_phase2.rs` checks the Phase 2 section that replaces
+/// them. The cases that the two windows agree on still hold.
 #[test]
 fn accepted_epoch_windows() {
     let kat = kat();
+    let mut checked = 0;
     for case in cases(&kat, "accepted_epochs") {
         let now = case["now_ms"].as_i64().unwrap();
+        let into_day = now.rem_euclid(86_400_000);
+        if (125_001..=605_000).contains(&into_day) {
+            continue; // void by Phase 2 spec §6.1
+        }
         let range = accepted_epochs(now);
         assert_eq!(
             (*range.start(), *range.end()),
@@ -75,7 +85,9 @@ fn accepted_epoch_windows() {
             "{}",
             str_of(case, "name")
         );
+        checked += 1;
     }
+    assert!(checked > 0);
 }
 
 /// §6.2: the length-delimited aad.

@@ -1,16 +1,24 @@
 //! The rule engine (docs/impl/phase1-spec.md §5.4): ordered policy rules,
 //! rate-limiter outcomes and the default matrix (§5.5) combined into one
 //! [`Decision`] plus the per-rule hits of the decision event.
+//!
+//! Phase 2 (docs/impl/phase2-spec.md §5.2): a challenge on a route with
+//! `min_level` is never below that level (D-64), interactive challenges
+//! exist when [`EngineConfig::interactive_available`] is set (§5.1), and in
+//! `schema_version = 2` bundles ([`SitePolicy::with_schema_version`]) a
+//! limiter's challenge is suppressed when the clearance already satisfies it
+//! (D-20). [`SitePolicy::reads_field`] tells the Edge whether any rule reads
+//! a field (§9.1).
 
 use super::eval::{EvalError, EvalResult, eval};
 use super::fields::Activation;
 use super::ip::NamedLists;
 use super::ir::Program;
-use super::matrix::{effective_challenge, matrix};
+use super::matrix::{effective_challenge, higher, matrix, required_level, token_satisfies};
 use crate::context::RequestContext;
 use crate::decision::{Decision, DecisionEvent, HitOutcome, RuleHit};
 use crate::enums::{Action, ChallengeType};
-use crate::extras::{LimiterAction, RateObservation};
+use crate::extras::{LimiterAction, RateObservation, RouteInfo};
 use crate::pipeline::{PolicyEvaluator, PolicyInput, PolicyOutcome};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -115,8 +123,10 @@ pub struct EngineConfig {
     /// Confidence below which a medium-band request is challenged (`scoring.theta_c`).
     pub theta_c: f32,
     pub crawler_policy: CrawlerPolicy,
-    /// Interactive challenges exist (Phase 2). `false` in Phase 1: every
-    /// `interactive` runs as `pow` (D-08).
+    /// Interactive challenges exist: `schema_version = 2`, the bundle's
+    /// `challenge.interactive.enabled` and a manifest v2 SDK catalog, set by
+    /// the Edge (Phase 2 spec §5.1). `false`: every `interactive` runs as
+    /// `pow` (D-08).
     pub interactive_available: bool,
 }
 
@@ -136,6 +146,9 @@ pub struct SitePolicy {
     rules: Vec<Rule>,
     lists: NamedLists,
     config: EngineConfig,
+    /// The bundle's `schema_version` (1 unless set with
+    /// [`SitePolicy::with_schema_version`]).
+    schema_version: u32,
 }
 
 impl fmt::Debug for SitePolicy {
@@ -147,12 +160,18 @@ impl fmt::Debug for SitePolicy {
             )
             .field("lists", &self.lists.names().collect::<Vec<_>>())
             .field("config", &self.config)
+            .field("schema_version", &self.schema_version)
             .finish()
     }
 }
 
 /// Hit annotation of a rule or limiter whose `interactive` ran as `pow` (D-08).
 pub const INTERACTIVE_AS_POW: &str = "phase1.interactive_as_pow";
+
+/// Hit annotation of an exceeded `on_exceed: challenge` limiter whose
+/// challenge the request's clearance already satisfies (D-20, Phase 2 spec
+/// §5.2; `schema_version = 2` only). The limiter does not decide.
+pub const LIMITER_SATISFIED: &str = "clearance.satisfied";
 
 impl SitePolicy {
     /// Sorts `rules` into evaluation order: phase, then `priority`
@@ -168,7 +187,31 @@ impl SitePolicy {
             rules,
             lists,
             config,
+            schema_version: 1,
         }
+    }
+
+    /// Sets the bundle's `schema_version` (Phase 2 spec §3.2, D-66). With 1
+    /// (the default) the engine behaves exactly as in Phase 1; from 2 on, a
+    /// limiter's `on_exceed: challenge` is suppressed when the request's
+    /// clearance already satisfies it (D-20, §5.2).
+    #[must_use]
+    pub fn with_schema_version(mut self, schema_version: u32) -> Self {
+        self.schema_version = schema_version;
+        self
+    }
+
+    /// The bundle's `schema_version`.
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Whether any rule (in any mode, expired or not) reads the field at
+    /// `path` or tests it with `has()`: the path itself, a field below it, or
+    /// a `has()` of one of its ancestors (Phase 2 spec §9.1: the Edge
+    /// verifies `MG-Proof` when `reads_field("identity.proof")` holds).
+    pub fn reads_field(&self, path: &str) -> bool {
+        self.rules.iter().any(|r| r.program.reads(path))
     }
 
     /// The rules in evaluation order.
@@ -289,7 +332,18 @@ impl Run {
 }
 
 impl SitePolicy {
-    fn rule_decision(&self, r: &Rule) -> Decision {
+    /// The challenge actually issued for a rule or limiter that asks for
+    /// `t`: its effective type, raised to the route's effective `min_level`
+    /// (D-64).
+    fn challenge_type(&self, t: ChallengeType, route: &RouteInfo) -> ChallengeType {
+        let ia = self.config.interactive_available;
+        higher(
+            effective_challenge(t, ia),
+            required_level(route.min_level, ia),
+        )
+    }
+
+    fn rule_decision(&self, r: &Rule, route: &RouteInfo) -> Decision {
         let mut d = match &r.action {
             RuleAction::Allow | RuleAction::Log | RuleAction::Tag { .. } => Decision::allow(),
             RuleAction::Block => Decision {
@@ -297,9 +351,7 @@ impl SitePolicy {
                 status: Some(403),
                 ..Decision::default()
             },
-            RuleAction::Challenge(t) => {
-                Decision::challenge(effective_challenge(*t, self.config.interactive_available))
-            }
+            RuleAction::Challenge(t) => Decision::challenge(self.challenge_type(*t, route)),
             RuleAction::RateLimit { retry_after_s } => Decision {
                 action: Action::RateLimit,
                 status: Some(429),
@@ -373,7 +425,7 @@ impl SitePolicy {
             match &r.action {
                 RuleAction::Log => run.force_log = true,
                 RuleAction::Tag { label } => run.tags.push(label.clone()),
-                _ => return Some(self.rule_decision(r)),
+                _ => return Some(self.rule_decision(r, input.extras.route)),
             }
         }
         None
@@ -381,7 +433,9 @@ impl SitePolicy {
 
     /// §5.4 `apply_limiters()`: the first exceeded enforce-mode limiter with
     /// a decision action is terminal; dry-run limiters only leave a hit.
-    fn apply_limiters(&self, rate: &[RateObservation], run: &mut Run) -> Option<Decision> {
+    fn apply_limiters(&self, input: &PolicyInput<'_>, run: &mut Run) -> Option<Decision> {
+        let rate: &[RateObservation] = input.extras.rate;
+        let route = input.extras.route;
         for obs in rate.iter().filter(|o| o.exceeded) {
             let rule_id = format!("ratelimit.{}", obs.limiter_id);
             let (action, fields) = match obs.action {
@@ -424,7 +478,27 @@ impl SitePolicy {
                     ..Decision::default()
                 },
                 LimiterAction::Challenge(t) => {
-                    Decision::challenge(effective_challenge(t, self.config.interactive_available))
+                    let t = self.challenge_type(t, route);
+                    // D-20 for limiters (Phase 2 spec §5.2, schema 2 only).
+                    if self.schema_version >= 2
+                        && token_satisfies(
+                            &input.ctx.identity.token,
+                            t,
+                            self.config.interactive_available,
+                        )
+                    {
+                        let mut fields = fields;
+                        fields.push(LIMITER_SATISFIED.to_string());
+                        run.hit(
+                            rule_id,
+                            HitOutcome::Matched,
+                            RuleMode::Enforce,
+                            action,
+                            fields,
+                        );
+                        continue;
+                    }
+                    Decision::challenge(t)
                 }
             };
             run.hit(
@@ -459,7 +533,7 @@ impl PolicyEvaluator for SitePolicy {
         if let Some(d) = self.eval_rules(early, input, &act, &mut run) {
             return run.finish(d);
         }
-        if let Some(d) = self.apply_limiters(input.extras.rate, &mut run) {
+        if let Some(d) = self.apply_limiters(input, &mut run) {
             return run.finish(d);
         }
         if let Some(d) = self.eval_rules(late, input, &act, &mut run) {
@@ -467,6 +541,10 @@ impl PolicyEvaluator for SitePolicy {
         }
         let d = matrix(input.ctx, input.extras.route, input.risk, &self.config);
         run.finish(d)
+    }
+
+    fn reads_field(&self, path: &str) -> bool {
+        SitePolicy::reads_field(self, path)
     }
 }
 

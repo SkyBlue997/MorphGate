@@ -1,6 +1,6 @@
 [package]
 name = "mg-challenge"
-description = "MorphGate challenge cryptography: sealed challenges, epoch keys, SHA-256 PoW, PASETO v4.local clearance tokens (Phase 1)"
+description = "MorphGate challenge cryptography: sealed challenges, epoch keys, SHA-256 PoW, PASETO v4.local clearance tokens, session keys and MG-Proof (Phases 1 and 2)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,8 @@ repository.workspace = true
 
 # Pure library: no network or file I/O, no clock reads, no threads. Time is a
 # parameter and randomness comes from the injected `Rng` (docs/impl/phase1-spec.md §6).
-# The one exception is PASETO's internal nonce, which pasetors draws from the OS RNG.
+# The one exception is PASETO's internal nonce, which pasetors draws from the OS RNG
+# (and, behind the `testkit` feature only, the ECDSA signatures of test session keys).
 [dependencies]
 mg-core.workspace = true
 mg-proto.workspace = true
@@ -28,6 +29,14 @@ zeroize.workspace = true
 base64.workspace = true
 # ES256 verification only (Phase 2 spec §1.2, §6.5); tests also sign with it.
 aws-lc-rs.workspace = true
+
+[features]
+# Test helpers (session-key signing, MG-Proof construction, the v2 PoW
+# solver) for the Edge's integration tests (Phase 2 spec §17 WP-R5).
+testkit = []
+
+[dev-dependencies]
+mg-challenge = { path = ".", features = ["testkit"] }
 
 [lints]
 workspace = true

@@ -14,7 +14,8 @@
 use crate::b64;
 use crate::bind::BIND_HASH_LEN;
 use crate::keys::{
-    MAX_C_LIFETIME_MS, SealKeys, accepted_epochs, derive_epoch_key, epoch_no, parse_epoch_kid,
+    MAX_C_LIFETIME_MS, MAX_INTERACTIVE_C_LIFETIME_MS, SealKeys, accepted_epochs, derive_epoch_key,
+    epoch_no, parse_epoch_kid,
 };
 use crate::pow::{MAX_POW_BITS, POW_ALG};
 use crate::rng::{Rng, RngError, random_array};
@@ -33,6 +34,10 @@ use zeroize::Zeroizing;
 
 /// Longest accepted `C` (characters of base64url).
 pub const MAX_C_LEN: usize = 1024;
+/// How long after its expiry an interactive `C` still opens for
+/// `/__mg/c/renew` (Phase 2 spec §6.10, §7.4 step 4): one hour, for example
+/// for a tab that slept.
+pub const RENEW_MAX_EXPIRED_MS: i64 = 3_600_000;
 /// Longest host name (a DNS name is at most 253 bytes; spec §9.4).
 pub const MAX_HOST_LEN: usize = 253;
 
@@ -61,6 +66,15 @@ pub fn aad(host: &str, ty: ChallengeType, kid: &str) -> Vec<u8> {
         out.extend_from_slice(part.as_bytes());
     }
     out
+}
+
+/// The longest lifetime `exp − iat` of a challenge of type `ty` (Phase 2
+/// spec §6.1): 600 s for interactive challenges, 120 s for every other type.
+pub fn max_c_lifetime_ms(ty: ChallengeType) -> i64 {
+    match ty {
+        ChallengeType::Interactive => MAX_INTERACTIVE_C_LIFETIME_MS,
+        _ => MAX_C_LIFETIME_MS,
+    }
 }
 
 /// A fresh 128-bit single-use challenge nonce.
@@ -103,7 +117,8 @@ impl Sealer {
     /// for `host` with `roots[0]`.
     ///
     /// Refuses claims that [`Sealer::open`] would reject: `claims.check` at
-    /// `iat_ms` or a lifetime above [`MAX_C_LIFETIME_MS`] for any type
+    /// `iat_ms` or a lifetime above [`max_c_lifetime_ms`] of the type (600 s
+    /// interactive, 120 s otherwise; Phase 2 spec §6.1)
     /// ([`SealError::Invalid`]), another site, a missing or
     /// malformed PoW, `ret` or binding (`uah` and `ipp` are required: no `C`
     /// is issued for an unknown client IP, D-23), or an empty or overlong
@@ -121,9 +136,10 @@ impl Sealer {
             .filter(|&e| e == epoch_no(claims.iat_ms))
             .ok_or(SealError::Kid)?;
         claims.check(claims.iat_ms).map_err(SealError::Invalid)?;
-        // The accepted-epoch window (spec §6.1) is sized for this lifetime; a
-        // longer-lived C sealed before midnight would become unopenable.
-        if claims.exp_ms.saturating_sub(claims.iat_ms) > MAX_C_LIFETIME_MS {
+        // The accepted-epoch window (spec §6.1) is sized for these lifetimes;
+        // a longer-lived C sealed before midnight would become unopenable.
+        // `check` enforces the same per-type limit; this keeps it explicit.
+        if claims.exp_ms.saturating_sub(claims.iat_ms) > max_c_lifetime_ms(claims.challenge_type) {
             return Err(SealError::Invalid(ClaimsError::InvalidLifetime));
         }
         if claims.site != self.site || !has_valid_shape(claims) {
@@ -164,9 +180,84 @@ impl Sealer {
         claimed: ChallengeType,
         now_ms: i64,
     ) -> Result<SealedChallengeClaims, OpenError> {
+        let epochs = accepted_epochs(now_ms);
+        let claims = self.open_claims(c, host, claimed, |epoch| {
+            if epochs.contains(&epoch) {
+                Ok(())
+            } else {
+                Err(OpenError::Kid)
+            }
+        })?;
+        // 5. Structure and expiry.
+        claims.check(now_ms).map_err(|e| match e {
+            ClaimsError::Expired => OpenError::Expired,
+            other => OpenError::Invalid(other),
+        })?;
+        Ok(claims)
+    }
+
+    /// Opens an interactive `c` for `/__mg/c/renew` (Phase 2 spec §6.10,
+    /// §7.4 step 4): as [`Sealer::open`] with the type `interactive`, but the
+    /// epochs accepted at `now_ms − RENEW_MAX_EXPIRED_MS` are accepted too,
+    /// and a `C` that expired at most [`RENEW_MAX_EXPIRED_MS`] ago opens.
+    ///
+    /// Returns the claims and whether the `C` has expired. A `C` that expired
+    /// longer ago, or whose epoch lies before the extended window, is
+    /// [`RenewOpenError::TooOld`] (`ic.c_expired`, not counted as a failure);
+    /// everything else that `open` rejects is [`RenewOpenError::Open`] with
+    /// the same error, checked in the same order. An expired `C` must pass
+    /// every other rule of `SealedChallengeClaims::check`.
+    pub fn open_for_renew(
+        &self,
+        c: &str,
+        host: &str,
+        now_ms: i64,
+    ) -> Result<(SealedChallengeClaims, bool), RenewOpenError> {
+        let current = accepted_epochs(now_ms);
+        let earlier = accepted_epochs(now_ms.saturating_sub(RENEW_MAX_EXPIRED_MS));
+        // Both windows are runs of consecutive epochs an hour apart: the
+        // earlier one ends at least at the epoch before the current one
+        // starts, so their union is a single range.
+        let (first, last) = (*earlier.start(), *current.end());
+        let claims = self.open_claims(c, host, ChallengeType::Interactive, |epoch| {
+            if epoch < first {
+                Err(RenewOpenError::TooOld)
+            } else if epoch > last {
+                Err(RenewOpenError::Open(OpenError::Kid))
+            } else {
+                Ok(())
+            }
+        })?;
+        let invalid = |e: ClaimsError| RenewOpenError::Open(OpenError::Invalid(e));
+        match claims.check(now_ms) {
+            Ok(()) => Ok((claims, false)),
+            Err(ClaimsError::Expired) => {
+                if now_ms.saturating_sub(claims.exp_ms) > RENEW_MAX_EXPIRED_MS {
+                    return Err(RenewOpenError::TooOld);
+                }
+                // `check` reports expiry before the binding rules: run it
+                // again at the last instant the C was live.
+                claims
+                    .check(claims.exp_ms.saturating_sub(1))
+                    .map_err(invalid)?;
+                Ok((claims, true))
+            }
+            Err(other) => Err(invalid(other)),
+        }
+    }
+
+    /// Steps 1–4 of [`Sealer::open`]; `check_epoch` decides step 2 for a
+    /// well-formed epoch kid (a malformed one is [`OpenError::Kid`]).
+    fn open_claims<E: From<OpenError>>(
+        &self,
+        c: &str,
+        host: &str,
+        claimed: ChallengeType,
+        check_epoch: impl FnOnce(u64) -> Result<(), E>,
+    ) -> Result<SealedChallengeClaims, E> {
         // 1. Size, encoding and envelope.
         if c.len() > MAX_C_LEN {
-            return Err(OpenError::TooLong);
+            return Err(OpenError::TooLong.into());
         }
         let raw = b64::decode(c).ok_or(OpenError::Encoding)?;
         let envelope = SealedChallenge::decode(raw.as_slice()).map_err(|_| OpenError::Envelope)?;
@@ -175,10 +266,10 @@ impl Sealer {
         // the PoW prefix (and in Phase 2 the SDK signature) covers the text
         // of C, so one challenge must not have several accepted spellings.
         if envelope.encoded_len() != raw.len() || envelope.encode_to_vec() != raw {
-            return Err(OpenError::Envelope);
+            return Err(OpenError::Envelope.into());
         }
         if envelope.v != ENVELOPE_VERSION || envelope.ct.len() < TAG_LEN {
-            return Err(OpenError::Envelope);
+            return Err(OpenError::Envelope.into());
         }
         let xnonce: [u8; XNONCE_LEN] = envelope
             .xnonce
@@ -188,14 +279,12 @@ impl Sealer {
 
         // 2. Epoch.
         let epoch = parse_epoch_kid(&envelope.kid).ok_or(OpenError::Kid)?;
-        if !accepted_epochs(now_ms).contains(&epoch) {
-            return Err(OpenError::Kid);
-        }
+        check_epoch(epoch)?;
 
         // 3. AEAD under every root, in order. A host that cannot have been
         //    sealed opens under no key.
         if host.is_empty() || host.len() > MAX_HOST_LEN {
-            return Err(OpenError::Aead);
+            return Err(OpenError::Aead.into());
         }
         let aad = aad(host, claimed, &envelope.kid);
         let nonce = XNonce::from(xnonce);
@@ -221,14 +310,8 @@ impl Sealer {
             c.kid == envelope.kid && c.site == self.site && c.challenge_type == claimed
         })?;
         if !has_valid_shape(&claims) {
-            return Err(OpenError::Shape);
+            return Err(OpenError::Shape.into());
         }
-
-        // 5. Structure and expiry.
-        claims.check(now_ms).map_err(|e| match e {
-            ClaimsError::Expired => OpenError::Expired,
-            other => OpenError::Invalid(other),
-        })?;
         Ok(claims)
     }
 
@@ -347,6 +430,31 @@ impl OpenError {
     }
 }
 
+/// Why [`Sealer::open_for_renew`] rejected a challenge (Phase 2 spec §7.4
+/// step 4).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RenewOpenError {
+    /// Expired more than [`RENEW_MAX_EXPIRED_MS`] ago, or sealed in an epoch
+    /// before the extended window: `ic.c_expired`, not counted as a failure;
+    /// the SDK reloads the page.
+    #[error("challenge expired too long ago to be renewed")]
+    TooOld,
+    /// Anything else `open` rejects (`ic.c_invalid` / `ic.c_kid`).
+    #[error(transparent)]
+    Open(#[from] OpenError),
+}
+
+impl RenewOpenError {
+    /// Internal reason code: `ic.c_expired` for [`RenewOpenError::TooOld`],
+    /// else that of the [`OpenError`].
+    pub fn reason_code(&self) -> &'static str {
+        match self {
+            Self::TooOld => "ic.c_expired",
+            Self::Open(e) => e.reason_code(),
+        }
+    }
+}
+
 /// The AEAD keyed with an epoch key. The key is borrowed in place (no
 /// unzeroized copy) and the cipher zeroizes its own copy on drop.
 fn cipher(key: &[u8; 32]) -> XChaCha20Poly1305 {
@@ -355,10 +463,11 @@ fn cipher(key: &[u8; 32]) -> XChaCha20Poly1305 {
 
 /// Step 4 shape checks shared by seal and open: PoW present with a known
 /// algorithm (`sha256-hashcash-v1`, or `-v2` of Phase 2; which one a type
-/// needs, and `k`, are rules of `SealedChallengeClaims::check`, Phase 2 spec
-/// §6.2) and at most 32 bits, a 16-byte `ret` hash, `uah` and `ipp` bound
-/// with 16-byte hashes, every other binding absent or 16 bytes. (The 16-byte
-/// nonce is enforced by the native type.)
+/// needs, `k` and `a11y_difficulty` are rules of
+/// `SealedChallengeClaims::check`, Phase 2 spec §6.2) and at most 32 bits, a
+/// 16-byte `ret` hash, `uah` and `ipp` bound with 16-byte hashes, every
+/// other binding absent or 16 bytes. (The 16-byte nonce is enforced by the
+/// native type.)
 fn has_valid_shape(c: &SealedChallengeClaims) -> bool {
     let pow_ok = c.pow.as_ref().is_some_and(|p| {
         (p.alg == POW_ALG || p.alg == SealedChallengeClaims::POW_ALG_V2)

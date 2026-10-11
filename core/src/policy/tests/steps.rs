@@ -58,12 +58,17 @@ const INT_FIELDS: &[&str] = &[
     "net.asn",
     "edge_tls.hello_len",
     "identity.token.age",
+    "identity.token.level_age",
     "risk.score",
 ];
 const BOOL_FIELDS: &[&str] = &[
     "net.tor",
     "upstream.authenticated",
     "identity.proof.valid",
+    "identity.proof.present",
+    "identity.proof.replayed",
+    "identity.token.bound",
+    "http.navigation",
     "identity.crawler.verified",
 ];
 const LIST_FIELDS: &[&str] = &["labels", "risk.reasons", "http.header_order"];
@@ -225,6 +230,7 @@ fn missing(r: &mut Rng) -> MissingSet {
         "net.ip",
         "edge_tls",
         "identity.proof",
+        "identity.proof.replayed",
     ];
     MissingSet::new(pool.iter().filter(|_| r.below(3) == 0)).unwrap()
 }
