@@ -16,19 +16,24 @@ mod ir;
 mod matrix;
 
 pub use engine::{
-    CrawlerAction, CrawlerPolicy, EngineConfig, INTERACTIVE_AS_POW, Phase, Rule, RuleAction,
-    RuleMode, SitePolicy, in_rollout,
+    CrawlerAction, CrawlerPolicy, EngineConfig, INTERACTIVE_AS_POW, LIMITER_SATISFIED, Phase, Rule,
+    RuleAction, RuleMode, SitePolicy, in_rollout,
 };
 pub use eval::{EvalError, EvalResult, eval, eval_steps};
 pub use fields::{
     Activation, AgentNs, CrawlerNs, EdgeTlsNs, FieldId, HasPath, HttpNs, IdentityNs, Ja4Ns,
     MissingSet, NetNs, ProofNs, ReqNs, RiskNs, RouteNs, TlsNs, TokenNs, UnknownField, UpstreamNs,
+    is_exempt_navigation, proof_missing, proof_verification_needed,
 };
 pub use glob::{Glob, GlobError, MAX_GLOB_LEN};
 pub use ip::{NamedList, NamedLists};
 pub use ir::{
     COMPUTED_MAP_INDEX, CompareOp, Expr, ListId, Literal, MAX_DEPTH, MAX_LIST_LITERAL, MAX_NODES,
     MAX_STEPS, MAX_STRING_LITERAL, NAMED_LIST_CAP, Program, ProgramError, StringFn, max_steps,
+};
+pub use matrix::{
+    challenge_rank, effective_challenge, level_rank, level_satisfies, required_level,
+    token_satisfies,
 };
 
 #[cfg(test)]
