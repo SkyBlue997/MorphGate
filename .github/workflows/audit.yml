@@ -31,7 +31,8 @@ env:
   # crate against the SHA-256 in the crates.io index (--locked uses the
   # tool's own Cargo.lock), Go checks modules against the checksum database.
   CARGO_DENY_VERSION: "0.20.2"
-  GOVULNCHECK_VERSION: "v1.8.0"
+  # govulncheck v1.8.0 and later need Go 1.26; the modules are on Go 1.25.
+  GOVULNCHECK_VERSION: "v1.7.0"
 
 jobs:
   rust:

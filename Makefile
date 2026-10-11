@@ -99,7 +99,7 @@ lab-e2e: ## Validation Lab Phase 1 scenarios end to end on loopback (mg-edge, va
 # advisory database, vuln.go.dev, the npm registry), so it is not part of
 # `check`; CI runs it on every pull request and weekly.
 CARGO_DENY_VERSION := 0.20.2
-GOVULNCHECK_VERSION := v1.8.0
+GOVULNCHECK_VERSION := v1.7.0
 audit: ## Dependency audit: cargo-deny (deny.toml), govulncheck, pnpm audit
 	@command -v cargo-deny >/dev/null || { echo "audit: install cargo-deny: cargo install cargo-deny --version $(CARGO_DENY_VERSION) --locked"; exit 1; }
 	cargo deny --locked check --hide-inclusion-graph

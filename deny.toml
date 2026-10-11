@@ -8,7 +8,13 @@ all-features = true
 # Vulnerabilities and unsound crates fail; so does a yanked version in
 # Cargo.lock. An ignore entry names the advisory and why it does not apply.
 yanked = "deny"
-ignore = []
+ignore = [
+  # derivative is unmaintained, with no vulnerability reported. It is a
+  # compile-time proc-macro that only pingora-core (pinned =0.9.0, bumped
+  # only on purpose) uses; drop this entry with the next Pingora bump that
+  # no longer pulls it in.
+  { id = "RUSTSEC-2024-0388", reason = "unmaintained proc-macro used only by pinned pingora-core 0.9" },
+]
 
 [licenses]
 # Permissive licenses only (the workspace is Apache-2.0).
