@@ -281,6 +281,24 @@
 | 托管服务 | 只在想省运维时使用；数据面从不同步访问数据库，自动暂停的 serverless PostgreSQL 可用，但控制面要容忍 15–30 s 冷连接 |
 | 备份 | 每晚把 Valkey RDB、pg_dump / SQLite 文件、VictoriaMetrics / VictoriaLogs 快照写入对象存储 |
 
+**单机形态**（Phase 1 之后补充，受支持的部署形态）
+
+"最小生产"一行的具体做法：cloudflared、mg-edge、源站与 Valkey 在同一台主机上，只有一台 Edge。它放弃了主机级高可用（单副本时主机或 cloudflared 故障即站点不可用），其余防护与推荐形态相同。
+
+| 项 | 做法 |
+|---|---|
+| Valkey | 本机 Valkey，只监听回环（`bind 127.0.0.1 -::1`），`edge.toml` 用 `[valkey] mode = "valkey"`、`url = "redis://edge@127.0.0.1:6379/0"`，口令与 ACL 按 [规格 §17](impl/phase1-spec.md#17-所有者运维手册代码之外) 第 2 步；`appendonly yes`、`appendfsync everysec`，`maxmemory-policy noeviction`。比 `mode = "local"` 多的是：限速状态与重放集合跨 Edge 重启和平滑升级保留，`mg:ev` 事件流可用 |
+| 重放结论 | 只有这一台 Edge，所以设 `local_replay_authoritative = true`：Valkey 短暂不可用时，进程内集合（Valkey 模式下同时写入）即为结论，`fail_closed` 路由不必为此返回 429。仍有两个例外：集合溢出，以及平滑升级后签发于新进程启动之前的 C（≤ 120 s），都按"重放存储不可用"处理（D-35）。第二台 Edge 上线之前必须先改回 `false` |
+| 指标与日志 | VictoriaMetrics、VictoriaLogs 可选。没有 VictoriaLogs 时 `[events]` 可只配 `file`（或不配）；没有 vmalert 时，§17 第 2 步的告警由所有者在 monitor 周每日手工看 `/metrics`。应用日志写 journald 命名空间 `morphgate`，保留 14 天（`deploy/systemd/journald@morphgate.conf`） |
+| 配置包 | `bundle_root` 用本机目录（`file://`），`mgctl bundle publish` 的输出直接放到该目录，不需要静态文件服务器 |
+
+`mgctl cf audit` 第 18 项（运行时指标）只在给了 `--vm-url` 时检查，否则为 `skip`：不计入错误，但也不是通过，[规格 §18](impl/phase1-spec.md#18-验收映射) 的"全绿"要求第 18 项另有证据。本机跑着 VictoriaMetrics 时直接 `--vm-url http://127.0.0.1:8428`。没有时，用 Edge 自己的 `metrics_listen` 做同样的判断：
+
+1. 记下 `systemctl show -p MainPID mg-edge` 与 `curl -s http://127.0.0.1:9901/metrics`（端口按 `edge.toml`）的输出，24 小时后再记一次。两次 `MainPID` 必须相同：重启或 `reload` 会让计数器归零，此时重新开始计时。
+2. 两次之间的增量里，`mg_cf_connecting_ip_missing_total{site=…}`、`mg_upstream_auth_failures_total{reason="bad_secret_header"}`、`mg_cf_foreign_worker_total{site=…}` 都必须为 0，否则判为失败（与第 18 项相同）。
+3. `mg_upstream_signal_missing_total{profile="cloudflare"}` 按 `signal` 取增量（`hdr-names` 除外），最大值除以 `mg_requests_total` 的增量之和，应小于 1%；`mg_requests_total` 增量为 0 说明这 24 小时没有流量或拿错了 Edge，不能作为证据。
+4. 两份快照与结论随 `cf audit --json` 的输出一起留档，作为第 18 项的证据。
+
 **不用的组件**
 
 | 组件 | 原因 |

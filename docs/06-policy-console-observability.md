@@ -361,7 +361,7 @@ Draft
 | DecisionEvent 明细 | 30 天（VictoriaLogs `vl-main`） |
 | Challenge / SDK 遥测 | 事件明细 7 天（`vl-short`）；聚合（量化分布，不含个人标识）随指标存于 VictoriaMetrics，13 个月 |
 | Edge 指标 | 13 个月（VictoriaMetrics） |
-| Edge 应用日志（journald） | ≤ 14 天（`SystemMaxRetentionSec=14day`） |
+| Edge 应用日志（journald） | ≤ 14 天。Phase 1 之后：mg-edge 写入独立的 journald 命名空间 `morphgate`（单元的 `LogNamespace=`），由 `deploy/systemd/journald@morphgate.conf` 的 `MaxRetentionSec=14day` 设定，不影响主机上其他服务；原做法 `SystemMaxRetentionSec=14day` 作用于整台主机 |
 | 最小访问记录归档 | 对象存储 ≥ 6 个月 |
 | 审计日志 | ≥ 1 年 |
 | 备份 | 滚动覆盖；删除请求在备份过期后完全生效 |
