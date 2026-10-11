@@ -435,7 +435,7 @@ Phase 1 由所有者在工作站运行 `mgctl cf audit --site-config <site.yaml>
 
 - **模板下发**（可选写权限）：`mgctl cf apply` 按 §2.3、§2.6、§2.7 生成并更新规则，只改 `ref` 以 `mg_` 开头的规则（Phase 3；Phase 1 由所有者按 [`adapters/cloudflare/README.md`](../adapters/cloudflare/README.md) 手工应用模板）。
 - **Turnstile widget 管理**：见 [09 §8.1](09-interactive-challenge.md#81-widget-与控制面)。
-- **API Token 最小权限**：审计只用 zone 级只读权限；启用 `apply` 时才加对应的写权限；Turnstile 只需 Turnstile Sites Write。zone 级权限的具体名称需确认。
+- **API Token 最小权限**：审计只用 zone 级只读权限（Tunnel 接入时另加账户级的隧道读取）；启用 `apply` 时才加对应的写权限；Turnstile 只需 Turnstile Sites Write。审计 token 的权限名已于 2026-10 实测，见 [`adapters/cloudflare/README.md`](../adapters/cloudflare/README.md#审计-token-的权限)；`managed_headers` 由 Bot Management 读取放行。
 
 ### 2.11 IP 段同步
 

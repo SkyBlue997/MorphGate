@@ -176,6 +176,25 @@ mgctl cf audit --site-config site.yaml --cf-ips intel/cloudflare-ips.json \
 - 第 14 项把 `and not starts_with(http.request.uri.path, "/__mg/")` 这类简单排除项视为不覆盖；否定一个复合条件（`not (a and …)`）仍算覆盖。
 - `--json` 输出机器可读结果；`--metrics-textfile` 写 `mg_cf_audit_failed_checks{zone, check}` 与 `mg_cf_audit_last_run_timestamp_seconds{zone}`，供 node_exporter textfile collector 采集。
 
+### 审计 token 的权限
+
+2026-10 在一个 Free 套餐、Tunnel 接入的 zone 上实测：下表权限全部选「读取」（Read），范围限定为该 zone，加上读隧道状态的账户级权限，21 项里除第 17 项（没有读取接口）外都能自动判定。"未实测"的中文名以控制台为准。
+
+| 权限（英文控制台） | 中文控制台 | 用到它的检查 |
+|---|---|---|
+| Zone | 区域 | 按域名查 zone 与套餐（所有检查） |
+| Zone Settings | 区域设置 | 2、7、8、15、21 |
+| Transform Rules | 转换规则 | 6 |
+| Cache Rules | Cache Rules | 12、13 |
+| Zone WAF | 区域 WAF | 10、11、14、20（custom rules 与限速入口规则集） |
+| Bot Management | 自动程序管理 | 4、5（`managed_headers`），9、10、16（`bot_management`） |
+| SSL and Certificates | （未实测） | 1、3（仅 `origin_mode: aop`） |
+| Cloudflare Tunnel（账户级） | （未实测） | 1（仅 `origin_mode: tunnel`） |
+
+- `GET /zones/{z}/managed_headers`（"Add visitor location headers"、"Remove visitor IP headers"）由 **Bot Management 读取** 放行，不是 Transform Rules；控制台里没有单独的 Managed Transforms 权限。
+- 中文控制台把 Bot Management 译作「自动程序管理」，搜英文名或"机器人"找不到。
+- 权限名可能随 Cloudflare 控制台改名；`manual` 明细里的提示与本表一致（`control-plane/internal/cfaudit/checks.go` 的 `permissionHints`）。
+
 ## 本地校验
 
 ```bash

@@ -597,21 +597,16 @@ impl EdgeProxy {
                 .await;
         }
 
-        // Missing trusted signals of requests that go on (a local health
-        // check without Cloudflare headers is not an upstream problem).
+        // A missing client IP of requests that go on (a local health check
+        // without Cloudflare headers is not an upstream problem). Missing
+        // signals are counted in `record`, with `mg_requests_total` (I-42).
         if let Some(cf) = &ctx.cf
             && ctx.route_kind != RouteKind::Healthz
+            && matches!(cf.client_ip, ClientIp::Unknown { .. })
         {
-            for signal in &cf.missing_signals {
-                m.upstream_signal_missing
-                    .with_label_values(&["cloudflare", signal])
-                    .inc();
-            }
-            if matches!(cf.client_ip, ClientIp::Unknown { .. }) {
-                m.cf_connecting_ip_missing
-                    .with_label_values(&[site_id])
-                    .inc();
-            }
+            m.cf_connecting_ip_missing
+                .with_label_values(&[site_id])
+                .inc();
         }
 
         // Nothing below reads the removed headers: drop them from the
@@ -1122,6 +1117,17 @@ impl EdgeProxy {
             k_pseudo: &self.shared.k_pseudo,
         };
         let redact = ctx.redact_as.as_deref();
+        // The missing-signal counter covers exactly the requests that
+        // mg_requests_total counts, so their ratio is the §17 / cf audit
+        // check 18 missing rate (I-42): not /__mg/* requests or ones answered
+        // before the decision step.
+        if ctx.evaluation.is_some() || ctx.decision.is_some() {
+            for signal in ctx.cf.iter().flat_map(|cf| &cf.missing_signals) {
+                m.upstream_signal_missing
+                    .with_label_values(&["cloudflare", signal])
+                    .inc();
+            }
+        }
         let mut records = Vec::with_capacity(3);
         if let Some(rec) = ctx.evaluation.take() {
             let rec = *rec;
