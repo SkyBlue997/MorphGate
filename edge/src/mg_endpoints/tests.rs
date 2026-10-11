@@ -206,6 +206,7 @@ impl Req {
             ts_ms: now_ms(),
             site_id: "blog",
             route: &route,
+            monitor: false,
             profile: ListenerProfile::DirectTls,
             auth_method: "none",
             cf: None,

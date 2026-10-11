@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -158,9 +160,13 @@ func (r *runner) bundleSign(args []string) int {
 		return cli.ExitInternal
 	}
 	sum := bundle.Summarize(&sb, data, signed, file)
+	diff := map[string]any{"version": sb.Version, "sha256": sum.BundleSHA256, "rules": sum.Rules, "monitor_only": sb.MonitorOnly, "key_id": key.KID}
+	if len(sum.RouteModes) > 0 {
+		diff["route_modes"] = sum.RouteModes
+	}
 	if !r.record(cmd, cli.AuditEvent{
 		Action: "bundle.sign", ResourceType: "bundle", ResourceID: fmt.Sprintf("%s@%d", sb.SiteId, sb.Version), Site: sb.SiteId,
-		Diff: map[string]any{"version": sb.Version, "sha256": sum.BundleSHA256, "rules": sum.Rules, "monitor_only": sb.MonitorOnly, "key_id": key.KID},
+		Diff: diff,
 	}) {
 		return cli.ExitInternal
 	}
@@ -231,6 +237,13 @@ func (r *runner) bundleVerify(args []string) int {
 	fmt.Fprintf(w, "site %s  version %d  created %s  profile %s  monitor_only %v\n", sum.Site, sum.Version, sum.CreatedAt, sum.Profile, sum.MonitorOnly)
 	if sum.NotBefore != "" {
 		fmt.Fprintf(w, "not before %s\n", sum.NotBefore)
+	}
+	if len(sum.RouteModes) > 0 {
+		routes := slices.Sorted(maps.Keys(sum.RouteModes))
+		for i, k := range routes {
+			routes[i] = k + "=" + sum.RouteModes[k]
+		}
+		fmt.Fprintf(w, "route modes %s\n", strings.Join(routes, ","))
 	}
 	fmt.Fprintf(w, "hosts %s  listeners %s  token kids %s\n", strings.Join(sum.Hosts, ","), strings.Join(sum.AllowedListeners, ","), strings.Join(sum.TokenKeyIDs, ","))
 	for _, e := range sum.Environments {

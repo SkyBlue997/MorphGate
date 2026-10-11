@@ -150,7 +150,8 @@ pub struct EnforceInput<'a> {
     /// The request carries `Early-Data` (any instance counts as `1`,
     /// `crate::context::early_data`).
     pub early_data: bool,
-    /// Global monitor (`SiteBundle.monitor_only`): record, never enforce.
+    /// Monitor (`SiteBundle.monitor_only` resolved through the route mode,
+    /// I-36): record, never enforce.
     pub monitor: bool,
 }
 
@@ -384,7 +385,7 @@ pub async fn evaluate(
             route: facts.route,
             client_ip_known: built.ctx.net.ip.is_some(),
             early_data: built.ctx.http.early_data,
-            monitor: bundle.monitor_only,
+            monitor: facts.monitor,
         },
     );
     DecisionRecord {
@@ -396,7 +397,7 @@ pub async fn evaluate(
         force_log: eval.outcome.force_log,
         latency_us: u32::try_from(elapsed.as_micros()).unwrap_or(u32::MAX),
         bundle_version: bundle.version,
-        monitor_only: bundle.monitor_only,
+        monitor_only: facts.monitor,
         route: facts.route.clone(),
         enforcement,
         bind,

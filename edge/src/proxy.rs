@@ -688,6 +688,7 @@ impl EdgeProxy {
                     bundle.case_insensitive_paths,
                     &FALLBACK_ROUTE,
                 );
+                let monitor = rm.monitor(bundle.monitor_only);
                 let route = RouteInfo {
                     id: rm.route.id.clone(),
                     name: rm.route.name.clone(),
@@ -719,6 +720,7 @@ impl EdgeProxy {
                     http_version,
                     site_id,
                     &route,
+                    monitor,
                     bundle,
                     &method,
                     &target,
@@ -838,6 +840,7 @@ impl EdgeProxy {
         http_version: &'static str,
         site_id: &'a str,
         route: &'a RouteInfo,
+        monitor: bool,
         bundle: &BundleRuntime,
         method: &'a str,
         target: &'a Target,
@@ -862,6 +865,7 @@ impl EdgeProxy {
             ts_ms: ctx.ts_ms,
             site_id,
             route,
+            monitor,
             profile: self.listener.profile,
             auth_method: ctx.auth_method,
             cf: ctx.cf.as_ref(),
@@ -953,6 +957,8 @@ impl EdgeProxy {
                 http_version,
                 site_id,
                 &route,
+                // Only the context is built here; no decision is executed.
+                bundle.monitor_only,
                 bundle,
                 method,
                 &ctx.target,

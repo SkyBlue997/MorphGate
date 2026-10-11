@@ -16,7 +16,7 @@ mod common;
 use common::{TestEnv, blog_bundle, cf, get, repo, sign};
 use mg_edge::config::{CredRef, EdgeConfig};
 use mg_edge::creds::{CredResolver, read_secret};
-use mg_edge::sites::{SiteKeys, SiteSettings, SiteState, build_runtime};
+use mg_edge::sites::{RouteMode, SiteKeys, SiteSettings, SiteState, build_runtime};
 use mg_edge::startup::Startup;
 use mg_edge_core::bundle::{Fetcher, metrics, poll_loop, verify_bundle};
 use mg_edge_core::testkit::http::{
@@ -72,6 +72,7 @@ fn golden_bundles_convert_through_the_full_site_runtime() {
     let rt = build_runtime(&settings, &keys, &vb, &BTreeMap::new()).unwrap();
     assert_eq!(rt.version, 1_790_000_000);
     assert!(rt.monitor_only && rt.case_insensitive_paths);
+    assert!(!rt.has_enforce_route);
     assert_eq!(rt.upstream_kind, mg_core::UpstreamProfileKind::Cloudflare);
     assert_eq!(rt.token_keys.active_kid(), "blog-t-20260927");
     let prod = rt.env_for_host("www.example.com").unwrap();
@@ -154,6 +155,20 @@ fn runtime_conversion_rejects_what_the_edge_cannot_run() {
         e.contains("upstream.kind") && e.contains("cf-tunnel"),
         "{e}"
     );
+
+    // Route modes (I-36): converted, and an unknown value is refused.
+    let mut b = blog_bundle(1);
+    b.environments[0].routes[0].mode = mg_proto::v1::RouteMode::Enforce as i32;
+    let rt = convert(&b, &none).unwrap();
+    assert!(rt.has_enforce_route);
+    assert_eq!(rt.environments[0].routes[0].mode, RouteMode::Enforce);
+    b.environments[0].routes[0].mode = mg_proto::v1::RouteMode::Monitor as i32;
+    let rt = convert(&b, &none).unwrap();
+    assert!(!rt.has_enforce_route);
+    assert_eq!(rt.environments[0].routes[0].mode, RouteMode::Monitor);
+    b.environments[0].routes[0].mode = 7;
+    let e = convert(&b, &none).unwrap_err();
+    assert!(e.contains("mode 7 is unknown"), "{e}");
 
     // A token kid that the site's key file does not have.
     let mut b = blog_bundle(1);

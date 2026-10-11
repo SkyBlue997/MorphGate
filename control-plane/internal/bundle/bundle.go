@@ -260,6 +260,7 @@ func (b *builder) environment(env sitecfg.Environment) *morphgatev1.Environment 
 			FailClosed:       r.FailClosed,
 			RequireClearance: r.RequireClearance,
 			RedactPath:       r.RedactPath,
+			Mode:             routeMode(r.Mode),
 		})
 	}
 	for _, l := range env.RateLimits {
@@ -338,5 +339,18 @@ func sortRules(rules []*morphgatev1.CompiledRule) {
 func (b *builder) readSource(path string) {
 	if data, err := os.ReadFile(path); err == nil {
 		b.policySources = append(b.policySources, data)
+	}
+}
+
+// routeMode maps a site YAML route mode ("" = inherit the site's
+// monitor_only) to the bundle enum (spec I-36).
+func routeMode(mode string) morphgatev1.RouteMode {
+	switch mode {
+	case "monitor":
+		return morphgatev1.RouteMode_ROUTE_MODE_MONITOR
+	case "enforce":
+		return morphgatev1.RouteMode_ROUTE_MODE_ENFORCE
+	default:
+		return morphgatev1.RouteMode_ROUTE_MODE_INHERIT
 	}
 }
