@@ -1,0 +1,107 @@
+# MorphGate near-line worker (mg-nearline) - example systemd unit
+# (docs/impl/phase2-spec.md §13.6).
+#
+# The worker consumes the Edge's mg:ev stream from the local Valkey and writes
+# risk-raising verdicts (mg:v:<site>:*). It is never on the request path:
+# when it stops, the stream is trimmed by MAXLEN ~, written verdicts expire
+# and the Edge keeps scoring by its rules. Run exactly one instance.
+#
+# Install:
+#   (cd control-plane && go build -trimpath -o ../mg-nearline ./cmd/mg-nearline)
+#   install -m 0755 mg-nearline /usr/local/bin/mg-nearline
+#   install -m 0644 control-plane/cmd/mg-nearline/mg-nearline.yaml.example \
+#     /etc/morphgate/mg-nearline.yaml          (edit sites first)
+#   install -m 0644 deploy/systemd/journald@morphgate.conf /etc/systemd/
+#   cp deploy/systemd/mg-nearline.service /etc/systemd/system/ && systemctl daemon-reload
+#   systemctl enable --now mg-nearline
+#
+# The configuration holds no secret, so it may be world-readable: with
+# DynamicUser= the service runs under a transient UID that is in no group of
+# the host except the SupplementaryGroups= below.
+#
+# Valkey ACL user (one ~mg:v:<site>:* pattern per configured site, never
+# mg:v:all:*; spec §13.6), created with the owner's admin user:
+#   ACL SETUSER mg-nearline on >… resetkeys resetchannels -@all +get +set
+#     +xreadgroup +xack +xautoclaim +xgroup|create +xgroup|delconsumer
+#     +xinfo|groups +xinfo|consumers +xpending +xlen +evalsha +script|load
+#     +ping +hello +select +client|setname +client|setinfo ~mg:ev ~mg:v:blog:*
+# (one line; persist it with ACL SAVE or the aclfile). Its password reaches the
+# worker as an encrypted credential, never in the configuration:
+#   printf '%s' "$PASSWORD" | systemd-creds encrypt --name=mg-nearline-valkey - \
+#     /etc/credstore.encrypted/mg-nearline-valkey
+# password_file in mg-nearline.yaml points at
+# ${CREDENTIALS_DIRECTORY}/mg-nearline-valkey. For a test host without TPM or
+# host key, LoadCredential=mg-nearline-valkey:/path/to/plain-0600-file works
+# the same way.
+#
+# Valkey connection: the example configuration uses the unix socket
+# /run/valkey/valkey.sock with unixsocketperm 0770 and group valkey, hence
+# SupplementaryGroups=valkey. With loopback TCP (url: redis://127.0.0.1:6379/)
+# remove that line.
+#
+# Network: IPAddressAllow=localhost only. Prometheus / vmagent scrapes
+# metrics_listen (127.0.0.1:9902) on this host, and verdict_events.vl_main must
+# be a loopback URL too; extend IPAddressAllow= if either is elsewhere.
+#
+# Logs go to the journald namespace "morphgate" (deploy/systemd/
+# journald@morphgate.conf):
+#   journalctl --namespace=morphgate -u mg-nearline
+#
+# --check-config validates the configuration, reads the credential, connects
+# as the ACL user and loads mg_verdict_put, then exits (2: invalid
+# configuration, 1: Valkey unusable). The service itself retries Valkey with
+# backoff, so a Valkey restart never stops it. Configuration changes take
+# effect on `systemctl restart mg-nearline`; the windows start from zero
+# (detection is best effort, spec §13.3).
+
+[Unit]
+Description=MorphGate near-line worker (mg:ev detectors)
+After=network-online.target valkey.service valkey-server.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/mg-nearline --config /etc/morphgate/mg-nearline.yaml
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=15
+
+DynamicUser=yes
+SupplementaryGroups=valkey
+LoadCredentialEncrypted=mg-nearline-valkey:/etc/credstore.encrypted/mg-nearline-valkey
+UMask=0077
+LogNamespace=morphgate
+MemoryMax=512M
+IPAddressAllow=localhost
+IPAddressDeny=any
+
+# --- Hardening (verify with: systemd-analyze security mg-nearline) ---
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
