@@ -1,7 +1,7 @@
 {
   "name": "@ermiaodada/morphgate-web-sdk",
   "version": "0.2.0-preview.1",
-  "description": "First-party browser assets for MorphGate Phase 1: an owner-operated defensive bot-management platform.",
+  "description": "First-party browser assets for MorphGate: an owner-operated defensive bot-management platform.",
   "type": "module",
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.23.0",
@@ -9,7 +9,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --format=iife --minify --target=es2020 --legal-comments=none --outfile=dist/mg.js && node scripts/build-dist.mjs",
+    "build": "node scripts/build-dist.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "size": "node scripts/size-check.mjs",

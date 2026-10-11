@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="{{lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>安全验证 · Security check</title>
+<style nonce="{{nonce}}">
+/* Template v2 (docs/impl/phase2-spec.md §12.3). Inline only: the page loads nothing but the first-party SDK. */
+:root {
+  color-scheme: light dark;
+  --bg: #f5f6f8;
+  --fg: #1c2230;
+  --muted: #3d4554;
+  --card: #ffffff;
+  --line: #8a93a3;
+  --accent: #1a4ba8;
+  --on-accent: #ffffff;
+  --hold: #eef3fd;
+  --fill: #c9d9fb;
+  --focus: #1c2230;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #13161b;
+    --fg: #e6e9ef;
+    --muted: #b9c2d0;
+    --card: #1b1f26;
+    --line: #6b7587;
+    --accent: #9cc0ff;
+    --on-accent: #0d1117;
+    --hold: #1b1f26;
+    --fill: #2b3d63;
+    --focus: #e6e9ef;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+main {
+  width: 100%;
+  max-width: 30rem;
+  padding: 1.5rem 1rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+h1 { margin: 0 0 0.5rem; font-size: 1.3rem; font-weight: 600; }
+p { margin: 0.5rem 0; }
+.lead, .rid { color: var(--muted); }
+.spin {
+  display: none;
+  width: 28px;
+  height: 28px;
+  margin: 0 auto 1rem;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: mg-spin 0.9s linear infinite;
+}
+[data-mg-phase="start"] .spin, [data-mg-phase="work"] .spin { display: block; }
+@keyframes mg-spin { to { transform: rotate(360deg); } }
+/* Interactive pages: no spinner, no non-interactive lead, an empty initial status. */
+[data-mg-type="interactive"] .spin, [data-mg-type="interactive"] .lead, [data-mg-type="interactive"] .mg-wait { display: none; }
+#mg-ix[hidden], #mg-progress[hidden], #mg-turnstile[hidden], #mg-retry[hidden] { display: none; }
+/* Every control is at least 24 x 24 CSS px; the hold button at least 44 x 44. */
+button, a { min-width: 24px; min-height: 24px; }
+button {
+  font: inherit;
+  color: var(--fg);
+  max-width: 100%;
+  white-space: normal;
+}
+a { color: var(--accent); display: inline-block; }
+button:focus-visible, a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+/* The button is offset only through its margin (set by the SDK); 16 px on both sides absorb the offset. */
+.mg-row { display: flex; justify-content: center; padding: 8px 16px; }
+#mg-hold {
+  position: relative;
+  overflow: hidden;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0.75rem 1.5rem;
+  border: 2px solid var(--accent);
+  border-radius: 10px;
+  background: var(--hold);
+  font-weight: 600;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+#mg-hold[aria-disabled="true"] { cursor: default; }
+.mg-label { position: relative; }
+.mg-fill {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--fill);
+  pointer-events: none;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.35s linear;
+}
+#mg-hold[data-mg-fill="1"] .mg-fill { transform: scaleX(0.25); }
+#mg-hold[data-mg-fill="2"] .mg-fill { transform: scaleX(0.5); }
+#mg-hold[data-mg-fill="3"] .mg-fill { transform: scaleX(0.75); }
+#mg-hold[data-mg-fill="4"] .mg-fill { transform: scaleX(1); }
+#mg-progress {
+  height: 12px;
+  margin: 0.75rem 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.mg-bar {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform: scaleX(var(--mg-p, 0));
+  transform-origin: left center;
+  transition: transform 0.35s linear;
+}
+.mg-alts { display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
+.mg-link {
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+}
+.mg-link[aria-disabled="true"] { color: var(--muted); text-decoration: none; cursor: default; }
+/* The visitor's quota for the automatic path is used up: offer single activation first. */
+[data-mg-a11y-quota="1"] #mg-alt-single { order: -1; }
+#mg-status { min-height: 1.55em; font-weight: 500; }
+#mg-retry {
+  margin-top: 0.75rem;
+  padding: 0.55rem 1.4rem;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--on-accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+/* Shown after 10 s when no SDK started (a browser below the floor); the SDK hides it at once. */
+#mg-stuck { visibility: hidden; animation: mg-reveal 0s 10s forwards; }
+@keyframes mg-reveal { to { visibility: visible; } }
+[data-mg-phase] #mg-stuck { display: none; }
+.rid { margin-top: 1.5rem; font-size: 0.85rem; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+  /* Segmented fill: the SDK steps the progress, nothing is animated. */
+  .mg-fill, .mg-bar { transition: none; }
+}
+@media (forced-colors: active) {
+  #mg-hold { border: 2px solid ButtonText; }
+  .mg-fill, .mg-bar { background: Highlight; forced-color-adjust: none; }
+  #mg-progress { border: 1px solid CanvasText; }
+}
+/* Both languages ship in the page; show the one the Edge chose for <html lang>. */
+html[lang|="zh"] [lang="en"], html:not([lang|="zh"]) [lang|="zh"] { display: none; }
+</style>
+</head>
+<body>
+<main id="mg-challenge" data-mg-state="{{state}}" data-mg-c="{{c}}" data-mg-type="{{type}}"
+      data-mg-pow-bits="{{pow_bits}}" data-mg-ret="{{ret}}" data-mg-rid="{{request_id}}"
+      data-mg-prefix="{{prefix}}" data-mg-ix="{{ix}}">
+  <div class="spin" aria-hidden="true"></div>
+  <h1><span lang="zh-CN">安全验证</span><span lang="en">Security check</span></h1>
+  <p class="lead"><span lang="zh-CN">本站正在确认访问来自正常浏览器，通常只需几秒，完成后自动返回。</span><span lang="en">This site is checking that your visit comes from a regular browser. It usually takes a few seconds, then you are returned automatically.</span></p>
+  <div id="mg-ix" hidden>
+    <p id="mg-purpose"><span lang="zh-CN">为防止自动化滥用，请按住或点击“按住以验证”按钮完成验证。</span><span lang="en">To protect this site from automated abuse, press and hold, or click, the “Press and hold to verify” button.</span></p>
+    <div class="mg-row"><button id="mg-hold" type="button" aria-describedby="mg-purpose"><span class="mg-fill" aria-hidden="true"></span><span class="mg-label"><span lang="zh-CN">按住以验证</span><span lang="en">Press and hold to verify</span></span></button></div>
+    <div id="mg-progress" role="progressbar" aria-labelledby="mg-purpose" hidden><span class="mg-bar"></span></div>
+    <div id="mg-turnstile" hidden></div>
+    <p class="mg-alts">
+      <button id="mg-alt-single" type="button" class="mg-link"><span lang="zh-CN">无法按住？改为按一下</span><span lang="en">Can't press and hold? Press once instead</span></button>
+      <button id="mg-alt-pow" type="button" class="mg-link"><span lang="zh-CN">改用自动验证（较慢）</span><span lang="en">Verify automatically (slower)</span></button>
+    </p>
+  </div>
+  <p id="mg-status" role="status" aria-live="polite"><span class="mg-wait"><span lang="zh-CN">请稍候…</span><span lang="en">Please wait…</span></span></p>
+  <a id="mg-retry" href="{{ret}}" hidden><span lang="zh-CN">重试</span><span lang="en">Try again</span></a>
+  <p id="mg-stuck"><span lang="zh-CN">页面没有响应？请更新浏览器或换用其他浏览器 · 请求 ID：</span><span lang="en">Page not responding? Please update your browser or use another one · Request ID: </span><code>{{request_id}}</code></p>
+  <noscript><p><span lang="zh-CN">此页面需要启用 JavaScript 完成验证。请求 ID：</span><span lang="en">JavaScript is required to complete this check. Request ID: </span><code>{{request_id}}</code></p></noscript>
+  <p class="rid"><a id="mg-help" href="{{help_href}}"><span lang="zh-CN">排查问题</span><span lang="en">Troubleshoot</span></a> · <span lang="zh-CN">请求 ID：</span><span lang="en">Request ID: </span><code>{{request_id}}</code> · <a id="mg-privacy" href="{{privacy_href}}"><span lang="zh-CN">隐私说明</span><span lang="en">Privacy</span></a></p>
+</main>
+<script data-cfasync="false" src="{{sdk_src}}" nonce="{{nonce}}" data-mg-path-prefix="{{prefix}}"></script>
+</body>
+</html>

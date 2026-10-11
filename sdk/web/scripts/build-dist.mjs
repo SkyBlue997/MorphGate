@@ -1,24 +1,49 @@
 #!/usr/bin/env node
-// Assemble the Edge's SDK directory, dist/sdk/ (docs/impl/phase1-spec.md §11.1):
+// Build the SDK bundle and assemble the Edge's SDK directory, dist/sdk/
+// (docs/impl/phase1-spec.md §11.1; docs/impl/phase2-spec.md §2.1, §12.2, §12.3):
 //
 //   mg.<hex16>.js   byte-identical to dist/mg.js; hex16 = first 16 hex chars of its SHA-256
-//   challenge.html  the challenge page template (§11.2), validated here
-//   manifest.json   {"v":1,"build","sdk","files":{name: sha256},"templates":{"challenge.html": sha256}}
+//   challenge.html  the challenge page template, validated here: templates/challenge.html
+//                   (v1) or templates/challenge.v2.html (v2), by DEFAULT_MANIFEST_VERSION
+//   manifest.json   {"v","build","sdk","files":{name: sha256},"templates":{"challenge.html": sha256}}
+//
+// DEFAULT_MANIFEST_VERSION switches the whole build (spec §2.1): the template
+// file and its rules, the manifest version, and `MG_MANIFEST_VERSION` in the
+// bundle (in-place solving of JSON challenges needs a v2 Edge). Stage 1
+// keeps 1, because the Phase 1 Edge accepts only manifest v1 directories;
+// WP-E2a switches it to 2 together with the Edge.
 //
 // The Edge serves only the `files` names under /__mg/s/ and reads `templates`
 // itself; it re-checks the hashes and the template rules when it loads the
 // directory. `buildDist` is a pure-input function (in-memory bundle and
 // template, output directory) so vitest can exercise it in a temp directory
-// without a prior build; running this file as a script builds from
-// dist/mg.js and templates/challenge.html (the `build` npm script does this
-// right after esbuild).
+// without a prior build; running this file as a script runs esbuild, then
+// assembles dist/sdk/ (the `build` npm script).
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const MANIFEST_VERSION = 1;
+/** Manifest and template version of this build (spec §2.1); WP-E2a switches it to 2. */
+export const DEFAULT_MANIFEST_VERSION = 1;
+/** Kept for the Phase 1 tests: the version of the default build. */
+export const MANIFEST_VERSION = DEFAULT_MANIFEST_VERSION;
 export const TEMPLATE_NAME = "challenge.html";
+/** Template source file per manifest version; both are written to dist/sdk/challenge.html. */
+export const TEMPLATE_SOURCES = Object.freeze({ 1: "challenge.html", 2: "challenge.v2.html" });
+/** esbuild options of the bundle (IIFE, minified, ES2020). */
+export function esbuildOptions(version = DEFAULT_MANIFEST_VERSION) {
+  return {
+    entryPoints: ["src/index.ts"],
+    bundle: true,
+    format: "iife",
+    minify: true,
+    target: "es2020",
+    legalComments: "none",
+    define: { MG_MANIFEST_VERSION: String(version) },
+    outfile: "dist/mg.js",
+  };
+}
 export const MANIFEST_NAME = "manifest.json";
 export const MAX_TEMPLATE_BYTES = 32 * 1024;
 /** Content-hashed SDK file names. */
@@ -35,6 +60,32 @@ export const TEMPLATE_PLACEHOLDERS = Object.freeze([
   "ret",
   "request_id",
   "state",
+]);
+
+/** Template v2 adds these placeholders (§12.3). */
+export const TEMPLATE_PLACEHOLDERS_V2 = Object.freeze([...TEMPLATE_PLACEHOLDERS, "ix", "help_href", "privacy_href"]);
+
+/** The placeholders of a template version. */
+export function templatePlaceholders(version = DEFAULT_MANIFEST_VERSION) {
+  return version === 2 ? TEMPLATE_PLACEHOLDERS_V2 : TEMPLATE_PLACEHOLDERS;
+}
+
+/**
+ * Template v2 structure (§12.3): each id exactly once, on this element with
+ * these attributes (`null`: present, any value), inside `in` (an id, or
+ * `main` for <main id="mg-challenge">).
+ */
+export const V2_ELEMENTS = Object.freeze([
+  { id: "mg-ix", tag: "div", attrs: { hidden: null }, in: "main" },
+  { id: "mg-purpose", tag: "p", attrs: {}, in: "mg-ix" },
+  { id: "mg-hold", tag: "button", attrs: { type: "button", "aria-describedby": "mg-purpose" }, in: "mg-ix" },
+  { id: "mg-alt-single", tag: "button", attrs: { type: "button" }, in: "mg-ix" },
+  { id: "mg-alt-pow", tag: "button", attrs: { type: "button" }, in: "mg-ix" },
+  { id: "mg-progress", tag: "div", attrs: { role: "progressbar", "aria-labelledby": "mg-purpose", hidden: null }, in: "mg-ix" },
+  { id: "mg-turnstile", tag: "div", attrs: { hidden: null }, in: "mg-ix" },
+  { id: "mg-help", tag: "a", attrs: { href: "{{help_href}}" }, in: "main" },
+  { id: "mg-privacy", tag: "a", attrs: { href: "{{privacy_href}}" }, in: "main" },
+  { id: "mg-stuck", tag: "p", attrs: {}, in: "main" },
 ]);
 
 /** `data-mg-*` attributes of <main id="mg-challenge"> and the placeholder each must hold. */
@@ -75,9 +126,87 @@ function parseTags(html) {
     for (const attr of (match[2] ?? "").matchAll(ATTRIBUTE_PATTERN)) {
       attributes.push([attr[1].toLowerCase(), attr[2] ?? attr[3] ?? attr[4] ?? ""]);
     }
-    tags.push({ name: match[1].toLowerCase(), attributes, get: (name) => attributes.find(([n]) => n === name)?.[1] });
+    tags.push({
+      name: match[1].toLowerCase(),
+      attributes,
+      start: match.index,
+      end: match.index + match[0].length,
+      get: (name) => attributes.find(([n]) => n === name)?.[1],
+    });
   }
   return tags;
+}
+
+/**
+ * The content range [start, end) of the element whose start tag is `tag`:
+ * from the end of its start tag to its matching end tag, counting nested
+ * elements of the same name. `end` is the document length when unclosed.
+ */
+function contentRange(html, tag) {
+  const pattern = new RegExp(`<(/?)${tag.name}\\b(?:[^>"']|"[^"]*"|'[^']*')*>`, "gi");
+  pattern.lastIndex = tag.end;
+  let depth = 1;
+  for (let m = pattern.exec(html); m !== null; m = pattern.exec(html)) {
+    depth += m[1] === "/" ? -1 : 1;
+    if (depth === 0) return [tag.end, m.index];
+  }
+  return [tag.end, html.length];
+}
+
+/** Template v2 rules on top of v1 (§12.3). */
+function v2Errors(html, tags) {
+  const errors = [];
+  const ix = [...html.matchAll(/\{\{ix\}\}/g)];
+  if (ix.length !== 1) errors.push("{{ix}} must appear exactly once");
+  const main = tags.filter((t) => t.name === "main" && t.get("id") === "mg-challenge");
+  if (main.length === 1 && main[0].get("data-mg-ix") !== "{{ix}}") {
+    errors.push('<main id="mg-challenge"> needs data-mg-ix="{{ix}}"');
+  }
+  // {{help_href}} / {{privacy_href}}: only as the quoted value of an href attribute.
+  for (const name of ["help_href", "privacy_href"]) {
+    const uses = [...html.matchAll(new RegExp(`\\{\\{${name}\\}\\}`, "g"))].length;
+    const inHref = tags.reduce((n, t) => n + t.attributes.filter(([a, v]) => a === "href" && v.includes(`{{${name}}}`)).length, 0);
+    const quoted = tags.reduce(
+      (n, t) => n + t.attributes.filter(([a, v]) => a === "href" && v === `{{${name}}}`).length,
+      0,
+    );
+    if (uses !== inHref || quoted !== inHref) errors.push(`{{${name}}} may appear only as a quoted href value`);
+  }
+  const byId = new Map();
+  for (const tag of tags) {
+    const id = tag.get("id");
+    if (id !== undefined) byId.set(id, [...(byId.get(id) ?? []), tag]);
+  }
+  const range = (id) => {
+    const found = id === "main" ? main : byId.get(id) ?? [];
+    return found.length === 1 ? contentRange(html, found[0]) : null;
+  };
+  for (const spec of V2_ELEMENTS) {
+    const found = byId.get(spec.id) ?? [];
+    if (found.length !== 1) {
+      errors.push(`id "${spec.id}" must appear exactly once (found ${found.length})`);
+      continue;
+    }
+    const [tag] = found;
+    const wanted = Object.entries(spec.attrs)
+      .map(([n, v]) => (v === null ? n : `${n}="${v}"`))
+      .join(" ");
+    const attrsOk = Object.entries(spec.attrs).every(([n, v]) => (v === null ? tag.get(n) !== undefined : tag.get(n) === v));
+    if (tag.name !== spec.tag || !attrsOk) errors.push(`needs <${spec.tag} id="${spec.id}"${wanted ? ` ${wanted}` : ""}>`);
+    const outer = range(spec.in);
+    if (outer === null || tag.start < outer[0] || tag.start >= outer[1]) {
+      errors.push(`#${spec.id} must be inside ${spec.in === "main" ? '<main id="mg-challenge">' : `#${spec.in}`}`);
+    }
+  }
+  // #mg-hold: a text label and an aria-hidden progress layer.
+  const hold = byId.get("mg-hold");
+  if (hold?.length === 1) {
+    const [from, to] = contentRange(html, hold[0]);
+    const inner = html.slice(from, to);
+    if (!/aria-hidden\s*=\s*"true"/.test(inner)) errors.push("#mg-hold needs an aria-hidden=\"true\" progress layer");
+    if (inner.replace(/<[^>]*>/g, "").trim() === "") errors.push("#mg-hold needs a text label");
+  }
+  return errors;
 }
 
 /**
@@ -134,7 +263,9 @@ function startsExternal(value) {
  * Check the template contract (§11.2). Returns the list of violations, empty
  * when the template is valid. The Edge performs the same checks on load.
  */
-export function validateTemplate(template) {
+export function validateTemplate(template, version = DEFAULT_MANIFEST_VERSION) {
+  if (version !== 1 && version !== 2) return [`unknown template version ${version}`];
+  const placeholders = templatePlaceholders(version);
   const errors = [];
   const bytes = toBytes(template);
   if (bytes.byteLength > MAX_TEMPLATE_BYTES) errors.push(`larger than ${MAX_TEMPLATE_BYTES} bytes (${bytes.byteLength})`);
@@ -150,10 +281,10 @@ export function validateTemplate(template) {
   // Placeholders: exactly the known set, each at least once, no stray braces.
   const seen = new Set();
   for (const match of html.matchAll(PLACEHOLDER_PATTERN)) {
-    if (TEMPLATE_PLACEHOLDERS.includes(match[1])) seen.add(match[1]);
+    if (placeholders.includes(match[1])) seen.add(match[1]);
     else errors.push(`unknown placeholder {{${match[1]}}}`);
   }
-  for (const name of TEMPLATE_PLACEHOLDERS) {
+  for (const name of placeholders) {
     if (!seen.has(name)) errors.push(`placeholder {{${name}}} missing`);
   }
   const rest = html.replace(PLACEHOLDER_PATTERN, "");
@@ -221,6 +352,7 @@ export function validateTemplate(template) {
     }
     if (external[0].get("data-mg-path-prefix") !== "{{prefix}}") errors.push('the SDK <script> needs data-mg-path-prefix="{{prefix}}"');
   }
+  if (version === 2) errors.push(...v2Errors(html, tags));
   return errors;
 }
 
@@ -230,20 +362,22 @@ export function validateTemplate(template) {
  * builds in `outDir` are removed after the new manifest is written, so the
  * directory holds exactly what the manifest lists.
  */
-export function buildDist({ bundle, template }, outDir) {
+export function buildDist({ bundle, template }, outDir, version = DEFAULT_MANIFEST_VERSION) {
   const bundleBytes = toBytes(bundle);
   const templateBytes = toBytes(template);
   if (bundleBytes.byteLength === 0) throw new Error("buildDist: empty SDK bundle");
-  const errors = validateTemplate(templateBytes);
+  const errors = validateTemplate(templateBytes, version);
   if (errors.length > 0) {
-    throw new Error(`buildDist: ${TEMPLATE_NAME} violates the template contract (spec §11.2):\n- ${errors.join("\n- ")}`);
+    throw new Error(
+      `buildDist: ${TEMPLATE_SOURCES[version] ?? TEMPLATE_NAME} violates the template contract (v${version}):\n- ${errors.join("\n- ")}`,
+    );
   }
 
   const bundleHash = sha256Hex(bundleBytes);
   const build = bundleHash.slice(0, 16);
   const sdk = `mg.${build}.js`;
   const manifest = {
-    v: MANIFEST_VERSION,
+    v: version,
     build,
     sdk,
     files: { [sdk]: bundleHash },
@@ -260,22 +394,23 @@ export function buildDist({ bundle, template }, outDir) {
   return manifest;
 }
 
-function main() {
+async function main() {
   const root = fileURLToPath(new URL("..", import.meta.url));
-  const bundlePath = join(root, "dist", "mg.js");
-  let bundle;
+  const version = DEFAULT_MANIFEST_VERSION;
   try {
-    bundle = readFileSync(bundlePath);
+    const esbuild = await import("esbuild");
+    await esbuild.build({ ...esbuildOptions(version), absWorkingDir: root, logLevel: "info" });
   } catch (error) {
-    console.error(`build-dist: cannot read ${bundlePath} (run esbuild first): ${error.message}`);
+    console.error(`build-dist: esbuild failed: ${error.message}`);
     process.exit(1);
   }
-  const template = readFileSync(join(root, "templates", TEMPLATE_NAME));
+  const bundle = readFileSync(join(root, "dist", "mg.js"));
+  const template = readFileSync(join(root, "templates", TEMPLATE_SOURCES[version]));
   const outDir = join(root, "dist", "sdk");
   rmSync(outDir, { recursive: true, force: true });
   try {
-    const manifest = buildDist({ bundle, template }, outDir);
-    console.log(`dist/sdk: ${manifest.sdk}, ${TEMPLATE_NAME}, ${MANIFEST_NAME} (build ${manifest.build})`);
+    const manifest = buildDist({ bundle, template }, outDir, version);
+    console.log(`dist/sdk: ${manifest.sdk}, ${TEMPLATE_NAME} (from ${TEMPLATE_SOURCES[version]}), ${MANIFEST_NAME} v${version} (build ${manifest.build})`);
   } catch (error) {
     console.error(error.message);
     process.exit(1);
@@ -292,4 +427,4 @@ function invokedDirectly() {
   }
 }
 
-if (invokedDirectly()) main();
+if (invokedDirectly()) await main();

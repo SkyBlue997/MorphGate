@@ -29,6 +29,24 @@ describe("verifyUrl", () => {
     expect(verifyUrl({ pathPrefix: "/x7/" }, "/")).toBe("/x7/v?ret=%2F");
   });
 
+  it("adds min=interactive for an interactive JSON challenge (phase2-spec D-58)", () => {
+    expect(verifyUrl(CONFIG, "/a", "interactive")).toBe("/__mg/v?ret=%2Fa&min=interactive");
+    expect(verifyUrl(CONFIG, null, "interactive")).toBe("/__mg/v?min=interactive");
+  });
+
+  it("runs onBeforeNavigate before it navigates", () => {
+    const store = memory();
+    const calls: string[] = [];
+    const d: VerifyDeps = {
+      location: { pathname: "/p", search: "", assign: (url) => void calls.push(`assign ${url}`) },
+      storage: () => store,
+      now: () => 1_000,
+      beforeNavigate: () => void calls.push("before"),
+    };
+    expect(startVerify(CONFIG, d, "interactive")).toBe(true);
+    expect(calls).toEqual(["before", "assign /__mg/v?ret=%2Fp&min=interactive"]);
+  });
+
   it("leaves out a ret the Edge would refuse", () => {
     for (const ret of ["//evil.example/", "https://evil.example/", "/__mg/c", "/a#b", `/${"a".repeat(512)}`, null]) {
       expect(verifyUrl(CONFIG, ret)).toBe("/__mg/v");
@@ -75,20 +93,24 @@ describe("isMgChallenge", () => {
   const json = { "content-type": "application/json" };
   const challenge = JSON.stringify({ error: "mg_challenge", type: "pow", challenge: "v1.abc", retry: true });
 
+  const edge = { ...json, "mg-challenge": "pow" };
+
   it("recognises the Edge's JSON challenge and leaves the body readable", async () => {
-    const r = new Response(challenge, { status: 403, headers: json });
+    const r = new Response(challenge, { status: 403, headers: edge });
     expect(await isMgChallenge(r)).toBe(true);
     expect(await r.text()).toBe(challenge);
   });
 
   it("ignores everything else", async () => {
     const blocked = JSON.stringify({ error: "mg_blocked", request_id: "x" });
-    expect(await isMgChallenge(new Response(blocked, { status: 403, headers: json }))).toBe(false);
-    expect(await isMgChallenge(new Response(challenge, { status: 200, headers: json }))).toBe(false);
+    expect(await isMgChallenge(new Response(blocked, { status: 403, headers: { ...json, "mg-error": "mg_blocked" } }))).toBe(false);
+    expect(await isMgChallenge(new Response(challenge, { status: 200, headers: edge }))).toBe(false);
+    // Without MG-Challenge / MG-Error the 403 is the origin's (phase2-spec §11.2, S-22).
+    expect(await isMgChallenge(new Response(challenge, { status: 403, headers: json }))).toBe(false);
     expect(await isMgChallenge(new Response(challenge, { status: 403 }))).toBe(false);
     expect(await isMgChallenge(new Response("<html>", { status: 403, headers: { "content-type": "text/html" } }))).toBe(false);
     expect(
-      await isMgChallenge(new Response(challenge, { status: 403, headers: { ...json, "cf-mitigated": "challenge" } })),
+      await isMgChallenge(new Response(challenge, { status: 403, headers: { ...edge, "cf-mitigated": "challenge" } })),
     ).toBe(false);
   });
 });
