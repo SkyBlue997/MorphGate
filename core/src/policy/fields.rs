@@ -4,7 +4,13 @@
 //! The schema is fixed and mirrors Go `internal/policy/context.go` `Input`:
 //! the same dotted CEL paths, the same types and the same size caps (the caps
 //! feed the static step bound, §5.3, which the Go compiler and the Edge must
-//! compute identically).
+//! compute identically). Both sides test against the shared table
+//! `testdata/policy-ir/fields.json` (docs/impl/phase2-spec.md §0.4, §22).
+//!
+//! Phase 2 (docs/impl/phase2-spec.md §4) adds `http.navigation`,
+//! `identity.token.bound`, `identity.token.level_age`,
+//! `identity.proof.present` and `identity.proof.replayed`; when
+//! `identity.proof` is MISSING is decided by [`proof_missing`].
 
 use super::ip::canonical_decimal;
 use crate::context::{RequestContext, TokenStatus};
@@ -94,6 +100,8 @@ field_ids! {
     HttpVersion => "http.version": Str, STR;
     /// Distinct header names in first-seen order (see [`HttpNs::header_order`]).
     HttpHeaderOrder => "http.header_order": StrList, 128;
+    /// Phase 2: the Phase 1 navigation test (client-controlled).
+    HttpNavigation => "http.navigation": Bool, 0;
     EdgeTlsVersion => "edge_tls.version": Str, STR;
     EdgeTlsCipher => "edge_tls.cipher": Str, STR;
     EdgeTlsCiphersSha1 => "edge_tls.ciphers_sha1": Str, 40;
@@ -101,7 +109,15 @@ field_ids! {
     EdgeTlsHelloLen => "edge_tls.hello_len": Int, 0;
     TokenLevel => "identity.token.level": Str, STR;
     TokenAge => "identity.token.age": Int, 0;
+    /// Phase 2: the clearance carries `cnf.jkt`.
+    TokenBound => "identity.token.bound": Bool, 0;
+    /// Phase 2: seconds since the level was obtained.
+    TokenLevelAge => "identity.token.level_age": Int, 0;
+    /// Phase 2: an `MG-Proof` header was present.
+    ProofPresent => "identity.proof.present": Bool, 0;
     ProofValid => "identity.proof.valid": Bool, 0;
+    /// Phase 2: the proof's `jti` was replayed or over its key's quota.
+    ProofReplayed => "identity.proof.replayed": Bool, 0;
     AgentId => "identity.agent.id": Str, STR;
     AgentGrantId => "identity.agent.grant_id": Str, STR;
     CrawlerClaimed => "identity.crawler.claimed": Bool, 0;
@@ -239,6 +255,46 @@ impl MissingSet {
     }
 }
 
+// --- identity.proof availability (Phase 2 spec §4.2, §9.1, D-40, D-66) -------
+
+/// D-40: a request that never needs an `MG-Proof`: a navigation
+/// (`http.navigation`) with method GET or HEAD on which every matched route
+/// has channel `web`. Its `identity.proof` is MISSING.
+pub fn is_exempt_navigation(navigation: bool, method: &str, all_matched_routes_web: bool) -> bool {
+    navigation && matches!(method, "GET" | "HEAD") && all_matched_routes_web
+}
+
+/// Phase 2 spec §9.1: whether the Edge verifies `MG-Proof` on a request:
+/// `schema_version >= 2`, not an exempt navigation, and a matched route has
+/// `proof = required` or the policy reads `identity.proof`
+/// (`PolicyEvaluator::reads_field("identity.proof")`).
+pub fn proof_verification_needed(
+    schema_version: u32,
+    exempt_navigation: bool,
+    proof_required: bool,
+    policy_reads_proof: bool,
+) -> bool {
+    schema_version >= 2 && !exempt_navigation && (proof_required || policy_reads_proof)
+}
+
+/// The part of `identity.proof` that is MISSING on a request (Phase 2 spec
+/// §4.2): all of it (`"identity.proof"`) when the proof is not verified
+/// (`schema_version = 1`, an exempt navigation, or nothing needs it, see
+/// [`proof_verification_needed`]); only `"identity.proof.replayed"` when it
+/// is verified but the `jti` replay store gave no verdict (§9.2); nothing
+/// otherwise. Without an `MG-Proof` header there is no `jti` to check, so
+/// `replay_checked` is `true` and `present = valid = replayed = false` are
+/// ordinary values.
+pub fn proof_missing(verified: bool, replay_checked: bool) -> Option<&'static str> {
+    if !verified {
+        Some("identity.proof")
+    } else if !replay_checked {
+        Some("identity.proof.replayed")
+    } else {
+        None
+    }
+}
+
 // --- Activation (§4.2): the serde form is the conformance-fixture JSON -------
 
 /// `req.*`.
@@ -312,6 +368,9 @@ pub struct TlsNs {
 #[serde(default, deny_unknown_fields)]
 pub struct HttpNs {
     pub version: String,
+    /// Phase 2 spec §4.1: `Sec-Fetch-Mode: navigate`, or no `Sec-Fetch-Mode`
+    /// and an `Accept` with `text/html`. Client-controlled.
+    pub navigation: bool,
     /// `direct_tls` HTTP/1.x only: the **distinct** header names in the
     /// order of their first occurrence, original case, at most 128. Pingora's
     /// header map folds repeated names into their first position, so the
@@ -331,19 +390,28 @@ pub struct EdgeTlsNs {
     pub hello_len: i64,
 }
 
-/// `identity.token.*`.
+/// `identity.token.*`. Every field is the zero value without a valid
+/// clearance.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TokenNs {
     pub level: String,
     pub age: i64,
+    /// Phase 2: the clearance carries `cnf.jkt`.
+    pub bound: bool,
+    /// Phase 2: `now - lat` in seconds (`now - iat` for v1 tokens).
+    pub level_age: i64,
 }
 
-/// `identity.proof.*`.
+/// `identity.proof.*` (Phase 2 spec §4.1; MISSING per [`proof_missing`]).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProofNs {
+    /// Phase 2: an `MG-Proof` header was present.
+    pub present: bool,
     pub valid: bool,
+    /// Phase 2: the `jti` was replayed or over its key's quota.
+    pub replayed: bool,
 }
 
 /// `identity.agent.*`.
@@ -498,6 +566,7 @@ impl Activation {
             },
             http: HttpNs {
                 version: ctx.http.version.clone().unwrap_or_default(),
+                navigation: ctx.http.navigation,
                 header_order: ctx
                     .http
                     .header_order
@@ -520,9 +589,13 @@ impl Activation {
                         _ => String::new(),
                     },
                     age: if valid { i64::from(token.age_s) } else { 0 },
+                    bound: valid && token.bound,
+                    level_age: if valid { i64::from(token.level_age) } else { 0 },
                 },
                 proof: ProofNs {
+                    present: ctx.identity.proof.present,
                     valid: ctx.identity.proof.valid,
+                    replayed: ctx.identity.proof.replayed,
                 },
                 agent: AgentNs {
                     id: ctx.identity.agent.id.clone().unwrap_or_default(),
@@ -565,7 +638,7 @@ mod tests {
             assert_eq!(FieldId::from_path(f.path()), Some(f));
             assert!(seen.insert(f.path()), "duplicate {f}");
         }
-        assert_eq!(FieldId::ALL.len(), 45);
+        assert_eq!(FieldId::ALL.len(), 50);
         assert_eq!(FieldId::from_path("tls.ja4"), None, "struct, not a value");
         assert_eq!(FieldId::from_path("req.headers.accept"), None, "map key");
         assert_eq!(FieldId::from_path("net"), None);
@@ -573,6 +646,64 @@ mod tests {
             FieldId::from_path("identity.crawler.claimed"),
             Some(FieldId::CrawlerClaimed)
         );
+    }
+
+    /// The shared field table (Phase 2 spec §0.4, §22), read by the Go
+    /// compiler's tests too: the same paths in the same order, types, caps
+    /// and struct paths as this schema.
+    #[test]
+    fn schema_matches_shared_fields_json() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../../../testdata/policy-ir/fields.json")).unwrap();
+        assert_eq!(doc["version"], 1);
+        let type_name = |t: FieldType| match t {
+            FieldType::Bool => "bool",
+            FieldType::Int => "int",
+            FieldType::Double => "double",
+            FieldType::Str => "string",
+            FieldType::StrList => "list(string)",
+            FieldType::StrMap => "map(string,string)",
+            FieldType::DoubleMap => "map(string,double)",
+        };
+        let fields = doc["fields"].as_array().unwrap();
+        let paths: Vec<&str> = fields.iter().map(|f| f["path"].as_str().unwrap()).collect();
+        let ours: Vec<&str> = FieldId::ALL.iter().map(|f| f.path()).collect();
+        assert_eq!(ours, paths, "same fields, same order");
+        for (f, id) in fields.iter().zip(FieldId::ALL) {
+            assert_eq!(f["type"], type_name(id.ty()), "{id}");
+            assert_eq!(f["cap"].as_u64(), Some(id.size_cap()), "{id}");
+            let phase = f["phase"].as_u64().unwrap();
+            assert!(phase == 1 || phase == 2, "{id}");
+            if let Some(v) = f.get("value_cap") {
+                assert_eq!(v.as_u64(), Some(super::super::ir::HEADER_VALUE_CAP), "{id}");
+            }
+        }
+        let phase2: Vec<&str> = fields
+            .iter()
+            .filter(|f| f["phase"] == 2)
+            .map(|f| f["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            phase2,
+            [
+                "http.navigation",
+                "identity.token.bound",
+                "identity.token.level_age",
+                "identity.proof.present",
+                "identity.proof.replayed"
+            ]
+        );
+        assert_eq!(doc["default_string_cap"].as_u64(), Some(STR));
+        let structs: Vec<&str> = doc["structs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap())
+            .collect();
+        assert_eq!(structs, STRUCT_PATHS);
+        for s in STRUCT_PATHS {
+            assert!(MissingSet::new([s]).is_ok(), "{s}");
+        }
     }
 
     /// §4.1 size caps (they feed the static step bound and must equal Go's `sizeHints`).

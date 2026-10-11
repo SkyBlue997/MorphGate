@@ -1,9 +1,10 @@
 //! Tests of the policy evaluator (§5.3), the step bound, the rule engine
-//! (§5.4) and the default matrix (§5.5).
+//! (§5.4) and the default matrix (§5.5); Phase 2 additions in [`phase2`].
 
 mod engine;
 mod eval;
 mod matrix;
+mod phase2;
 mod steps;
 
 use super::*;
