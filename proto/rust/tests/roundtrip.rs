@@ -180,6 +180,26 @@ fn challenge_result_round_trip() {
         risk_band: "high".into(),
         reason_codes: vec!["turnstile_ok".into()],
         cf_ray: "8f00000000000001-HKG".into(),
+        renew_no: 2,
+        bound: true,
+        ix: Some(v1::InteractionSummary {
+            mode: "shadow".into(),
+            score: 0.15,
+            a11y_mode: "none".into(),
+            input_modality: "mouse".into(),
+            hold_ms: 1_910,
+            required_hold_ms: 1_834,
+            elapsed_ms: 2_610,
+            features: [("no_pre_move".to_string(), 0.15_f32)].into(),
+            act_ms: 2_300,
+        }),
+        provider: Some(v1::ProviderOutcome {
+            id: "turnstile".into(),
+            outcome: "pass".into(),
+            mode: "enforce".into(),
+            latency_ms: 140,
+            error_codes: vec![],
+        }),
     };
     let back = v1::ChallengeResult::decode(r.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, r);
@@ -357,7 +377,8 @@ fn assert_json_matches_proto(message: &str, json: &Value, complete: bool, path: 
         let Some(&(_, ty)) = fields.iter().find(|(f, _)| f == key) else {
             panic!("{path}.{key}: mg-core JSON field is not a field of proto {message}");
         };
-        if ty.is_empty() {
+        // Scalars, and map fields (their JSON keys are map keys, not fields).
+        if ty.is_empty() || ty.ends_with("Entry") {
             continue;
         }
         match value {
@@ -460,6 +481,7 @@ fn full_core_event() -> mg_core::DecisionEvent {
             early_data: true,
             priority: Some("u=0, i".into()),
             accept_encoding_orig: Some("gzip, br, zstd".into()),
+            navigation: true,
         },
         identity: Identity {
             token: Token {
@@ -473,10 +495,13 @@ fn full_core_event() -> mg_core::DecisionEvent {
                     ctp: Some(BindResult::Mismatch),
                     tfp: Some(BindResult::Match),
                 },
+                bound: true,
+                level_age: 900,
             },
             proof: Proof {
                 valid: true,
                 replayed: true,
+                present: true,
             },
             agent: Agent {
                 id: Some("agt_qa".into()),
@@ -644,6 +669,26 @@ fn core_challenge_result_json_uses_proto_field_names() {
         risk_band: Some(mg_core::RiskBand::Medium),
         reason_codes: vec!["hostname_mismatch".into()],
         cf_ray: Some("ray".into()),
+        renew_no: 1,
+        bound: true,
+        ix: Some(mg_core::InteractionSummary {
+            mode: mg_core::EvalMode::Shadow,
+            score: 0.3,
+            a11y_mode: mg_core::A11yMode::None,
+            input_modality: mg_core::InputModality::Mouse,
+            hold_ms: 1_910,
+            required_hold_ms: 1_834,
+            elapsed_ms: 2_610,
+            features: [("zero_jitter".to_string(), 0.2_f32)].into(),
+            act_ms: 2_300,
+        }),
+        provider: Some(mg_core::ProviderOutcome {
+            id: ProviderId::Turnstile,
+            outcome: VerdictOutcome::Fail,
+            mode: mg_core::EvalMode::Enforce,
+            latency_ms: 140,
+            error_codes: vec!["timeout-or-duplicate".into()],
+        }),
     };
     let json = serde_json::to_value(&r).unwrap();
     assert_json_matches_proto("morphgate.v1.ChallengeResult", &json, true, "result");
@@ -670,6 +715,7 @@ fn claims_to_proto(c: &mg_core::SealedChallengeClaims) -> v1::SealedChallengeCla
         pow,
         ret_hash,
         bind,
+        renew_no,
     } = c;
     let mg_core::ChallengeBind {
         uah,
@@ -695,6 +741,8 @@ fn claims_to_proto(c: &mg_core::SealedChallengeClaims) -> v1::SealedChallengeCla
         pow: pow.as_ref().map(|p| v1::sealed_challenge_claims::Pow {
             alg: p.alg.clone(),
             difficulty: p.difficulty,
+            k: p.k,
+            a11y_difficulty: p.a11y_difficulty,
         }),
         ret: ret_hash.clone(),
         bind: Some(v1::sealed_challenge_claims::Bind {
@@ -705,6 +753,7 @@ fn claims_to_proto(c: &mg_core::SealedChallengeClaims) -> v1::SealedChallengeCla
             tfp: tfp.clone(),
             ipa: ipa.clone(),
         }),
+        renew_no: *renew_no,
     }
 }
 
@@ -730,6 +779,8 @@ fn claims_from_proto(p: v1::SealedChallengeClaims) -> Option<mg_core::SealedChal
         pow: p.pow.map(|w| mg_core::PowParams {
             alg: w.alg,
             difficulty: w.difficulty,
+            k: w.k,
+            a11y_difficulty: w.a11y_difficulty,
         }),
         ret_hash: p.ret,
         bind: mg_core::ChallengeBind {
@@ -740,6 +791,7 @@ fn claims_from_proto(p: v1::SealedChallengeClaims) -> Option<mg_core::SealedChal
             tfp: bind.tfp,
             ipa: bind.ipa,
         },
+        renew_no: p.renew_no,
     })
 }
 
@@ -764,18 +816,21 @@ fn sealed_challenge_claims_round_trip_with_binding_presence() {
         exp_ms: 1_790_000_600_000,
         ui_seed: u64::MAX,
         pow: Some(mg_core::PowParams {
-            alg: "sha256".into(),
+            alg: mg_core::SealedChallengeClaims::POW_ALG_V2.into(),
             difficulty: 20,
+            k: 8,
+            a11y_difficulty: 17,
         }),
         ret_hash: vec![0xEE; 32],
         bind: mg_core::ChallengeBind {
             uah: Some(vec![1; 32]),
-            ipp: None,         // client IP unknown: not bound
-            jkt: Some(vec![]), // bound to an (empty) value: must stay distinguishable
-            ctp: Some(vec![4; 32]),
+            ipp: None, // client IP unknown: not bound
+            jkt: Some(vec![3; 16]),
+            ctp: Some(vec![]), // bound to an (empty) value: must stay distinguishable
             tfp: None,
             ipa: Some(vec![5; 16]),
         },
+        renew_no: 6,
     };
     assert_eq!(claims.check(1_790_000_000_500), Ok(()));
 
@@ -783,7 +838,12 @@ fn sealed_challenge_claims_round_trip_with_binding_presence() {
     let decoded = v1::SealedChallengeClaims::decode(wire.as_slice()).unwrap();
     let bind = decoded.bind.clone().unwrap();
     assert_eq!(bind.ipp, None);
-    assert_eq!(bind.jkt, Some(vec![]));
+    assert_eq!(bind.ctp, Some(vec![]));
+    assert_eq!(decoded.renew_no, 6);
+    assert_eq!(
+        decoded.pow.as_ref().map(|p| (p.k, p.a11y_difficulty)),
+        Some((8, 17))
+    );
     assert_eq!(decoded.providers, ["turnstile", "self_hold", "pow_a11y"]);
     assert_eq!(decoded.r#type(), v1::ChallengeType::Interactive);
     assert_eq!(claims_from_proto(decoded), Some(claims.clone()));
@@ -806,7 +866,11 @@ fn sealed_challenge_envelope_round_trip() {
     assert_eq!(back, envelope);
     // The claims and the envelope are distinct messages with fixed field sets.
     assert_eq!(proto_fields("morphgate.v1.SealedChallenge").len(), 4);
-    assert_eq!(proto_fields("morphgate.v1.SealedChallengeClaims").len(), 15);
+    assert_eq!(proto_fields("morphgate.v1.SealedChallengeClaims").len(), 16);
+    assert_eq!(
+        proto_fields("morphgate.v1.SealedChallengeClaims.Pow").len(),
+        4
+    );
     assert_eq!(
         proto_fields("morphgate.v1.SealedChallengeClaims.Bind").len(),
         6

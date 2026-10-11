@@ -99,16 +99,19 @@ type SealedChallengeClaims struct {
 	Site       string                 `protobuf:"bytes,4,opt,name=site,proto3" json:"site,omitempty"`                                  // site id; must own the request Host
 	RouteClass string                 `protobuf:"bytes,5,opt,name=route_class,json=routeClass,proto3" json:"route_class,omitempty"`    // [a-z0-9_-]{1,32}; also the Turnstile action
 	Type       ChallengeType          `protobuf:"varint,6,opt,name=type,proto3,enum=morphgate.v1.ChallengeType" json:"type,omitempty"` // INVISIBLE | POW | INTERACTIVE; must match the endpoint
-	Providers  []string               `protobuf:"bytes,7,rep,name=providers,proto3" json:"providers,omitempty"`                        // interactive only: offered provider ids, ordered, first = default;
-	// a submitted provider_id outside this set fails (anti-downgrade)
-	RiskBand      string                      `protobuf:"bytes,8,opt,name=risk_band,json=riskBand,proto3" json:"risk_band,omitempty"`     // low | medium | high | very_high: PoW difficulty and scoring prior
-	AttemptNo     uint32                      `protobuf:"varint,9,opt,name=attempt_no,json=attemptNo,proto3" json:"attempt_no,omitempty"` // interactive only: 1-based; > M -> temporary block
-	Iat           int64                       `protobuf:"varint,10,opt,name=iat,proto3" json:"iat,omitempty"`                             // issued at, Unix epoch milliseconds
-	Exp           int64                       `protobuf:"varint,11,opt,name=exp,proto3" json:"exp,omitempty"`                             // expires at, Unix epoch milliseconds
-	UiSeed        uint64                      `protobuf:"varint,12,opt,name=ui_seed,json=uiSeed,proto3" json:"ui_seed,omitempty"`         // interactive only: seeds hold duration, button offset, pow_salt
+	Providers  []string               `protobuf:"bytes,7,rep,name=providers,proto3" json:"providers,omitempty"`                        // interactive: non-empty, unique, contains "pow_a11y", subset of
+	// {self_hold, pow_a11y, turnstile}; ordered, first = default; a submitted
+	// provider outside this set fails (anti-downgrade); invisible / pow: empty
+	RiskBand  string `protobuf:"bytes,8,opt,name=risk_band,json=riskBand,proto3" json:"risk_band,omitempty"`     // low | medium | high | very_high: PoW difficulty and scoring prior
+	AttemptNo uint32 `protobuf:"varint,9,opt,name=attempt_no,json=attemptNo,proto3" json:"attempt_no,omitempty"` // interactive: 1-based attempt number; invisible / pow: 0
+	Iat       int64  `protobuf:"varint,10,opt,name=iat,proto3" json:"iat,omitempty"`                             // issued at, Unix epoch milliseconds
+	Exp       int64  `protobuf:"varint,11,opt,name=exp,proto3" json:"exp,omitempty"`                             // expires at, Unix epoch milliseconds
+	UiSeed    uint64 `protobuf:"varint,12,opt,name=ui_seed,json=uiSeed,proto3" json:"ui_seed,omitempty"`         // interactive: random, non-zero; seeds the hold duration and the button
+	// offset (Phase 2 spec §6.3); invisible / pow: 0
 	Pow           *SealedChallengeClaims_Pow  `protobuf:"bytes,13,opt,name=pow,proto3" json:"pow,omitempty"`
 	Ret           []byte                      `protobuf:"bytes,14,opt,name=ret,proto3" json:"ret,omitempty"` // hash of the same-site return path (anti open redirect)
 	Bind          *SealedChallengeClaims_Bind `protobuf:"bytes,15,opt,name=bind,proto3" json:"bind,omitempty"`
+	RenewNo       uint32                      `protobuf:"varint,16,opt,name=renew_no,json=renewNo,proto3" json:"renew_no,omitempty"` // interactive: renewals so far in this chain, 0..6; invisible / pow: 0
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -248,13 +251,22 @@ func (x *SealedChallengeClaims) GetBind() *SealedChallengeClaims_Bind {
 	return nil
 }
 
-// PoW parameters, verified server-side.
+func (x *SealedChallengeClaims) GetRenewNo() uint32 {
+	if x != nil {
+		return x.RenewNo
+	}
+	return 0
+}
+
+// PoW parameters, verified server-side (docs/impl/phase2-spec.md §6.4).
 type SealedChallengeClaims_Pow struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Alg           string                 `protobuf:"bytes,1,opt,name=alg,proto3" json:"alg,omitempty"`
-	Difficulty    uint32                 `protobuf:"varint,2,opt,name=difficulty,proto3" json:"difficulty,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Alg            string                 `protobuf:"bytes,1,opt,name=alg,proto3" json:"alg,omitempty"`                                              // "sha256-hashcash-v1" (invisible / pow) | "sha256-hashcash-v2" (interactive)
+	Difficulty     uint32                 `protobuf:"varint,2,opt,name=difficulty,proto3" json:"difficulty,omitempty"`                               // v1: the single puzzle; v2: every sub-puzzle, provider self_hold (or turnstile)
+	K              uint32                 `protobuf:"varint,3,opt,name=k,proto3" json:"k,omitempty"`                                                 // v2 only: number of sub-puzzles, 1..8; v1: 0
+	A11YDifficulty uint32                 `protobuf:"varint,4,opt,name=a11y_difficulty,json=a11yDifficulty,proto3" json:"a11y_difficulty,omitempty"` // v2 only: every sub-puzzle, provider pow_a11y; v1: 0
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SealedChallengeClaims_Pow) Reset() {
@@ -301,16 +313,31 @@ func (x *SealedChallengeClaims_Pow) GetDifficulty() uint32 {
 	return 0
 }
 
+func (x *SealedChallengeClaims_Pow) GetK() uint32 {
+	if x != nil {
+		return x.K
+	}
+	return 0
+}
+
+func (x *SealedChallengeClaims_Pow) GetA11YDifficulty() uint32 {
+	if x != nil {
+		return x.A11YDifficulty
+	}
+	return 0
+}
+
 // Binding hashes (docs/04 §5 for phase and strength). Presence-aware: an
 // unset field is not bound; a set field is checked even if its hash is empty.
 type SealedChallengeClaims_Bind struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Uah           []byte                 `protobuf:"bytes,1,opt,name=uah,proto3,oneof" json:"uah,omitempty"` // hash(UA family + major version): hard
-	Ipp           []byte                 `protobuf:"bytes,2,opt,name=ipp,proto3,oneof" json:"ipp,omitempty"` // hash(IP /24 or /48): soft (same ASN -> risk; cross ASN / country -> new C)
-	Jkt           []byte                 `protobuf:"bytes,3,opt,name=jkt,proto3,oneof" json:"jkt,omitempty"` // Phase 2+: SDK session key thumbprint: hard
-	Ctp           []byte                 `protobuf:"bytes,4,opt,name=ctp,proto3,oneof" json:"ctp,omitempty"` // cloudflare only: coarse TLS tuple hash: shadow only
-	Tfp           []byte                 `protobuf:"bytes,5,opt,name=tfp,proto3,oneof" json:"tfp,omitempty"` // direct_tls only, after the JA4 spike: JA4 hash: hard
-	Ipa           []byte                 `protobuf:"bytes,6,opt,name=ipa,proto3,oneof" json:"ipa,omitempty"` // hash(ASN of the client IP at issuance): decides the soft ipp result
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Uah   []byte                 `protobuf:"bytes,1,opt,name=uah,proto3,oneof" json:"uah,omitempty"` // hash(UA family + major version): hard
+	Ipp   []byte                 `protobuf:"bytes,2,opt,name=ipp,proto3,oneof" json:"ipp,omitempty"` // hash(IP /24 or /48): soft (same ASN -> risk; cross ASN / country -> new C)
+	Jkt   []byte                 `protobuf:"bytes,3,opt,name=jkt,proto3,oneof" json:"jkt,omitempty"` // bind_hash("jkt", <43-char thumbprint>) when the C is bound to a
+	// session key (Phase 2 spec D-41): hard
+	Ctp           []byte `protobuf:"bytes,4,opt,name=ctp,proto3,oneof" json:"ctp,omitempty"` // cloudflare only: coarse TLS tuple hash: shadow only
+	Tfp           []byte `protobuf:"bytes,5,opt,name=tfp,proto3,oneof" json:"tfp,omitempty"` // direct_tls only, after the JA4 spike: JA4 hash: hard
+	Ipa           []byte `protobuf:"bytes,6,opt,name=ipa,proto3,oneof" json:"ipa,omitempty"` // hash(ASN of the client IP at issuance): decides the soft ipp result
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -396,7 +423,7 @@ const file_morphgate_v1_challenge_proto_rawDesc = "" +
 	"\x01v\x18\x01 \x01(\rR\x01v\x12\x10\n" +
 	"\x03kid\x18\x02 \x01(\tR\x03kid\x12\x16\n" +
 	"\x06xnonce\x18\x03 \x01(\fR\x06xnonce\x12\x0e\n" +
-	"\x02ct\x18\x04 \x01(\fR\x02ct\"\xd1\x05\n" +
+	"\x02ct\x18\x04 \x01(\fR\x02ct\"\xa3\x06\n" +
 	"\x15SealedChallengeClaims\x12\f\n" +
 	"\x01v\x18\x01 \x01(\rR\x01v\x12\x10\n" +
 	"\x03kid\x18\x02 \x01(\tR\x03kid\x12\x14\n" +
@@ -415,12 +442,15 @@ const file_morphgate_v1_challenge_proto_rawDesc = "" +
 	"\aui_seed\x18\f \x01(\x04R\x06uiSeed\x129\n" +
 	"\x03pow\x18\r \x01(\v2'.morphgate.v1.SealedChallengeClaims.PowR\x03pow\x12\x10\n" +
 	"\x03ret\x18\x0e \x01(\fR\x03ret\x12<\n" +
-	"\x04bind\x18\x0f \x01(\v2(.morphgate.v1.SealedChallengeClaims.BindR\x04bind\x1a7\n" +
+	"\x04bind\x18\x0f \x01(\v2(.morphgate.v1.SealedChallengeClaims.BindR\x04bind\x12\x19\n" +
+	"\brenew_no\x18\x10 \x01(\rR\arenewNo\x1an\n" +
 	"\x03Pow\x12\x10\n" +
 	"\x03alg\x18\x01 \x01(\tR\x03alg\x12\x1e\n" +
 	"\n" +
 	"difficulty\x18\x02 \x01(\rR\n" +
-	"difficulty\x1a\xc0\x01\n" +
+	"difficulty\x12\f\n" +
+	"\x01k\x18\x03 \x01(\rR\x01k\x12'\n" +
+	"\x0fa11y_difficulty\x18\x04 \x01(\rR\x0ea11yDifficulty\x1a\xc0\x01\n" +
 	"\x04Bind\x12\x15\n" +
 	"\x03uah\x18\x01 \x01(\fH\x00R\x03uah\x88\x01\x01\x12\x15\n" +
 	"\x03ipp\x18\x02 \x01(\fH\x01R\x03ipp\x88\x01\x01\x12\x15\n" +

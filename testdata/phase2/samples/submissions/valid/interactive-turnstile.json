@@ -1,0 +1,24 @@
+{
+  "v": 2,
+  "type": "interactive",
+  "c": "AAECAwQFBgcICQoLDA0ODw",
+  "p": "turnstile",
+  "pp": "kat.turnstile.token.0000000000000000",
+  "t": "{\"ix\":{\"v\":1,\"mode\":\"external\",\"modality\":\"mouse\",\"locale\":\"en\",\"ks\":\"local\",\"sv\":\"0.3.0\",\"fallback\":null,\"trusted\":3,\"act_ms\":1500}}",
+  "pow": {
+    "counters": [
+      3,
+      141
+    ]
+  },
+  "ret": "/signup",
+  "ts": 1790000100000,
+  "build": "0123456789abcdef",
+  "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "3ysMqtWPQYC3tAK7dPz_zflvyJEhfD7n12YIeKoBm44",
+    "y": "6NNjVTVw_T7Rww18TFD2kzslfB4vmadK7UZLMJi9Y84"
+  },
+  "sig": "Lq-EoKcWmTS5yymtx_9CmM7GsX4YG5PFK-ZbATO1rKZRml3rxImFUgm7xd-0MuUwJdQtdYGSs_If_o5sVnF7UA"
+}

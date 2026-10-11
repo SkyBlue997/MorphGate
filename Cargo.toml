@@ -51,6 +51,10 @@ hmac = "0.13.0"
 subtle = "2.6.1"
 zeroize = { version = "1.8.2", features = ["derive"] }
 base64 = "0.23.1"
+# Phase 2 (WP-R5): ES256 verification of SDK session-key signatures and MG-Proof
+# (signature::ECDSA_P256_SHA256_FIXED only). Same version and features as the copy
+# rustls already compiles for reqwest, so no crate is added to Cargo.lock.
+aws-lc-rs = { version = "1.18.1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 
 # mg-intel (Phase 1, WP-R3): IP sets, GeoLite2 mmdb, crawler registry.
 maxminddb = "0.32.0"

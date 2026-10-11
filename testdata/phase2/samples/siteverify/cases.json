@@ -1,0 +1,154 @@
+{
+  "about": "Turnstile siteverify response bodies (HTTP 200, application/json) and the outcome of spec §8.5 for the expectation below (a case may override now_ms). malformed/ are responses that do not fit §8.4 (Unavailable, ic.provider_unavailable). Retries (§8.4) are the client's: internal-error is retried once with the same idempotency key, invalid-input-secret once with the previous secret when there is one; the outcomes here are after the retries, without a previous secret",
+  "expect": {
+    "host": "example.com",
+    "hostnames": [
+      "example.com",
+      "www.example.com"
+    ],
+    "action": "login",
+    "cdata": "73JZ2i2xITj7ZpLLQN4TQePZjAncib9iP5EDW7ZYrFI",
+    "cdata_from": {
+      "root_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "site": "blog",
+      "epoch": 20717,
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f"
+    },
+    "c_iat_ms": 1790000000000,
+    "now_ms": 1790000060000
+  },
+  "cases": [
+    {
+      "file": "pass.json",
+      "outcome": "pass",
+      "reason": null
+    },
+    {
+      "file": "pass-extra-fields.json",
+      "outcome": "pass",
+      "reason": null
+    },
+    {
+      "file": "pass-challenge-ts-at-c-iat-minus-5s.json",
+      "outcome": "pass",
+      "reason": null
+    },
+    {
+      "file": "hostname-mismatch.json",
+      "outcome": "fail",
+      "reason": "ic.ts_hostname"
+    },
+    {
+      "file": "hostname-not-configured.json",
+      "outcome": "fail",
+      "reason": "ic.ts_hostname"
+    },
+    {
+      "file": "action-mismatch.json",
+      "outcome": "fail",
+      "reason": "ic.ts_action"
+    },
+    {
+      "file": "cdata-mismatch.json",
+      "outcome": "fail",
+      "reason": "ic.ts_cdata"
+    },
+    {
+      "file": "challenge-ts-before-c-iat.json",
+      "outcome": "fail",
+      "reason": "ic.ts_time"
+    },
+    {
+      "file": "challenge-ts-in-future.json",
+      "outcome": "fail",
+      "reason": "ic.ts_time"
+    },
+    {
+      "file": "challenge-ts-older-than-300s.json",
+      "now_ms": 1790000330001,
+      "outcome": "fail",
+      "reason": "ic.ts_time"
+    },
+    {
+      "file": "pass-challenge-ts-300s-old.json",
+      "now_ms": 1790000330000,
+      "outcome": "pass",
+      "reason": null
+    },
+    {
+      "file": "invalid-input-response.json",
+      "outcome": "fail",
+      "reason": "ic.ts_fail"
+    },
+    {
+      "file": "missing-input-response.json",
+      "outcome": "fail",
+      "reason": "ic.ts_fail"
+    },
+    {
+      "file": "timeout-or-duplicate.json",
+      "outcome": "fail",
+      "reason": "ic.ts_dup"
+    },
+    {
+      "file": "bad-request.json",
+      "outcome": "unavailable",
+      "reason": "ic.provider_unavailable"
+    },
+    {
+      "file": "internal-error.json",
+      "outcome": "unavailable",
+      "reason": "ic.provider_unavailable"
+    },
+    {
+      "file": "invalid-input-secret.json",
+      "outcome": "misconfigured",
+      "reason": "ic.provider_misconfigured"
+    },
+    {
+      "file": "missing-input-secret.json",
+      "outcome": "misconfigured",
+      "reason": "ic.provider_misconfigured"
+    },
+    {
+      "file": "malformed/not-json.json",
+      "outcome": "unavailable",
+      "reason": "ic.provider_unavailable"
+    },
+    {
+      "file": "malformed/top-level-array.json",
+      "outcome": "unavailable",
+      "reason": "ic.provider_unavailable"
+    },
+    {
+      "file": "malformed/success-not-bool.json",
+      "outcome": "unavailable",
+      "reason": "ic.provider_unavailable"
+    },
+    {
+      "file": "malformed/success-missing.json",
+      "outcome": "unavailable",
+      "reason": "ic.provider_unavailable"
+    },
+    {
+      "file": "malformed/challenge-ts-not-rfc3339.json",
+      "outcome": "unavailable",
+      "reason": "ic.provider_unavailable"
+    },
+    {
+      "file": "malformed/error-codes-9.json",
+      "outcome": "unavailable",
+      "reason": "ic.provider_unavailable"
+    },
+    {
+      "file": "malformed/error-codes-not-array.json",
+      "outcome": "unavailable",
+      "reason": "ic.provider_unavailable"
+    },
+    {
+      "file": "malformed/larger-than-16-kib.json",
+      "outcome": "unavailable",
+      "reason": "ic.provider_unavailable"
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "about": "MG-Proof header values (one line each, without the header name) and their result; the same cases with every other reason are in kat.json mg_proof",
+  "cases": [
+    {
+      "file": "valid.txt",
+      "request": {
+        "method": "POST",
+        "scheme": "https",
+        "host": "example.com",
+        "path": "/api/save",
+        "now_s": 1790000000,
+        "expected_jkt": "L4dd7awNurWUQc4fTCqCUVBTgWLzOpDFXjyWVZ9LxOc"
+      },
+      "expect": "valid"
+    },
+    {
+      "file": "valid-high-s.txt",
+      "request": {
+        "method": "POST",
+        "scheme": "https",
+        "host": "example.com",
+        "path": "/api/save",
+        "now_s": 1790000000,
+        "expected_jkt": "L4dd7awNurWUQc4fTCqCUVBTgWLzOpDFXjyWVZ9LxOc"
+      },
+      "expect": "valid"
+    },
+    {
+      "file": "jwk-extra-ext.txt",
+      "request": {
+        "method": "POST",
+        "scheme": "https",
+        "host": "example.com",
+        "path": "/api/save",
+        "now_s": 1790000000,
+        "expected_jkt": "L4dd7awNurWUQc4fTCqCUVBTgWLzOpDFXjyWVZ9LxOc"
+      },
+      "expect": "proof.malformed"
+    },
+    {
+      "file": "jkt-mismatch.txt",
+      "request": {
+        "method": "POST",
+        "scheme": "https",
+        "host": "example.com",
+        "path": "/api/save",
+        "now_s": 1790000000,
+        "expected_jkt": "ApFIcH5tuZyflooVd5naGmHD0Skd3zfu7rEJK_OyjkY"
+      },
+      "expect": "proof.jkt"
+    },
+    {
+      "file": "htu-encoded-slash.txt",
+      "request": {
+        "method": "POST",
+        "scheme": "https",
+        "host": "example.com",
+        "path": "/api/save",
+        "now_s": 1790000000,
+        "expected_jkt": "L4dd7awNurWUQc4fTCqCUVBTgWLzOpDFXjyWVZ9LxOc"
+      },
+      "expect": "proof.htu"
+    },
+    {
+      "file": "iat-minus-31.txt",
+      "request": {
+        "method": "POST",
+        "scheme": "https",
+        "host": "example.com",
+        "path": "/api/save",
+        "now_s": 1790000000,
+        "expected_jkt": "L4dd7awNurWUQc4fTCqCUVBTgWLzOpDFXjyWVZ9LxOc"
+      },
+      "expect": "proof.iat"
+    },
+    {
+      "file": "sig-changed.txt",
+      "request": {
+        "method": "POST",
+        "scheme": "https",
+        "host": "example.com",
+        "path": "/api/save",
+        "now_s": 1790000000,
+        "expected_jkt": "L4dd7awNurWUQc4fTCqCUVBTgWLzOpDFXjyWVZ9LxOc"
+      },
+      "expect": "proof.sig"
+    }
+  ]
+}

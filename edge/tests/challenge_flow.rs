@@ -902,6 +902,7 @@ fn replay_unchecked_clearance_is_refused_by_fail_closed_routes() {
         allow_sample_rate: 1.0,
         access_log: false,
         stream: false,
+        ..Default::default()
     });
     env.write_lkg("blog", &sign(&b));
     let events = env.dir.join("events.jsonl");

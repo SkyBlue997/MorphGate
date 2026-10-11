@@ -217,6 +217,7 @@ pub fn issue(req: &IssueRequest<'_>, rng: &dyn Rng) -> Result<Issued, IssueError
         pow: Some(PowParams {
             alg: POW_ALG.to_owned(),
             difficulty: req.bits,
+            ..Default::default()
         }),
         ret_hash: ret_hash(req.ret).to_vec(),
         bind: ChallengeBind {
@@ -227,6 +228,7 @@ pub fn issue(req: &IssueRequest<'_>, rng: &dyn Rng) -> Result<Issued, IssueError
             jkt: None,
             tfp: None,
         },
+        renew_no: 0,
     };
     let c = req
         .sealer

@@ -522,9 +522,12 @@ pub trait InteractiveChallengeProvider: Send + Sync {
     ) -> BoxFuture<'a, ProviderVerdict>;
 
     /// Behaviour while the provider is unavailable on `route_class`.
-    /// Default: keep the visitor challenged.
+    /// Default: fall back to the built-in `self_hold` (docs/impl/phase2-spec.md
+    /// D-51: the built-in providers are always offered, so failing closed
+    /// adds no protection; the bundle builder and the Edge reject
+    /// `fail_closed` and `fail_open_with_signal`).
     fn on_unavailable(&self, _route_class: &str) -> UnavailablePolicy {
-        UnavailablePolicy::FailClosed
+        UnavailablePolicy::UseProvider(ProviderId::SelfHold)
     }
 
     /// Current health as tracked by the provider.
@@ -786,7 +789,11 @@ mod tests {
             assert_eq!(v.outcome, VerdictOutcome::Unavailable);
             assert!(!v.is_pass());
         }
-        assert_eq!(p.on_unavailable("login"), UnavailablePolicy::FailClosed);
+        assert_eq!(
+            p.on_unavailable("login"),
+            UnavailablePolicy::UseProvider(ProviderId::SelfHold),
+            "D-51"
+        );
         assert_eq!(p.health(), ProviderHealth::Healthy);
     }
 

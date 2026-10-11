@@ -14,6 +14,7 @@
 //! | [`state`] | WP-C3 | Valkey client (pipelines, `mg_gcra`, `mg_nonce_issue`), circuit breaker, local mode |
 //! | [`events`] | WP-C4 | bounded event queues, VictoriaLogs `jsonline` batches, file sink, `mg:ev` entries |
 //! | [`origin_auth`] | I-38 | `MG-Origin-Auth`: Edge → origin HMAC signing and the reference check |
+//! | [`outbound`] | Phase 2 WP-C6 | outbound HTTP, the Turnstile siteverify client and its circuit breaker (docs/impl/phase2-spec.md §8.4) |
 //!
 //! The `testkit` feature adds shared test helpers (a signed-bundle builder and
 //! HTTP test server, a Valkey fixture with a fault-injecting proxy, a fake
@@ -22,6 +23,7 @@
 pub mod bundle;
 pub mod events;
 pub mod origin_auth;
+pub mod outbound;
 pub mod request;
 pub mod state;
 pub mod upstream;

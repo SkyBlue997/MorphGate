@@ -362,6 +362,7 @@ fn edge_route(env: &str) -> RouteInfo {
         sensitivity: RouteSensitivity::Low,
         require_clearance: false,
         fail_closed: false,
+        ..Default::default()
     }
 }
 
@@ -720,6 +721,7 @@ impl EdgeProxy {
                     sensitivity: rm.route.sensitivity,
                     require_clearance: rm.require_clearance,
                     fail_closed: rm.fail_closed,
+                    ..Default::default()
                 };
                 ctx.route = Some(SelectedRoute {
                     env: env.name.clone(),
@@ -1090,7 +1092,10 @@ impl EdgeProxy {
         let m = metrics();
         m.observe_timing(site_id, ctx.route_kind, &ctx.timing);
         let bundle = runtime.bundle.as_deref();
-        let mut cfg: EventConfig = bundle.map_or(*DEFAULT_EVENTS, |b| b.events);
+        // EventConfig is no longer `Copy` (Phase 2 `scanner_baits`); while that
+        // list is empty (always, until WP-E2b uses it) the clone allocates nothing.
+        let mut cfg: EventConfig =
+            bundle.map_or_else(|| DEFAULT_EVENTS.clone(), |b| b.events.clone());
         // Without Valkey there is no mg:ev output: build no entries.
         cfg.stream &= self.shared.stream_output;
         let env = match (&ctx.evaluation, bundle) {

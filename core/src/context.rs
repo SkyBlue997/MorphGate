@@ -297,6 +297,12 @@ pub struct Http {
     /// Tier 1 `x-mg-cf-accept-encoding` (value before Cloudflare rewrote it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accept_encoding_orig: Option<String>,
+    /// Navigation request (CEL `http.navigation`, Phase 2 spec §4.1): the
+    /// Phase 1 navigation test of Phase 1 spec §9.9 (`Sec-Fetch-Mode:
+    /// navigate`, or no `Sec-Fetch-Mode` and an `Accept` with `text/html`).
+    /// Client-controlled, never a security boundary.
+    #[serde(skip_serializing_if = "is_false")]
+    pub navigation: bool,
 }
 
 wire_enum! {
@@ -454,6 +460,14 @@ pub struct Token {
     pub age_s: u32,
     #[serde(skip_serializing_if = "TokenBind::is_empty")]
     pub bind: TokenBind,
+    /// The clearance carries `cnf.jkt` (CEL `identity.token.bound`, Phase 2
+    /// spec §4.1, D-46).
+    #[serde(skip_serializing_if = "is_false")]
+    pub bound: bool,
+    /// Seconds since the level was obtained: `now - lat`, or `now - iat` for
+    /// v1 tokens (CEL `identity.token.level_age`, Phase 2 spec §4.1).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub level_age: u32,
 }
 
 /// Per-request proof of possession (docs/04 §6.1, CEL `identity.proof`).
@@ -464,6 +478,10 @@ pub struct Proof {
     /// The proof's `jti` was seen before.
     #[serde(skip_serializing_if = "is_false")]
     pub replayed: bool,
+    /// An `MG-Proof` header was present (CEL `identity.proof.present`,
+    /// Phase 2 spec §4.1).
+    #[serde(skip_serializing_if = "is_false")]
+    pub present: bool,
 }
 
 /// Authorised AI agent (docs/05 §3-§4, CEL `identity.agent`).
@@ -721,6 +739,7 @@ mod tests {
                         ctp: Some(BindResult::Mismatch),
                         ..TokenBind::default()
                     },
+                    ..Token::default()
                 },
                 crawler: Crawler {
                     cf_vbot: Some(false),

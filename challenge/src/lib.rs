@@ -17,6 +17,9 @@
 //! * [`clearance`]: PASETO v4.local clearance tokens (`__Host-mg_clr`): mint,
 //!   verify, session reuse and the cookie helpers (§6.5, §6.6).
 //!
+//! Phase 2 (WP-R5, docs/impl/phase2-spec.md §6) adds [`jwk`], [`sig`],
+//! [`proof`], [`ui`] and [`turnstile`]; they are empty until it lands.
+//!
 //! ## Rules for this crate
 //!
 //! * **No I/O, no clock, no global RNG.** Callers pass `now` and an [`Rng`]
@@ -35,10 +38,15 @@ mod b64;
 pub mod bind;
 pub mod clearance;
 mod json;
+pub mod jwk;
 pub mod keys;
 pub mod pow;
+pub mod proof;
 pub mod rng;
 pub mod sealed;
+pub mod sig;
+pub mod turnstile;
+pub mod ui;
 
 pub use bind::{
     BIND_HASH_LEN, BindCheck, BindInputs, MAX_RET_LEN, RetError, bind_hash, check_challenge_bind,

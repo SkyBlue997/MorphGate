@@ -483,6 +483,7 @@ mod tests {
             allow_sample_rate: rate,
             access_log,
             stream,
+            ..Default::default()
         }
     }
 
@@ -542,6 +543,7 @@ mod tests {
                 sensitivity,
                 require_clearance: false,
                 fail_closed: false,
+                ..Default::default()
             },
             enforcement: Enforcement::Forward,
             bind: BindInputs {

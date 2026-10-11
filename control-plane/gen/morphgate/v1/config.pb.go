@@ -21,6 +21,54 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// MG-Proof requirement of a route (Phase 2 spec D-40, §9.1). When a request
+// matches several routes, proof is required if any of them requires it.
+type ProofMode int32
+
+const (
+	ProofMode_PROOF_MODE_OFF      ProofMode = 0
+	ProofMode_PROOF_MODE_REQUIRED ProofMode = 1
+)
+
+// Enum value maps for ProofMode.
+var (
+	ProofMode_name = map[int32]string{
+		0: "PROOF_MODE_OFF",
+		1: "PROOF_MODE_REQUIRED",
+	}
+	ProofMode_value = map[string]int32{
+		"PROOF_MODE_OFF":      0,
+		"PROOF_MODE_REQUIRED": 1,
+	}
+)
+
+func (x ProofMode) Enum() *ProofMode {
+	p := new(ProofMode)
+	*p = x
+	return p
+}
+
+func (x ProofMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ProofMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_morphgate_v1_config_proto_enumTypes[0].Descriptor()
+}
+
+func (ProofMode) Type() protoreflect.EnumType {
+	return &file_morphgate_v1_config_proto_enumTypes[0]
+}
+
+func (x ProofMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ProofMode.Descriptor instead.
+func (ProofMode) EnumDescriptor() ([]byte, []int) {
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{0}
+}
+
 // Per-route override of the site's monitor switch (spec I-36). When a request
 // matches several routes through different path views (spec §9.4), the
 // strictest wins: ENFORCE > INHERIT > MONITOR. An unknown value makes the
@@ -58,11 +106,11 @@ func (x RouteMode) String() string {
 }
 
 func (RouteMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_morphgate_v1_config_proto_enumTypes[0].Descriptor()
+	return file_morphgate_v1_config_proto_enumTypes[1].Descriptor()
 }
 
 func (RouteMode) Type() protoreflect.EnumType {
-	return &file_morphgate_v1_config_proto_enumTypes[0]
+	return &file_morphgate_v1_config_proto_enumTypes[1]
 }
 
 func (x RouteMode) Number() protoreflect.EnumNumber {
@@ -71,7 +119,7 @@ func (x RouteMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RouteMode.Descriptor instead.
 func (RouteMode) EnumDescriptor() ([]byte, []int) {
-	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{0}
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{1}
 }
 
 type UpstreamProfile struct {
@@ -194,8 +242,11 @@ type Route struct {
 	RedactPath       bool             `protobuf:"varint,11,opt,name=redact_path,json=redactPath,proto3" json:"redact_path,omitempty"`                   // events and access records log "/<route name>" instead of the path (tokenized URLs)
 	Mode             RouteMode        `protobuf:"varint,12,opt,name=mode,proto3,enum=morphgate.v1.RouteMode" json:"mode,omitempty"`                     // monitor / enforce override of SiteBundle.monitor_only (spec I-36)
 	NeverChallenge   bool             `protobuf:"varint,13,opt,name=never_challenge,json=neverChallenge,proto3" json:"never_challenge,omitempty"`       // CHALLENGE is recorded and forwarded; BLOCK / RATE_LIMIT apply (spec I-37)
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Phase 2 (docs/impl/phase2-spec.md §3.2); both must be zero when schema_version = 1.
+	Proof         ProofMode     `protobuf:"varint,14,opt,name=proof,proto3,enum=morphgate.v1.ProofMode" json:"proof,omitempty"`                           // D-40; an unknown value makes the bundle invalid
+	MinLevel      ChallengeType `protobuf:"varint,15,opt,name=min_level,json=minLevel,proto3,enum=morphgate.v1.ChallengeType" json:"min_level,omitempty"` // D-64; UNSPECIFIED | INVISIBLE | POW | INTERACTIVE, anything else is invalid
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Route) Reset() {
@@ -317,6 +368,20 @@ func (x *Route) GetNeverChallenge() bool {
 		return x.NeverChallenge
 	}
 	return false
+}
+
+func (x *Route) GetProof() ProofMode {
+	if x != nil {
+		return x.Proof
+	}
+	return ProofMode_PROOF_MODE_OFF
+}
+
+func (x *Route) GetMinLevel() ChallengeType {
+	if x != nil {
+		return x.MinLevel
+	}
+	return ChallengeType_CHALLENGE_TYPE_UNSPECIFIED
 }
 
 type CompiledRule struct {
@@ -601,18 +666,23 @@ func (x *RateLimit) GetSignalWeight() float32 {
 	return 0
 }
 
+// External interactive provider (Phase 2 spec §3.2, §8.2, D-51). Public
+// configuration only: the Turnstile secret is a deployment property in
+// edge.toml [[sites]] turnstile_keys.
 type ProviderConfig struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
-	Id               string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // self_hold | pow_a11y | turnstile | tencent | aliyun_v2
+	Id               string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Enabled          bool                   `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	Sitekey          string                 `protobuf:"bytes,3,opt,name=sitekey,proto3" json:"sitekey,omitempty"`
-	SecretRefs       []string               `protobuf:"bytes,4,rep,name=secret_refs,json=secretRefs,proto3" json:"secret_refs,omitempty"` // secret references; two during rotation
-	AllowedCountries []string               `protobuf:"bytes,5,rep,name=allowed_countries,json=allowedCountries,proto3" json:"allowed_countries,omitempty"`
-	DeniedCountries  []string               `protobuf:"bytes,6,rep,name=denied_countries,json=deniedCountries,proto3" json:"denied_countries,omitempty"` // turnstile: ["CN"]
-	RouteIds         []string               `protobuf:"bytes,7,rep,name=route_ids,json=routeIds,proto3" json:"route_ids,omitempty"`
-	TimeoutMs        uint32                 `protobuf:"varint,8,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
-	Fallback         string                 `protobuf:"bytes,9,opt,name=fallback,proto3" json:"fallback,omitempty"` // provider id | fail_open_with_signal | fail_closed
-	Mode             string                 `protobuf:"bytes,10,opt,name=mode,proto3" json:"mode,omitempty"`        // shadow | enforce
+	Sitekey          string                 `protobuf:"bytes,3,opt,name=sitekey,proto3" json:"sitekey,omitempty"`                                           // public widget sitekey
+	SecretRefs       []string               `protobuf:"bytes,4,rep,name=secret_refs,json=secretRefs,proto3" json:"secret_refs,omitempty"`                   // must be empty (D-51): the secret is in edge.toml
+	AllowedCountries []string               `protobuf:"bytes,5,rep,name=allowed_countries,json=allowedCountries,proto3" json:"allowed_countries,omitempty"` // must be empty
+	DeniedCountries  []string               `protobuf:"bytes,6,rep,name=denied_countries,json=deniedCountries,proto3" json:"denied_countries,omitempty"`    // ISO 3166-1 alpha-2 countries that never get Turnstile; empty by default, nothing is hard-coded (D-70)
+	RouteIds         []string               `protobuf:"bytes,7,rep,name=route_ids,json=routeIds,proto3" json:"route_ids,omitempty"`                         // empty = every route
+	TimeoutMs        uint32                 `protobuf:"varint,8,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`                     // 1000..5000
+	Fallback         string                 `protobuf:"bytes,9,opt,name=fallback,proto3" json:"fallback,omitempty"`                                         // Phase 2: "self_hold" only (D-51); anything else makes the bundle invalid
+	Mode             string                 `protobuf:"bytes,10,opt,name=mode,proto3" json:"mode,omitempty"`                                                // "shadow" | "enforce"
+	Hostnames        []string               `protobuf:"bytes,11,rep,name=hostnames,proto3" json:"hostnames,omitempty"`                                      // exact FQDNs in the widget; the request Host must be one of them
+	Selection        string                 `protobuf:"bytes,12,opt,name=selection,proto3" json:"selection,omitempty"`                                      // "first" | "escalate_after_fail"
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -713,6 +783,20 @@ func (x *ProviderConfig) GetFallback() string {
 func (x *ProviderConfig) GetMode() string {
 	if x != nil {
 		return x.Mode
+	}
+	return ""
+}
+
+func (x *ProviderConfig) GetHostnames() []string {
+	if x != nil {
+		return x.Hostnames
+	}
+	return nil
+}
+
+func (x *ProviderConfig) GetSelection() string {
+	if x != nil {
+		return x.Selection
 	}
 	return ""
 }
@@ -886,14 +970,16 @@ type SiteBundle struct {
 	CreatedAtMs  int64                  `protobuf:"varint,3,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
 	Upstream     *UpstreamProfile       `protobuf:"bytes,4,opt,name=upstream,proto3" json:"upstream,omitempty"`
 	Environments []*Environment         `protobuf:"bytes,5,rep,name=environments,proto3" json:"environments,omitempty"`
-	Providers    []*ProviderConfig      `protobuf:"bytes,6,rep,name=providers,proto3" json:"providers,omitempty"` // interactive providers: Phase 2 (empty in Phase 1)
+	Providers    []*ProviderConfig      `protobuf:"bytes,6,rep,name=providers,proto3" json:"providers,omitempty"` // Phase 2: at most one entry, id "turnstile" (spec §8.2); empty when schema_version = 1
 	Artifacts    []*ArtifactRef         `protobuf:"bytes,7,rep,name=artifacts,proto3" json:"artifacts,omitempty"`
 	TokenKeyIds  []string               `protobuf:"bytes,8,rep,name=token_key_ids,json=tokenKeyIds,proto3" json:"token_key_ids,omitempty"` // clearance key ids: [0] signs, all verify (material: edge credentials)
 	MonitorOnly  bool                   `protobuf:"varint,9,opt,name=monitor_only,json=monitorOnly,proto3" json:"monitor_only,omitempty"`  // site monitor switch: record decisions, enforce nothing (Route.mode overrides it)
 	// Optional activation delay for sensitive changes (docs/02 §6): the Edge
 	// swaps to this bundle atomically at or after this time. 0 = immediately.
-	NotBeforeMs          int64                 `protobuf:"varint,10,opt,name=not_before_ms,json=notBeforeMs,proto3" json:"not_before_ms,omitempty"`
-	SchemaVersion        uint32                `protobuf:"varint,11,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`         // 1; the Edge rejects bundles with a schema_version it does not know
+	NotBeforeMs int64 `protobuf:"varint,10,opt,name=not_before_ms,json=notBeforeMs,proto3" json:"not_before_ms,omitempty"`
+	// 1, or 2 when any Phase 2 field or value is set (a limiter with challenge_type INTERACTIVE
+	// included); the Phase 2 Edge accepts both (Phase 2 spec D-66, §3.2); anything else is invalid
+	SchemaVersion        uint32                `protobuf:"varint,11,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
 	Hosts                []string              `protobuf:"bytes,12,rep,name=hosts,proto3" json:"hosts,omitempty"`                                               // every hostname of the site: lower-case, no port, no trailing dot
 	AllowedListeners     []string              `protobuf:"bytes,13,rep,name=allowed_listeners,json=allowedListeners,proto3" json:"allowed_listeners,omitempty"` // edge.toml listener names that may serve this site
 	Challenge            *ChallengeConfig      `protobuf:"bytes,14,opt,name=challenge,proto3" json:"challenge,omitempty"`
@@ -1122,8 +1208,13 @@ type ChallengeConfig struct {
 	IssuePerIpp    uint32                   `protobuf:"varint,9,opt,name=issue_per_ipp,json=issuePerIpp,proto3" json:"issue_per_ipp,omitempty"`  // clearance issuance quota (enforced: 429) per ipp ...
 	IssuePerAsn    uint32                   `protobuf:"varint,10,opt,name=issue_per_asn,json=issuePerAsn,proto3" json:"issue_per_asn,omitempty"` // ... and per ASN, per issue_period_s
 	IssuePeriodS   uint32                   `protobuf:"varint,11,opt,name=issue_period_s,json=issuePeriodS,proto3" json:"issue_period_s,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Phase 2 (spec §3.2, §10.2): zero / empty when schema_version = 1, required and in range when 2.
+	Interactive   *InteractiveConfig `protobuf:"bytes,12,opt,name=interactive,proto3" json:"interactive,omitempty"`
+	DefaultLang   string             `protobuf:"bytes,13,opt,name=default_lang,json=defaultLang,proto3" json:"default_lang,omitempty"` // "zh-CN" | "en": page language when Accept-Language has neither (section 12.7)
+	HelpPath      string             `protobuf:"bytes,14,opt,name=help_path,json=helpPath,proto3" json:"help_path,omitempty"`          // site-relative path of the "troubleshooting" link, validated like ret (section 12.3)
+	PrivacyPath   string             `protobuf:"bytes,15,opt,name=privacy_path,json=privacyPath,proto3" json:"privacy_path,omitempty"` // site-relative path of the privacy notice link, validated like ret
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ChallengeConfig) Reset() {
@@ -1233,19 +1324,244 @@ func (x *ChallengeConfig) GetIssuePeriodS() uint32 {
 	return 0
 }
 
+func (x *ChallengeConfig) GetInteractive() *InteractiveConfig {
+	if x != nil {
+		return x.Interactive
+	}
+	return nil
+}
+
+func (x *ChallengeConfig) GetDefaultLang() string {
+	if x != nil {
+		return x.DefaultLang
+	}
+	return ""
+}
+
+func (x *ChallengeConfig) GetHelpPath() string {
+	if x != nil {
+		return x.HelpPath
+	}
+	return ""
+}
+
+func (x *ChallengeConfig) GetPrivacyPath() string {
+	if x != nil {
+		return x.PrivacyPath
+	}
+	return ""
+}
+
+// Interactive challenge settings (Phase 2 spec §3.2, §10.2).
+type InteractiveConfig struct {
+	state            protoimpl.MessageState   `protogen:"open.v1"`
+	Enabled          bool                     `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`                                  // false: Phase 1 behaviour, interactive runs as pow (D-08)
+	PowBits          *ChallengeConfig_PowBits `protobuf:"bytes,2,opt,name=pow_bits,json=powBits,proto3" json:"pow_bits,omitempty"`                    // self_hold, per sub-puzzle, by risk band; each 8..22
+	PowK             uint32                   `protobuf:"varint,3,opt,name=pow_k,json=powK,proto3" json:"pow_k,omitempty"`                            // sub-puzzles for every interactive C, 1..8
+	A11YBits         uint32                   `protobuf:"varint,4,opt,name=a11y_bits,json=a11yBits,proto3" json:"a11y_bits,omitempty"`                // pow_a11y, per sub-puzzle; 12..24
+	EscalateAfter    uint32                   `protobuf:"varint,5,opt,name=escalate_after,json=escalateAfter,proto3" json:"escalate_after,omitempty"` // N of D-50, 1..5
+	ScoringMode      string                   `protobuf:"bytes,6,opt,name=scoring_mode,json=scoringMode,proto3" json:"scoring_mode,omitempty"`        // "shadow" | "enforce" (enforce requires t_pass and t_block)
+	TPass            float32                  `protobuf:"fixed32,7,opt,name=t_pass,json=tPass,proto3" json:"t_pass,omitempty"`                        // enforce only: 0 < t_pass < t_block <= 1
+	TBlock           float32                  `protobuf:"fixed32,8,opt,name=t_block,json=tBlock,proto3" json:"t_block,omitempty"`
+	MinPowMs         uint32                   `protobuf:"varint,9,opt,name=min_pow_ms,json=minPowMs,proto3" json:"min_pow_ms,omitempty"`              // PoW floor of the minimum-time check for hold / single (section 7.7), 0..5000
+	IssueRate        uint32                   `protobuf:"varint,10,opt,name=issue_rate,json=issueRate,proto3" json:"issue_rate,omitempty"`            // limiter mg.ix.issue: interactive C issued per ip entity (renewals included);
+	IssuePeriodS     uint32                   `protobuf:"varint,11,opt,name=issue_period_s,json=issuePeriodS,proto3" json:"issue_period_s,omitempty"` //   the ipp limit is 4x (D-67)
+	IssueBurst       uint32                   `protobuf:"varint,12,opt,name=issue_burst,json=issueBurst,proto3" json:"issue_burst,omitempty"`
+	A11YIssuePerIp   uint32                   `protobuf:"varint,13,opt,name=a11y_issue_per_ip,json=a11yIssuePerIp,proto3" json:"a11y_issue_per_ip,omitempty"`       // limiter mg.a11y.issue: interactive_a11y clearances per ip entity
+	A11YIssuePeriodS uint32                   `protobuf:"varint,14,opt,name=a11y_issue_period_s,json=a11yIssuePeriodS,proto3" json:"a11y_issue_period_s,omitempty"` //   (both dimensions share the period)
+	A11YMinMs        uint32                   `protobuf:"varint,15,opt,name=a11y_min_ms,json=a11yMinMs,proto3" json:"a11y_min_ms,omitempty"`                        // minimum-time check for pow_only (section 7.7), 0..10000
+	RenewRate        uint32                   `protobuf:"varint,16,opt,name=renew_rate,json=renewRate,proto3" json:"renew_rate,omitempty"`                          // limiter mg.c.renew per ip entity; ipp 4x
+	RenewPeriodS     uint32                   `protobuf:"varint,17,opt,name=renew_period_s,json=renewPeriodS,proto3" json:"renew_period_s,omitempty"`
+	RenewBurst       uint32                   `protobuf:"varint,18,opt,name=renew_burst,json=renewBurst,proto3" json:"renew_burst,omitempty"`
+	A11YIssuePerIpp  uint32                   `protobuf:"varint,19,opt,name=a11y_issue_per_ipp,json=a11yIssuePerIpp,proto3" json:"a11y_issue_per_ipp,omitempty"` // limiter mg.a11y.issue: per ipp, >= a11y_issue_per_ip (section 7.9)
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *InteractiveConfig) Reset() {
+	*x = InteractiveConfig{}
+	mi := &file_morphgate_v1_config_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InteractiveConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InteractiveConfig) ProtoMessage() {}
+
+func (x *InteractiveConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_morphgate_v1_config_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InteractiveConfig.ProtoReflect.Descriptor instead.
+func (*InteractiveConfig) Descriptor() ([]byte, []int) {
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *InteractiveConfig) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *InteractiveConfig) GetPowBits() *ChallengeConfig_PowBits {
+	if x != nil {
+		return x.PowBits
+	}
+	return nil
+}
+
+func (x *InteractiveConfig) GetPowK() uint32 {
+	if x != nil {
+		return x.PowK
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetA11YBits() uint32 {
+	if x != nil {
+		return x.A11YBits
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetEscalateAfter() uint32 {
+	if x != nil {
+		return x.EscalateAfter
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetScoringMode() string {
+	if x != nil {
+		return x.ScoringMode
+	}
+	return ""
+}
+
+func (x *InteractiveConfig) GetTPass() float32 {
+	if x != nil {
+		return x.TPass
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetTBlock() float32 {
+	if x != nil {
+		return x.TBlock
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetMinPowMs() uint32 {
+	if x != nil {
+		return x.MinPowMs
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetIssueRate() uint32 {
+	if x != nil {
+		return x.IssueRate
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetIssuePeriodS() uint32 {
+	if x != nil {
+		return x.IssuePeriodS
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetIssueBurst() uint32 {
+	if x != nil {
+		return x.IssueBurst
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetA11YIssuePerIp() uint32 {
+	if x != nil {
+		return x.A11YIssuePerIp
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetA11YIssuePeriodS() uint32 {
+	if x != nil {
+		return x.A11YIssuePeriodS
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetA11YMinMs() uint32 {
+	if x != nil {
+		return x.A11YMinMs
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetRenewRate() uint32 {
+	if x != nil {
+		return x.RenewRate
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetRenewPeriodS() uint32 {
+	if x != nil {
+		return x.RenewPeriodS
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetRenewBurst() uint32 {
+	if x != nil {
+		return x.RenewBurst
+	}
+	return 0
+}
+
+func (x *InteractiveConfig) GetA11YIssuePerIpp() uint32 {
+	if x != nil {
+		return x.A11YIssuePerIpp
+	}
+	return 0
+}
+
 type ClearanceConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TtlInvisibleS uint32                 `protobuf:"varint,1,opt,name=ttl_invisible_s,json=ttlInvisibleS,proto3" json:"ttl_invisible_s,omitempty"` // lvl invisible
 	TtlPowS       uint32                 `protobuf:"varint,2,opt,name=ttl_pow_s,json=ttlPowS,proto3" json:"ttl_pow_s,omitempty"`                   // lvl pow
 	SessionMaxS   uint32                 `protobuf:"varint,3,opt,name=session_max_s,json=sessionMaxS,proto3" json:"session_max_s,omitempty"`       // reuse the previous token's sub while now - sst <= session_max_s (spec §6.5)
 	CtpShadow     bool                   `protobuf:"varint,4,opt,name=ctp_shadow,json=ctpShadow,proto3" json:"ctp_shadow,omitempty"`               // compute and record bind.ctp (cloudflare only, never enforced)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Phase 2 (spec §3.2, §6.8, D-47): zero when schema_version = 1, required and in range when 2.
+	TtlInteractiveS        uint32 `protobuf:"varint,5,opt,name=ttl_interactive_s,json=ttlInteractiveS,proto3" json:"ttl_interactive_s,omitempty"`                        // 300..7200
+	TtlInteractiveA11YS    uint32 `protobuf:"varint,6,opt,name=ttl_interactive_a11y_s,json=ttlInteractiveA11yS,proto3" json:"ttl_interactive_a11y_s,omitempty"`          // 300..3600
+	TtlInteractiveExtS     uint32 `protobuf:"varint,7,opt,name=ttl_interactive_ext_s,json=ttlInteractiveExtS,proto3" json:"ttl_interactive_ext_s,omitempty"`             // 300..7200
+	Refresh                bool   `protobuf:"varint,8,opt,name=refresh,proto3" json:"refresh,omitempty"`                                                                 // accept POST /__mg/r (D-47); default false
+	RefreshMaxInteractiveS uint32 `protobuf:"varint,9,opt,name=refresh_max_interactive_s,json=refreshMaxInteractiveS,proto3" json:"refresh_max_interactive_s,omitempty"` // 900..86400: now - lat cap for interactive
+	RefreshMaxExtS         uint32 `protobuf:"varint,10,opt,name=refresh_max_ext_s,json=refreshMaxExtS,proto3" json:"refresh_max_ext_s,omitempty"`                        // 900..86400: now - lat cap for interactive_ext:*
+	RefreshMaxPowS         uint32 `protobuf:"varint,11,opt,name=refresh_max_pow_s,json=refreshMaxPowS,proto3" json:"refresh_max_pow_s,omitempty"`                        // 0..86400: now - lat cap for pow (0 = pow tokens never refresh)
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *ClearanceConfig) Reset() {
 	*x = ClearanceConfig{}
-	mi := &file_morphgate_v1_config_proto_msgTypes[9]
+	mi := &file_morphgate_v1_config_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1257,7 +1573,7 @@ func (x *ClearanceConfig) String() string {
 func (*ClearanceConfig) ProtoMessage() {}
 
 func (x *ClearanceConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_config_proto_msgTypes[9]
+	mi := &file_morphgate_v1_config_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1270,7 +1586,7 @@ func (x *ClearanceConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClearanceConfig.ProtoReflect.Descriptor instead.
 func (*ClearanceConfig) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{9}
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ClearanceConfig) GetTtlInvisibleS() uint32 {
@@ -1301,6 +1617,55 @@ func (x *ClearanceConfig) GetCtpShadow() bool {
 	return false
 }
 
+func (x *ClearanceConfig) GetTtlInteractiveS() uint32 {
+	if x != nil {
+		return x.TtlInteractiveS
+	}
+	return 0
+}
+
+func (x *ClearanceConfig) GetTtlInteractiveA11YS() uint32 {
+	if x != nil {
+		return x.TtlInteractiveA11YS
+	}
+	return 0
+}
+
+func (x *ClearanceConfig) GetTtlInteractiveExtS() uint32 {
+	if x != nil {
+		return x.TtlInteractiveExtS
+	}
+	return 0
+}
+
+func (x *ClearanceConfig) GetRefresh() bool {
+	if x != nil {
+		return x.Refresh
+	}
+	return false
+}
+
+func (x *ClearanceConfig) GetRefreshMaxInteractiveS() uint32 {
+	if x != nil {
+		return x.RefreshMaxInteractiveS
+	}
+	return 0
+}
+
+func (x *ClearanceConfig) GetRefreshMaxExtS() uint32 {
+	if x != nil {
+		return x.RefreshMaxExtS
+	}
+	return 0
+}
+
+func (x *ClearanceConfig) GetRefreshMaxPowS() uint32 {
+	if x != nil {
+		return x.RefreshMaxPowS
+	}
+	return 0
+}
+
 type ScoringConfig struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	ThetaC         float32                `protobuf:"fixed32,1,opt,name=theta_c,json=thetaC,proto3" json:"theta_c,omitempty"`                                                                                        // confidence threshold of the default matrix
@@ -1316,7 +1681,7 @@ type ScoringConfig struct {
 
 func (x *ScoringConfig) Reset() {
 	*x = ScoringConfig{}
-	mi := &file_morphgate_v1_config_proto_msgTypes[10]
+	mi := &file_morphgate_v1_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1328,7 +1693,7 @@ func (x *ScoringConfig) String() string {
 func (*ScoringConfig) ProtoMessage() {}
 
 func (x *ScoringConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_config_proto_msgTypes[10]
+	mi := &file_morphgate_v1_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1341,7 +1706,7 @@ func (x *ScoringConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScoringConfig.ProtoReflect.Descriptor instead.
 func (*ScoringConfig) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{10}
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ScoringConfig) GetThetaC() float32 {
@@ -1403,7 +1768,7 @@ type CrawlerPolicy struct {
 
 func (x *CrawlerPolicy) Reset() {
 	*x = CrawlerPolicy{}
-	mi := &file_morphgate_v1_config_proto_msgTypes[11]
+	mi := &file_morphgate_v1_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1415,7 +1780,7 @@ func (x *CrawlerPolicy) String() string {
 func (*CrawlerPolicy) ProtoMessage() {}
 
 func (x *CrawlerPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_config_proto_msgTypes[11]
+	mi := &file_morphgate_v1_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1428,7 +1793,7 @@ func (x *CrawlerPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CrawlerPolicy.ProtoReflect.Descriptor instead.
 func (*CrawlerPolicy) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{11}
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CrawlerPolicy) GetPurposes() map[string]string {
@@ -1450,13 +1815,17 @@ type EventConfig struct {
 	AllowSampleRate float32                `protobuf:"fixed32,1,opt,name=allow_sample_rate,json=allowSampleRate,proto3" json:"allow_sample_rate,omitempty"` // sampling of ALLOW / TAG / LOG decisions on low / medium routes (0..1)
 	AccessLog       bool                   `protobuf:"varint,2,opt,name=access_log,json=accessLog,proto3" json:"access_log,omitempty"`                      // one kind=access record per request (docs/02 §9)
 	Stream          bool                   `protobuf:"varint,3,opt,name=stream,proto3" json:"stream,omitempty"`                                             // XADD a compact summary to mg:ev
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Phase 2 (spec §3.2): zero / empty when schema_version = 1 (the Edge then uses builtin = true).
+	TelemetryBehavior   bool     `protobuf:"varint,4,opt,name=telemetry_behavior,json=telemetryBehavior,proto3" json:"telemetry_behavior,omitempty"`         // accept behavior reports on /__mg/t (D-48)
+	ScannerBaitsBuiltin bool     `protobuf:"varint,5,opt,name=scanner_baits_builtin,json=scannerBaitsBuiltin,proto3" json:"scanner_baits_builtin,omitempty"` // flag the built-in scanner paths in mg:ev v2 (section 13.1)
+	ScannerBaits        []string `protobuf:"bytes,6,rep,name=scanner_baits,json=scannerBaits,proto3" json:"scanner_baits,omitempty"`                         // extra globs, same syntax as route paths, at most 64
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *EventConfig) Reset() {
 	*x = EventConfig{}
-	mi := &file_morphgate_v1_config_proto_msgTypes[12]
+	mi := &file_morphgate_v1_config_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1468,7 +1837,7 @@ func (x *EventConfig) String() string {
 func (*EventConfig) ProtoMessage() {}
 
 func (x *EventConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_config_proto_msgTypes[12]
+	mi := &file_morphgate_v1_config_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1481,7 +1850,7 @@ func (x *EventConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventConfig.ProtoReflect.Descriptor instead.
 func (*EventConfig) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{12}
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *EventConfig) GetAllowSampleRate() float32 {
@@ -1505,6 +1874,27 @@ func (x *EventConfig) GetStream() bool {
 	return false
 }
 
+func (x *EventConfig) GetTelemetryBehavior() bool {
+	if x != nil {
+		return x.TelemetryBehavior
+	}
+	return false
+}
+
+func (x *EventConfig) GetScannerBaitsBuiltin() bool {
+	if x != nil {
+		return x.ScannerBaitsBuiltin
+	}
+	return false
+}
+
+func (x *EventConfig) GetScannerBaits() []string {
+	if x != nil {
+		return x.ScannerBaits
+	}
+	return nil
+}
+
 type NamedList struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Entries       []string               `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"` // <= 10000 entries
@@ -1514,7 +1904,7 @@ type NamedList struct {
 
 func (x *NamedList) Reset() {
 	*x = NamedList{}
-	mi := &file_morphgate_v1_config_proto_msgTypes[13]
+	mi := &file_morphgate_v1_config_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1526,7 +1916,7 @@ func (x *NamedList) String() string {
 func (*NamedList) ProtoMessage() {}
 
 func (x *NamedList) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_config_proto_msgTypes[13]
+	mi := &file_morphgate_v1_config_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1539,7 +1929,7 @@ func (x *NamedList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NamedList.ProtoReflect.Descriptor instead.
 func (*NamedList) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{13}
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *NamedList) GetEntries() []string {
@@ -1562,7 +1952,7 @@ type CloudflareSiteConfig struct {
 
 func (x *CloudflareSiteConfig) Reset() {
 	*x = CloudflareSiteConfig{}
-	mi := &file_morphgate_v1_config_proto_msgTypes[14]
+	mi := &file_morphgate_v1_config_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1574,7 +1964,7 @@ func (x *CloudflareSiteConfig) String() string {
 func (*CloudflareSiteConfig) ProtoMessage() {}
 
 func (x *CloudflareSiteConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_config_proto_msgTypes[14]
+	mi := &file_morphgate_v1_config_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1587,7 +1977,7 @@ func (x *CloudflareSiteConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudflareSiteConfig.ProtoReflect.Descriptor instead.
 func (*CloudflareSiteConfig) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{14}
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CloudflareSiteConfig) GetZone() string {
@@ -1636,7 +2026,7 @@ type OriginHeaderConfig struct {
 
 func (x *OriginHeaderConfig) Reset() {
 	*x = OriginHeaderConfig{}
-	mi := &file_morphgate_v1_config_proto_msgTypes[15]
+	mi := &file_morphgate_v1_config_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1648,7 +2038,7 @@ func (x *OriginHeaderConfig) String() string {
 func (*OriginHeaderConfig) ProtoMessage() {}
 
 func (x *OriginHeaderConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_config_proto_msgTypes[15]
+	mi := &file_morphgate_v1_config_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1661,7 +2051,7 @@ func (x *OriginHeaderConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OriginHeaderConfig.ProtoReflect.Descriptor instead.
 func (*OriginHeaderConfig) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{15}
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *OriginHeaderConfig) GetScores() bool {
@@ -1699,7 +2089,7 @@ type SignedBundle struct {
 
 func (x *SignedBundle) Reset() {
 	*x = SignedBundle{}
-	mi := &file_morphgate_v1_config_proto_msgTypes[16]
+	mi := &file_morphgate_v1_config_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1711,7 +2101,7 @@ func (x *SignedBundle) String() string {
 func (*SignedBundle) ProtoMessage() {}
 
 func (x *SignedBundle) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_config_proto_msgTypes[16]
+	mi := &file_morphgate_v1_config_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1724,7 +2114,7 @@ func (x *SignedBundle) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignedBundle.ProtoReflect.Descriptor instead.
 func (*SignedBundle) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{16}
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SignedBundle) GetBundle() []byte {
@@ -1760,7 +2150,7 @@ type ChallengeConfig_PowBits struct {
 
 func (x *ChallengeConfig_PowBits) Reset() {
 	*x = ChallengeConfig_PowBits{}
-	mi := &file_morphgate_v1_config_proto_msgTypes[19]
+	mi := &file_morphgate_v1_config_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1772,7 +2162,7 @@ func (x *ChallengeConfig_PowBits) String() string {
 func (*ChallengeConfig_PowBits) ProtoMessage() {}
 
 func (x *ChallengeConfig_PowBits) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_config_proto_msgTypes[19]
+	mi := &file_morphgate_v1_config_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1829,7 +2219,7 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\x12secret_header_refs\x18\x05 \x03(\tR\x10secretHeaderRefs\x12.\n" +
 	"\x13trusted_proxy_cidrs\x18\x06 \x03(\tR\x11trustedProxyCidrs\x124\n" +
 	"\x16proxy_protocol_version\x18\a \x01(\rR\x14proxyProtocolVersion\x12#\n" +
-	"\rexpected_mask\x18\b \x01(\rR\fexpectedMask\"\xc6\x03\n" +
+	"\rexpected_mask\x18\b \x01(\rR\fexpectedMask\"\xaf\x04\n" +
 	"\x05Route\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -1846,7 +2236,9 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\vredact_path\x18\v \x01(\bR\n" +
 	"redactPath\x12+\n" +
 	"\x04mode\x18\f \x01(\x0e2\x17.morphgate.v1.RouteModeR\x04mode\x12'\n" +
-	"\x0fnever_challenge\x18\r \x01(\bR\x0eneverChallenge\"\xcb\x03\n" +
+	"\x0fnever_challenge\x18\r \x01(\bR\x0eneverChallenge\x12-\n" +
+	"\x05proof\x18\x0e \x01(\x0e2\x17.morphgate.v1.ProofModeR\x05proof\x128\n" +
+	"\tmin_level\x18\x0f \x01(\x0e2\x1b.morphgate.v1.ChallengeTypeR\bminLevel\"\xcb\x03\n" +
 	"\fCompiledRule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05phase\x18\x02 \x01(\tR\x05phase\x12\x1a\n" +
@@ -1881,7 +2273,7 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\x05scope\x18\v \x01(\tR\x05scope\x12\"\n" +
 	"\rretry_after_s\x18\f \x01(\rR\vretryAfterS\x12B\n" +
 	"\x0echallenge_type\x18\r \x01(\x0e2\x1b.morphgate.v1.ChallengeTypeR\rchallengeType\x12#\n" +
-	"\rsignal_weight\x18\x0e \x01(\x02R\fsignalWeight\"\xb9\x02\n" +
+	"\rsignal_weight\x18\x0e \x01(\x02R\fsignalWeight\"\xf5\x02\n" +
 	"\x0eProviderConfig\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\aenabled\x18\x02 \x01(\bR\aenabled\x12\x18\n" +
@@ -1895,7 +2287,9 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"timeout_ms\x18\b \x01(\rR\ttimeoutMs\x12\x1a\n" +
 	"\bfallback\x18\t \x01(\tR\bfallback\x12\x12\n" +
 	"\x04mode\x18\n" +
-	" \x01(\tR\x04mode\"\x8c\x02\n" +
+	" \x01(\tR\x04mode\x12\x1c\n" +
+	"\thostnames\x18\v \x03(\tR\thostnames\x12\x1c\n" +
+	"\tselection\x18\f \x01(\tR\tselection\"\x8c\x02\n" +
 	"\vEnvironment\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
 	"\x06routes\x18\x02 \x03(\v2\x13.morphgate.v1.RouteR\x06routes\x120\n" +
@@ -1942,7 +2336,7 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\n" +
 	"ListsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +
-	"\x05value\x18\x02 \x01(\v2\x17.morphgate.v1.NamedListR\x05value:\x028\x01\"\x98\x04\n" +
+	"\x05value\x18\x02 \x01(\v2\x17.morphgate.v1.NamedListR\x05value:\x028\x01\"\xbe\x05\n" +
 	"\x0fChallengeConfig\x12\x13\n" +
 	"\x05ttl_s\x18\x01 \x01(\rR\x04ttlS\x12@\n" +
 	"\bpow_bits\x18\x02 \x01(\v2%.morphgate.v1.ChallengeConfig.PowBitsR\apowBits\x12!\n" +
@@ -1956,18 +2350,56 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\rissue_per_ipp\x18\t \x01(\rR\vissuePerIpp\x12\"\n" +
 	"\rissue_per_asn\x18\n" +
 	" \x01(\rR\vissuePerAsn\x12$\n" +
-	"\x0eissue_period_s\x18\v \x01(\rR\fissuePeriodS\x1ad\n" +
+	"\x0eissue_period_s\x18\v \x01(\rR\fissuePeriodS\x12A\n" +
+	"\vinteractive\x18\f \x01(\v2\x1f.morphgate.v1.InteractiveConfigR\vinteractive\x12!\n" +
+	"\fdefault_lang\x18\r \x01(\tR\vdefaultLang\x12\x1b\n" +
+	"\thelp_path\x18\x0e \x01(\tR\bhelpPath\x12!\n" +
+	"\fprivacy_path\x18\x0f \x01(\tR\vprivacyPath\x1ad\n" +
 	"\aPowBits\x12\x10\n" +
 	"\x03low\x18\x01 \x01(\rR\x03low\x12\x16\n" +
 	"\x06medium\x18\x02 \x01(\rR\x06medium\x12\x12\n" +
 	"\x04high\x18\x03 \x01(\rR\x04high\x12\x1b\n" +
-	"\tvery_high\x18\x04 \x01(\rR\bveryHigh\"\x98\x01\n" +
+	"\tvery_high\x18\x04 \x01(\rR\bveryHigh\"\xac\x05\n" +
+	"\x11InteractiveConfig\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12@\n" +
+	"\bpow_bits\x18\x02 \x01(\v2%.morphgate.v1.ChallengeConfig.PowBitsR\apowBits\x12\x13\n" +
+	"\x05pow_k\x18\x03 \x01(\rR\x04powK\x12\x1b\n" +
+	"\ta11y_bits\x18\x04 \x01(\rR\ba11yBits\x12%\n" +
+	"\x0eescalate_after\x18\x05 \x01(\rR\rescalateAfter\x12!\n" +
+	"\fscoring_mode\x18\x06 \x01(\tR\vscoringMode\x12\x15\n" +
+	"\x06t_pass\x18\a \x01(\x02R\x05tPass\x12\x17\n" +
+	"\at_block\x18\b \x01(\x02R\x06tBlock\x12\x1c\n" +
+	"\n" +
+	"min_pow_ms\x18\t \x01(\rR\bminPowMs\x12\x1d\n" +
+	"\n" +
+	"issue_rate\x18\n" +
+	" \x01(\rR\tissueRate\x12$\n" +
+	"\x0eissue_period_s\x18\v \x01(\rR\fissuePeriodS\x12\x1f\n" +
+	"\vissue_burst\x18\f \x01(\rR\n" +
+	"issueBurst\x12)\n" +
+	"\x11a11y_issue_per_ip\x18\r \x01(\rR\x0ea11yIssuePerIp\x12-\n" +
+	"\x13a11y_issue_period_s\x18\x0e \x01(\rR\x10a11yIssuePeriodS\x12\x1e\n" +
+	"\va11y_min_ms\x18\x0f \x01(\rR\ta11yMinMs\x12\x1d\n" +
+	"\n" +
+	"renew_rate\x18\x10 \x01(\rR\trenewRate\x12$\n" +
+	"\x0erenew_period_s\x18\x11 \x01(\rR\frenewPeriodS\x12\x1f\n" +
+	"\vrenew_burst\x18\x12 \x01(\rR\n" +
+	"renewBurst\x12+\n" +
+	"\x12a11y_issue_per_ipp\x18\x13 \x01(\rR\x0fa11yIssuePerIpp\"\xd7\x03\n" +
 	"\x0fClearanceConfig\x12&\n" +
 	"\x0fttl_invisible_s\x18\x01 \x01(\rR\rttlInvisibleS\x12\x1a\n" +
 	"\tttl_pow_s\x18\x02 \x01(\rR\attlPowS\x12\"\n" +
 	"\rsession_max_s\x18\x03 \x01(\rR\vsessionMaxS\x12\x1d\n" +
 	"\n" +
-	"ctp_shadow\x18\x04 \x01(\bR\tctpShadow\"\xf9\x03\n" +
+	"ctp_shadow\x18\x04 \x01(\bR\tctpShadow\x12*\n" +
+	"\x11ttl_interactive_s\x18\x05 \x01(\rR\x0fttlInteractiveS\x123\n" +
+	"\x16ttl_interactive_a11y_s\x18\x06 \x01(\rR\x13ttlInteractiveA11yS\x121\n" +
+	"\x15ttl_interactive_ext_s\x18\a \x01(\rR\x12ttlInteractiveExtS\x12\x18\n" +
+	"\arefresh\x18\b \x01(\bR\arefresh\x129\n" +
+	"\x19refresh_max_interactive_s\x18\t \x01(\rR\x16refreshMaxInteractiveS\x12)\n" +
+	"\x11refresh_max_ext_s\x18\n" +
+	" \x01(\rR\x0erefreshMaxExtS\x12)\n" +
+	"\x11refresh_max_pow_s\x18\v \x01(\rR\x0erefreshMaxPowS\"\xf9\x03\n" +
 	"\rScoringConfig\x12\x17\n" +
 	"\atheta_c\x18\x01 \x01(\x02R\x06thetaC\x12\x14\n" +
 	"\x05kappa\x18\x02 \x01(\x02R\x05kappa\x123\n" +
@@ -1990,12 +2422,15 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\x0edefault_action\x18\x02 \x01(\tR\rdefaultAction\x1a;\n" +
 	"\rPurposesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"p\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf8\x01\n" +
 	"\vEventConfig\x12*\n" +
 	"\x11allow_sample_rate\x18\x01 \x01(\x02R\x0fallowSampleRate\x12\x1d\n" +
 	"\n" +
 	"access_log\x18\x02 \x01(\bR\taccessLog\x12\x16\n" +
-	"\x06stream\x18\x03 \x01(\bR\x06stream\"%\n" +
+	"\x06stream\x18\x03 \x01(\bR\x06stream\x12-\n" +
+	"\x12telemetry_behavior\x18\x04 \x01(\bR\x11telemetryBehavior\x122\n" +
+	"\x15scanner_baits_builtin\x18\x05 \x01(\bR\x13scannerBaitsBuiltin\x12#\n" +
+	"\rscanner_baits\x18\x06 \x03(\tR\fscannerBaits\"%\n" +
 	"\tNamedList\x12\x18\n" +
 	"\aentries\x18\x01 \x03(\tR\aentries\"\xc0\x01\n" +
 	"\x14CloudflareSiteConfig\x12\x12\n" +
@@ -2012,7 +2447,10 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\fSignedBundle\x12\x16\n" +
 	"\x06bundle\x18\x01 \x01(\fR\x06bundle\x12\x15\n" +
 	"\x06key_id\x18\x02 \x01(\tR\x05keyId\x12+\n" +
-	"\x11ed25519_signature\x18\x03 \x01(\fR\x10ed25519Signature*S\n" +
+	"\x11ed25519_signature\x18\x03 \x01(\fR\x10ed25519Signature*8\n" +
+	"\tProofMode\x12\x12\n" +
+	"\x0ePROOF_MODE_OFF\x10\x00\x12\x17\n" +
+	"\x13PROOF_MODE_REQUIRED\x10\x01*S\n" +
 	"\tRouteMode\x12\x16\n" +
 	"\x12ROUTE_MODE_INHERIT\x10\x00\x12\x16\n" +
 	"\x12ROUTE_MODE_MONITOR\x10\x01\x12\x16\n" +
@@ -2030,74 +2468,80 @@ func file_morphgate_v1_config_proto_rawDescGZIP() []byte {
 	return file_morphgate_v1_config_proto_rawDescData
 }
 
-var file_morphgate_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_morphgate_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_morphgate_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_morphgate_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_morphgate_v1_config_proto_goTypes = []any{
-	(RouteMode)(0),                  // 0: morphgate.v1.RouteMode
-	(*UpstreamProfile)(nil),         // 1: morphgate.v1.UpstreamProfile
-	(*Route)(nil),                   // 2: morphgate.v1.Route
-	(*CompiledRule)(nil),            // 3: morphgate.v1.CompiledRule
-	(*RateLimit)(nil),               // 4: morphgate.v1.RateLimit
-	(*ProviderConfig)(nil),          // 5: morphgate.v1.ProviderConfig
-	(*Environment)(nil),             // 6: morphgate.v1.Environment
-	(*ArtifactRef)(nil),             // 7: morphgate.v1.ArtifactRef
-	(*SiteBundle)(nil),              // 8: morphgate.v1.SiteBundle
-	(*ChallengeConfig)(nil),         // 9: morphgate.v1.ChallengeConfig
-	(*ClearanceConfig)(nil),         // 10: morphgate.v1.ClearanceConfig
-	(*ScoringConfig)(nil),           // 11: morphgate.v1.ScoringConfig
-	(*CrawlerPolicy)(nil),           // 12: morphgate.v1.CrawlerPolicy
-	(*EventConfig)(nil),             // 13: morphgate.v1.EventConfig
-	(*NamedList)(nil),               // 14: morphgate.v1.NamedList
-	(*CloudflareSiteConfig)(nil),    // 15: morphgate.v1.CloudflareSiteConfig
-	(*OriginHeaderConfig)(nil),      // 16: morphgate.v1.OriginHeaderConfig
-	(*SignedBundle)(nil),            // 17: morphgate.v1.SignedBundle
-	nil,                             // 18: morphgate.v1.CompiledRule.ParamsEntry
-	nil,                             // 19: morphgate.v1.SiteBundle.ListsEntry
-	(*ChallengeConfig_PowBits)(nil), // 20: morphgate.v1.ChallengeConfig.PowBits
-	nil,                             // 21: morphgate.v1.ScoringConfig.Z0Entry
-	nil,                             // 22: morphgate.v1.ScoringConfig.FamilyModesEntry
-	nil,                             // 23: morphgate.v1.ScoringConfig.WeightsEntry
-	nil,                             // 24: morphgate.v1.CrawlerPolicy.PurposesEntry
-	(UpstreamProfileKind)(0),        // 25: morphgate.v1.UpstreamProfileKind
-	(Channel)(0),                    // 26: morphgate.v1.Channel
-	(RouteSensitivity)(0),           // 27: morphgate.v1.RouteSensitivity
-	(Action)(0),                     // 28: morphgate.v1.Action
-	(ChallengeType)(0),              // 29: morphgate.v1.ChallengeType
+	(ProofMode)(0),                  // 0: morphgate.v1.ProofMode
+	(RouteMode)(0),                  // 1: morphgate.v1.RouteMode
+	(*UpstreamProfile)(nil),         // 2: morphgate.v1.UpstreamProfile
+	(*Route)(nil),                   // 3: morphgate.v1.Route
+	(*CompiledRule)(nil),            // 4: morphgate.v1.CompiledRule
+	(*RateLimit)(nil),               // 5: morphgate.v1.RateLimit
+	(*ProviderConfig)(nil),          // 6: morphgate.v1.ProviderConfig
+	(*Environment)(nil),             // 7: morphgate.v1.Environment
+	(*ArtifactRef)(nil),             // 8: morphgate.v1.ArtifactRef
+	(*SiteBundle)(nil),              // 9: morphgate.v1.SiteBundle
+	(*ChallengeConfig)(nil),         // 10: morphgate.v1.ChallengeConfig
+	(*InteractiveConfig)(nil),       // 11: morphgate.v1.InteractiveConfig
+	(*ClearanceConfig)(nil),         // 12: morphgate.v1.ClearanceConfig
+	(*ScoringConfig)(nil),           // 13: morphgate.v1.ScoringConfig
+	(*CrawlerPolicy)(nil),           // 14: morphgate.v1.CrawlerPolicy
+	(*EventConfig)(nil),             // 15: morphgate.v1.EventConfig
+	(*NamedList)(nil),               // 16: morphgate.v1.NamedList
+	(*CloudflareSiteConfig)(nil),    // 17: morphgate.v1.CloudflareSiteConfig
+	(*OriginHeaderConfig)(nil),      // 18: morphgate.v1.OriginHeaderConfig
+	(*SignedBundle)(nil),            // 19: morphgate.v1.SignedBundle
+	nil,                             // 20: morphgate.v1.CompiledRule.ParamsEntry
+	nil,                             // 21: morphgate.v1.SiteBundle.ListsEntry
+	(*ChallengeConfig_PowBits)(nil), // 22: morphgate.v1.ChallengeConfig.PowBits
+	nil,                             // 23: morphgate.v1.ScoringConfig.Z0Entry
+	nil,                             // 24: morphgate.v1.ScoringConfig.FamilyModesEntry
+	nil,                             // 25: morphgate.v1.ScoringConfig.WeightsEntry
+	nil,                             // 26: morphgate.v1.CrawlerPolicy.PurposesEntry
+	(UpstreamProfileKind)(0),        // 27: morphgate.v1.UpstreamProfileKind
+	(Channel)(0),                    // 28: morphgate.v1.Channel
+	(RouteSensitivity)(0),           // 29: morphgate.v1.RouteSensitivity
+	(ChallengeType)(0),              // 30: morphgate.v1.ChallengeType
+	(Action)(0),                     // 31: morphgate.v1.Action
 }
 var file_morphgate_v1_config_proto_depIdxs = []int32{
-	25, // 0: morphgate.v1.UpstreamProfile.kind:type_name -> morphgate.v1.UpstreamProfileKind
-	26, // 1: morphgate.v1.Route.channel:type_name -> morphgate.v1.Channel
-	27, // 2: morphgate.v1.Route.sensitivity:type_name -> morphgate.v1.RouteSensitivity
-	0,  // 3: morphgate.v1.Route.mode:type_name -> morphgate.v1.RouteMode
-	28, // 4: morphgate.v1.CompiledRule.action:type_name -> morphgate.v1.Action
-	18, // 5: morphgate.v1.CompiledRule.params:type_name -> morphgate.v1.CompiledRule.ParamsEntry
-	29, // 6: morphgate.v1.RateLimit.challenge_type:type_name -> morphgate.v1.ChallengeType
-	2,  // 7: morphgate.v1.Environment.routes:type_name -> morphgate.v1.Route
-	3,  // 8: morphgate.v1.Environment.rules:type_name -> morphgate.v1.CompiledRule
-	4,  // 9: morphgate.v1.Environment.rate_limits:type_name -> morphgate.v1.RateLimit
-	1,  // 10: morphgate.v1.SiteBundle.upstream:type_name -> morphgate.v1.UpstreamProfile
-	6,  // 11: morphgate.v1.SiteBundle.environments:type_name -> morphgate.v1.Environment
-	5,  // 12: morphgate.v1.SiteBundle.providers:type_name -> morphgate.v1.ProviderConfig
-	7,  // 13: morphgate.v1.SiteBundle.artifacts:type_name -> morphgate.v1.ArtifactRef
-	9,  // 14: morphgate.v1.SiteBundle.challenge:type_name -> morphgate.v1.ChallengeConfig
-	10, // 15: morphgate.v1.SiteBundle.clearance:type_name -> morphgate.v1.ClearanceConfig
-	11, // 16: morphgate.v1.SiteBundle.scoring:type_name -> morphgate.v1.ScoringConfig
-	12, // 17: morphgate.v1.SiteBundle.crawler_policy:type_name -> morphgate.v1.CrawlerPolicy
-	13, // 18: morphgate.v1.SiteBundle.events:type_name -> morphgate.v1.EventConfig
-	19, // 19: morphgate.v1.SiteBundle.lists:type_name -> morphgate.v1.SiteBundle.ListsEntry
-	15, // 20: morphgate.v1.SiteBundle.cloudflare:type_name -> morphgate.v1.CloudflareSiteConfig
-	16, // 21: morphgate.v1.SiteBundle.origin_headers:type_name -> morphgate.v1.OriginHeaderConfig
-	20, // 22: morphgate.v1.ChallengeConfig.pow_bits:type_name -> morphgate.v1.ChallengeConfig.PowBits
-	21, // 23: morphgate.v1.ScoringConfig.z0:type_name -> morphgate.v1.ScoringConfig.Z0Entry
-	22, // 24: morphgate.v1.ScoringConfig.family_modes:type_name -> morphgate.v1.ScoringConfig.FamilyModesEntry
-	23, // 25: morphgate.v1.ScoringConfig.weights:type_name -> morphgate.v1.ScoringConfig.WeightsEntry
-	24, // 26: morphgate.v1.CrawlerPolicy.purposes:type_name -> morphgate.v1.CrawlerPolicy.PurposesEntry
-	14, // 27: morphgate.v1.SiteBundle.ListsEntry.value:type_name -> morphgate.v1.NamedList
-	28, // [28:28] is the sub-list for method output_type
-	28, // [28:28] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	27, // 0: morphgate.v1.UpstreamProfile.kind:type_name -> morphgate.v1.UpstreamProfileKind
+	28, // 1: morphgate.v1.Route.channel:type_name -> morphgate.v1.Channel
+	29, // 2: morphgate.v1.Route.sensitivity:type_name -> morphgate.v1.RouteSensitivity
+	1,  // 3: morphgate.v1.Route.mode:type_name -> morphgate.v1.RouteMode
+	0,  // 4: morphgate.v1.Route.proof:type_name -> morphgate.v1.ProofMode
+	30, // 5: morphgate.v1.Route.min_level:type_name -> morphgate.v1.ChallengeType
+	31, // 6: morphgate.v1.CompiledRule.action:type_name -> morphgate.v1.Action
+	20, // 7: morphgate.v1.CompiledRule.params:type_name -> morphgate.v1.CompiledRule.ParamsEntry
+	30, // 8: morphgate.v1.RateLimit.challenge_type:type_name -> morphgate.v1.ChallengeType
+	3,  // 9: morphgate.v1.Environment.routes:type_name -> morphgate.v1.Route
+	4,  // 10: morphgate.v1.Environment.rules:type_name -> morphgate.v1.CompiledRule
+	5,  // 11: morphgate.v1.Environment.rate_limits:type_name -> morphgate.v1.RateLimit
+	2,  // 12: morphgate.v1.SiteBundle.upstream:type_name -> morphgate.v1.UpstreamProfile
+	7,  // 13: morphgate.v1.SiteBundle.environments:type_name -> morphgate.v1.Environment
+	6,  // 14: morphgate.v1.SiteBundle.providers:type_name -> morphgate.v1.ProviderConfig
+	8,  // 15: morphgate.v1.SiteBundle.artifacts:type_name -> morphgate.v1.ArtifactRef
+	10, // 16: morphgate.v1.SiteBundle.challenge:type_name -> morphgate.v1.ChallengeConfig
+	12, // 17: morphgate.v1.SiteBundle.clearance:type_name -> morphgate.v1.ClearanceConfig
+	13, // 18: morphgate.v1.SiteBundle.scoring:type_name -> morphgate.v1.ScoringConfig
+	14, // 19: morphgate.v1.SiteBundle.crawler_policy:type_name -> morphgate.v1.CrawlerPolicy
+	15, // 20: morphgate.v1.SiteBundle.events:type_name -> morphgate.v1.EventConfig
+	21, // 21: morphgate.v1.SiteBundle.lists:type_name -> morphgate.v1.SiteBundle.ListsEntry
+	17, // 22: morphgate.v1.SiteBundle.cloudflare:type_name -> morphgate.v1.CloudflareSiteConfig
+	18, // 23: morphgate.v1.SiteBundle.origin_headers:type_name -> morphgate.v1.OriginHeaderConfig
+	22, // 24: morphgate.v1.ChallengeConfig.pow_bits:type_name -> morphgate.v1.ChallengeConfig.PowBits
+	11, // 25: morphgate.v1.ChallengeConfig.interactive:type_name -> morphgate.v1.InteractiveConfig
+	22, // 26: morphgate.v1.InteractiveConfig.pow_bits:type_name -> morphgate.v1.ChallengeConfig.PowBits
+	23, // 27: morphgate.v1.ScoringConfig.z0:type_name -> morphgate.v1.ScoringConfig.Z0Entry
+	24, // 28: morphgate.v1.ScoringConfig.family_modes:type_name -> morphgate.v1.ScoringConfig.FamilyModesEntry
+	25, // 29: morphgate.v1.ScoringConfig.weights:type_name -> morphgate.v1.ScoringConfig.WeightsEntry
+	26, // 30: morphgate.v1.CrawlerPolicy.purposes:type_name -> morphgate.v1.CrawlerPolicy.PurposesEntry
+	16, // 31: morphgate.v1.SiteBundle.ListsEntry.value:type_name -> morphgate.v1.NamedList
+	32, // [32:32] is the sub-list for method output_type
+	32, // [32:32] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_morphgate_v1_config_proto_init() }
@@ -2111,8 +2555,8 @@ func file_morphgate_v1_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_morphgate_v1_config_proto_rawDesc), len(file_morphgate_v1_config_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   24,
+			NumEnums:      2,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

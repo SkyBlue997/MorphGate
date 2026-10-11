@@ -116,12 +116,14 @@ pub fn test_site_bundle(site_id: &str, hosts: &[&str], version: u64) -> SiteBund
             issue_per_ipp: 60,
             issue_per_asn: 600,
             issue_period_s: 3600,
+            ..Default::default()
         }),
         clearance: Some(ClearanceConfig {
             ttl_invisible_s: 1800,
             ttl_pow_s: 1800,
             session_max_s: 86_400,
             ctp_shadow: true,
+            ..Default::default()
         }),
         scoring: Some(ScoringConfig {
             theta_c: 0.4,
@@ -148,6 +150,7 @@ pub fn test_site_bundle(site_id: &str, hosts: &[&str], version: u64) -> SiteBund
             allow_sample_rate: 0.1,
             access_log: true,
             stream: true,
+            ..Default::default()
         }),
         cloudflare: Some(CloudflareSiteConfig {
             zone: hosts.first().cloned().unwrap_or_default(),

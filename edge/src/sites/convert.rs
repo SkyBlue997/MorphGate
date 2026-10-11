@@ -401,7 +401,7 @@ pub fn build_runtime(
         clearance: b.clearance.unwrap_or_else(default_clearance),
         scoring,
         crawler_policy,
-        events: b.events.unwrap_or_else(default_events),
+        events: b.events.clone().unwrap_or_else(default_events),
         origin_headers: b.origin_headers.unwrap_or_else(default_origin_headers),
         cloudflare: b.cloudflare.clone(),
         intel,
@@ -597,6 +597,7 @@ pub fn default_challenge() -> ChallengeConfig {
         issue_per_ipp: 60,
         issue_per_asn: 600,
         issue_period_s: 3600,
+        ..Default::default()
     }
 }
 
@@ -607,6 +608,7 @@ pub fn default_clearance() -> ClearanceConfig {
         ttl_pow_s: 1800,
         session_max_s: 86_400,
         ctp_shadow: true,
+        ..Default::default()
     }
 }
 
@@ -645,6 +647,7 @@ pub fn default_events() -> EventConfig {
         allow_sample_rate: 0.1,
         access_log: true,
         stream: true,
+        ..Default::default()
     }
 }
 

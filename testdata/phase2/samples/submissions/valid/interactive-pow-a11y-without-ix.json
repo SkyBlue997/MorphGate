@@ -1,0 +1,30 @@
+{
+  "v": 2,
+  "type": "interactive",
+  "c": "AAECAwQFBgcICQoLDA0ODw",
+  "p": "pow_a11y",
+  "pp": "",
+  "t": "",
+  "pow": {
+    "counters": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ]
+  },
+  "ret": "/account/login",
+  "ts": 1790000000500,
+  "build": "0123456789abcdef",
+  "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "Fw83lCIfgQJYqtPE4CAmDVe2RU2qXoQ1Dmb8oNm6kM4",
+    "y": "OQHIRVorb42pwJ0vB7Gj380deQMPILB7UTzZ63N74KA"
+  },
+  "sig": "mHJFRQ3i2efqlag2GzwRcbkQTAEUjoTmocowGWpOGjkdjJ9loaJx7CG6ezWeDT_hAvteONebsyodi28hVmWETA"
+}

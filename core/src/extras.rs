@@ -27,6 +27,12 @@ pub struct RouteInfo {
     pub require_clearance: bool,
     /// OR over every route that matched any path view (§9.4).
     pub fail_closed: bool,
+    /// OR of `Route.proof = REQUIRED` over every route that matched any path
+    /// view (Phase 2 spec D-40, §1.4 step 5).
+    pub proof_required: bool,
+    /// The highest `Route.min_level` over every route that matched any path
+    /// view; `None` when no matched route sets one (Phase 2 spec D-64).
+    pub min_level: Option<ChallengeType>,
 }
 
 /// What an exceeded limiter does (`RateLimit.on_exceed`).

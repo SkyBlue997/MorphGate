@@ -1,0 +1,68 @@
+{
+  "about": "mg-turnstile-keys files (spec §8.7) for [[sites]] id \"blog\". valid/ parse; invalid/ are rejected (--check-config fails). site-mismatch.json is well-formed but names another site. The 64 KiB size cap is not sampled (tests build an oversized file)",
+  "site": "blog",
+  "valid": [
+    {
+      "file": "valid/one-value.json",
+      "values": 1
+    },
+    {
+      "file": "valid/two-values.json",
+      "values": 2
+    },
+    {
+      "file": "valid/printable-edges.json",
+      "values": 2
+    }
+  ],
+  "invalid": [
+    {
+      "file": "invalid/not-json.json"
+    },
+    {
+      "file": "invalid/top-level-array.json"
+    },
+    {
+      "file": "invalid/wrong-version.json"
+    },
+    {
+      "file": "invalid/wrong-kind.json"
+    },
+    {
+      "file": "invalid/missing-site.json"
+    },
+    {
+      "file": "invalid/missing-values.json"
+    },
+    {
+      "file": "invalid/zero-values.json"
+    },
+    {
+      "file": "invalid/three-values.json"
+    },
+    {
+      "file": "invalid/empty-value.json"
+    },
+    {
+      "file": "invalid/value-257-chars.json"
+    },
+    {
+      "file": "invalid/value-with-space.json"
+    },
+    {
+      "file": "invalid/value-non-ascii.json"
+    },
+    {
+      "file": "invalid/value-not-string.json"
+    },
+    {
+      "file": "invalid/unknown-field.json"
+    },
+    {
+      "file": "invalid/duplicate-key.json"
+    },
+    {
+      "file": "invalid/site-mismatch.json"
+    }
+  ]
+}

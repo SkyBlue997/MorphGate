@@ -17,7 +17,8 @@ option go_package = "morphgate/control-plane/gen/morphgate/v1;morphgatev1";
 // on submission, before any external provider call. Unknown `v` is rejected.
 // Sealing and opening are implemented in Phase 1 (crate mg-challenge; key
 // derivation, aad encoding and test vectors: docs/impl/phase1-spec.md §6);
-// these messages fix the encoding (prost is length-delimited, so there is no
+// Phase 2 adds the interactive fields and rules (docs/impl/phase2-spec.md §3.1,
+// §6.2); these messages fix the encoding (prost is length-delimited, so there is no
 // concatenation ambiguity).
 
 // Outer envelope of C.
@@ -30,10 +31,12 @@ message SealedChallenge {
 
 // Claims sealed inside C (docs/09 §4.2). Times come from the server clock.
 message SealedChallengeClaims {
-  // PoW parameters, verified server-side.
+  // PoW parameters, verified server-side (docs/impl/phase2-spec.md §6.4).
   message Pow {
-    string alg = 1;
-    uint32 difficulty = 2;
+    string alg = 1;              // "sha256-hashcash-v1" (invisible / pow) | "sha256-hashcash-v2" (interactive)
+    uint32 difficulty = 2;       // v1: the single puzzle; v2: every sub-puzzle, provider self_hold (or turnstile)
+    uint32 k = 3;                // v2 only: number of sub-puzzles, 1..8; v1: 0
+    uint32 a11y_difficulty = 4;  // v2 only: every sub-puzzle, provider pow_a11y; v1: 0
   }
 
   // Binding hashes (docs/04 §5 for phase and strength). Presence-aware: an
@@ -41,7 +44,8 @@ message SealedChallengeClaims {
   message Bind {
     optional bytes uah = 1;   // hash(UA family + major version): hard
     optional bytes ipp = 2;   // hash(IP /24 or /48): soft (same ASN -> risk; cross ASN / country -> new C)
-    optional bytes jkt = 3;   // Phase 2+: SDK session key thumbprint: hard
+    optional bytes jkt = 3;   // bind_hash("jkt", <43-char thumbprint>) when the C is bound to a
+                              // session key (Phase 2 spec D-41): hard
     optional bytes ctp = 4;   // cloudflare only: coarse TLS tuple hash: shadow only
     optional bytes tfp = 5;   // direct_tls only, after the JA4 spike: JA4 hash: hard
     optional bytes ipa = 6;   // hash(ASN of the client IP at issuance): decides the soft ipp result
@@ -54,14 +58,17 @@ message SealedChallengeClaims {
   string site = 4;                // site id; must own the request Host
   string route_class = 5;         // [a-z0-9_-]{1,32}; also the Turnstile action
   ChallengeType type = 6;         // INVISIBLE | POW | INTERACTIVE; must match the endpoint
-  repeated string providers = 7;  // interactive only: offered provider ids, ordered, first = default;
-                                  // a submitted provider_id outside this set fails (anti-downgrade)
+  repeated string providers = 7;  // interactive: non-empty, unique, contains "pow_a11y", subset of
+                                  // {self_hold, pow_a11y, turnstile}; ordered, first = default; a submitted
+                                  // provider outside this set fails (anti-downgrade); invisible / pow: empty
   string risk_band = 8;           // low | medium | high | very_high: PoW difficulty and scoring prior
-  uint32 attempt_no = 9;          // interactive only: 1-based; > M -> temporary block
+  uint32 attempt_no = 9;          // interactive: 1-based attempt number; invisible / pow: 0
   int64 iat = 10;                 // issued at, Unix epoch milliseconds
   int64 exp = 11;                 // expires at, Unix epoch milliseconds
-  uint64 ui_seed = 12;            // interactive only: seeds hold duration, button offset, pow_salt
+  uint64 ui_seed = 12;            // interactive: random, non-zero; seeds the hold duration and the button
+                                  // offset (Phase 2 spec §6.3); invisible / pow: 0
   Pow pow = 13;
   bytes ret = 14;                 // hash of the same-site return path (anti open redirect)
   Bind bind = 15;
+  uint32 renew_no = 16;           // interactive: renewals so far in this chain, 0..6; invisible / pow: 0
 }

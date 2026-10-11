@@ -48,6 +48,8 @@ fn proto_of(c: &SealedChallengeClaims) -> ProtoClaims {
         pow: c.pow.as_ref().map(|p| Pow {
             alg: p.alg.clone(),
             difficulty: p.difficulty,
+            k: p.k,
+            a11y_difficulty: p.a11y_difficulty,
         }),
         ret: c.ret_hash.clone(),
         bind: Some(Bind {
@@ -58,6 +60,7 @@ fn proto_of(c: &SealedChallengeClaims) -> ProtoClaims {
             tfp: c.bind.tfp.clone(),
             ipa: c.bind.ipa.clone(),
         }),
+        renew_no: c.renew_no,
     }
 }
 
@@ -706,10 +709,23 @@ fn seal_rejects_malformed_claims() {
     assert_eq!(s.seal(&c, HOST, &rng), Err(SealError::Shape));
     // Nothing lives longer than the epoch window allows, not even a
     // (Phase 2) interactive challenge whose own limit is 10 minutes.
+    // Interactive claims follow the Phase 2 rules of spec §6.2.
     let mut c = pow_claims(MIDDAY_MS);
     c.challenge_type = ChallengeType::Interactive;
-    c.providers = vec![mg_core::challenge::ProviderId::SelfHold];
+    c.providers = vec![
+        mg_core::challenge::ProviderId::SelfHold,
+        mg_core::challenge::ProviderId::PowA11y,
+    ];
     c.attempt_no = 1;
+    c.ui_seed = 0x1234_5678_9abc_def0;
+    c.renew_no = 2;
+    c.pow = Some(mg_core::PowParams {
+        alg: SealedChallengeClaims::POW_ALG_V2.into(),
+        difficulty: 16,
+        k: 8,
+        a11y_difficulty: 17,
+    });
+    c.bind.jkt = Some(vec![0x6a; 16]);
     c.exp_ms = c.iat_ms + 600_000;
     assert_eq!(
         s.seal(&c, HOST, &rng),

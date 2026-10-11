@@ -6,6 +6,7 @@ require (
 	filippo.io/age v1.3.2
 	github.com/google/cel-go v0.30.0
 	github.com/oschwald/maxminddb-golang/v2 v2.6.0
+	github.com/valkey-io/valkey-go v1.0.78
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/term v0.45.0
 	google.golang.org/protobuf v1.36.12
