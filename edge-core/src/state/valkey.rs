@@ -9,26 +9,47 @@ use redis::{Cmd, ConnectionInfo, IntoConnectionInfo, Pipeline, Value};
 
 use super::local::PreparedLimit;
 use super::{
-    EVENT_STREAM_KEY, MAX_VERDICT_BYTES, MG_GCRA_LUA, MG_NONCE_ISSUE_LUA, StateConfig, StateError,
-    metrics,
+    EVENT_STREAM_KEY, JTI_COUNTER_WINDOW_MS, JTI_PER_KEY_LIMIT, JTI_TTL_S, JtiOutcome,
+    MAX_VERDICT_BYTES, MG_GCRA_LUA, MG_JTI_LUA, MG_NONCE_ISSUE_LUA, MG_NONCE_ISSUE_V2_LUA,
+    StateConfig, StateError, TOKEN_REPLAY_TTL_MS, metrics,
 };
 
 /// Stream entries of one `xadd_batch` call.
 pub(crate) type StreamBatch = Vec<Vec<(&'static str, String)>>;
 
-/// SHA-1 of both scripts, as `SCRIPT LOAD` returns them.
+/// SHA-1 of every script, as `SCRIPT LOAD` returns them.
 #[derive(Debug, Clone)]
 pub(crate) struct Scripts {
     pub gcra: String,
     pub nonce: String,
+    /// `mg_nonce_issue` v2 (Phase 2 spec §14.2).
+    pub nonce_v2: String,
+    /// `mg_jti` v1 (Phase 2 spec §14.2).
+    pub jti: String,
 }
+
+/// Every script the Edge loads, in `SCRIPT LOAD` order. Until the stage 2
+/// switch (Phase 2 spec §2.3) both `mg_nonce_issue` versions are loaded.
+const SCRIPT_SOURCES: [&str; 4] = [
+    MG_GCRA_LUA,
+    MG_NONCE_ISSUE_LUA,
+    MG_NONCE_ISSUE_V2_LUA,
+    MG_JTI_LUA,
+];
 
 impl Scripts {
     pub fn new() -> Self {
+        let sha = |src| redis::Script::new(src).get_hash().to_owned();
         Self {
-            gcra: redis::Script::new(MG_GCRA_LUA).get_hash().to_owned(),
-            nonce: redis::Script::new(MG_NONCE_ISSUE_LUA).get_hash().to_owned(),
+            gcra: sha(MG_GCRA_LUA),
+            nonce: sha(MG_NONCE_ISSUE_LUA),
+            nonce_v2: sha(MG_NONCE_ISSUE_V2_LUA),
+            jti: sha(MG_JTI_LUA),
         }
+    }
+
+    fn in_load_order(&self) -> [&str; 4] {
+        [&self.gcra, &self.nonce, &self.nonce_v2, &self.jti]
     }
 }
 
@@ -86,8 +107,9 @@ pub(crate) async fn connect(
 
 async fn load_scripts(conn: &mut ConnectionManager, scripts: &Scripts) -> Result<(), StateError> {
     let mut pipe = redis::pipe();
-    pipe.cmd("SCRIPT").arg("LOAD").arg(MG_GCRA_LUA);
-    pipe.cmd("SCRIPT").arg("LOAD").arg(MG_NONCE_ISSUE_LUA);
+    for src in SCRIPT_SOURCES {
+        pipe.cmd("SCRIPT").arg("LOAD").arg(src);
+    }
     let result = async {
         let values = exec_raw(conn, &pipe).await?;
         let shas: Vec<String> = values
@@ -100,7 +122,7 @@ async fn load_scripts(conn: &mut ConnectionManager, scripts: &Scripts) -> Result
                 _ => Err(StateError::Reply("SCRIPT LOAD")),
             })
             .collect::<Result<_, _>>()?;
-        if shas.len() == 2 && shas[0] == scripts.gcra && shas[1] == scripts.nonce {
+        if shas.iter().map(String::as_str).eq(scripts.in_load_order()) {
             Ok(())
         } else {
             Err(StateError::Reply(
@@ -211,6 +233,47 @@ pub(crate) fn nonce_cmd(
     c
 }
 
+/// `EVALSHA mg_nonce_issue` v2 (KEYS / ARGV layout of Phase 2 spec §14.2).
+pub(crate) fn nonce_v2_cmd(
+    sha: &str,
+    nonce_key: &str,
+    replay_key: Option<&str>,
+    ttl_ms: u64,
+    limits: &[PreparedLimit],
+    now_us: u64,
+) -> Cmd {
+    let r = usize::from(replay_key.is_some());
+    let mut c = redis::cmd("EVALSHA");
+    c.arg(sha).arg(1 + r + limits.len()).arg(nonce_key);
+    if let Some(k) = replay_key {
+        c.arg(k);
+    }
+    for l in limits {
+        c.arg(&l.key);
+    }
+    c.arg(ttl_ms.max(1))
+        .arg(now_us)
+        .arg(r)
+        .arg(TOKEN_REPLAY_TTL_MS);
+    for l in limits {
+        c.arg(l.params.interval_us).arg(l.params.burst).arg(l.cost);
+    }
+    c
+}
+
+/// `EVALSHA mg_jti` v1 (Phase 2 spec §9.2, §14.2).
+pub(crate) fn jti_cmd(sha: &str, jti_key: &str, count_key: &str) -> Cmd {
+    let mut c = redis::cmd("EVALSHA");
+    c.arg(sha)
+        .arg(2)
+        .arg(jti_key)
+        .arg(count_key)
+        .arg(JTI_PER_KEY_LIMIT)
+        .arg(JTI_COUNTER_WINDOW_MS)
+        .arg(JTI_TTL_S);
+    c
+}
+
 fn as_int(v: &Value) -> Option<i64> {
     match v {
         Value::Int(i) => Some(*i),
@@ -288,6 +351,53 @@ pub(crate) fn parse_nonce(
     }
 }
 
+/// `mg_nonce_issue` v2 reply (Phase 2 spec §14.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NonceV2Reply {
+    /// `{0}`: the nonce was already used.
+    Reused,
+    /// `{2}`: the provider token was already used (the nonce is consumed).
+    TokenReused,
+    /// `{1, …}`: one outcome per limiter.
+    Fresh(Vec<GcraOutcome>),
+}
+
+/// Parses an `mg_nonce_issue` v2 reply for `n` limiters.
+pub(crate) fn parse_nonce_v2(
+    v: &Value,
+    n: usize,
+    edge_now_us: u64,
+) -> Result<NonceV2Reply, StateError> {
+    let Value::Array(items) = v else {
+        return Err(StateError::Reply("nonce reply type"));
+    };
+    match items.split_first() {
+        Some((first, [])) if as_int(first) == Some(0) => Ok(NonceV2Reply::Reused),
+        Some((first, [])) if as_int(first) == Some(2) => Ok(NonceV2Reply::TokenReused),
+        Some((first, rest)) if as_int(first) == Some(1) => {
+            parse_triples(rest, n, edge_now_us).map(NonceV2Reply::Fresh)
+        }
+        _ => Err(StateError::Reply("nonce reply values")),
+    }
+}
+
+/// Parses an `mg_jti` v1 reply: `{0}` fresh, `{1}` replay, `{2}` per-key
+/// quota exceeded.
+pub(crate) fn parse_jti(v: &Value) -> Result<JtiOutcome, StateError> {
+    let Value::Array(items) = v else {
+        return Err(StateError::Reply("jti reply type"));
+    };
+    match items.as_slice() {
+        [first] => match as_int(first) {
+            Some(0) => Ok(JtiOutcome::Fresh),
+            Some(1) => Ok(JtiOutcome::Replayed),
+            Some(2) => Ok(JtiOutcome::KeyQuota),
+            _ => Err(StateError::Reply("jti reply values")),
+        },
+        _ => Err(StateError::Reply("jti reply values")),
+    }
+}
+
 /// `MGET` reply. Values that are too long or not UTF-8 are ignored and
 /// counted as verdict parse errors.
 pub(crate) fn parse_mget(v: &Value, n: usize) -> Result<Vec<Option<String>>, StateError> {
@@ -358,6 +468,80 @@ pub(crate) async fn round_trip1(
         )?
     };
     Ok((verdicts, outcomes))
+}
+
+/// The reply of [`round_trip1_v2`]: verdicts, limiter outcomes and the
+/// `mg_jti` outcome (if a proof was checked).
+pub(crate) type RoundTrip1V2Reply = (Vec<Option<String>>, Vec<GcraOutcome>, Option<JtiOutcome>);
+
+/// Phase 2 round trip 1 (Phase 2 spec §14.3): `MGET` (if any key) +
+/// `EVALSHA mg_gcra` (if any limiter) + `EVALSHA mg_jti` (if a proof is
+/// checked; `jti` = its key and counter key), sent as one pipeline.
+pub(crate) async fn round_trip1_v2(
+    conn: &mut ConnectionManager,
+    scripts: &Scripts,
+    mget: &[String],
+    limits: &[PreparedLimit],
+    jti: Option<&(String, String)>,
+) -> Result<RoundTrip1V2Reply, StateError> {
+    let mut pipe = redis::pipe();
+    if !mget.is_empty() {
+        pipe.cmd("MGET").arg(mget);
+    }
+    if !limits.is_empty() {
+        pipe.add_command(gcra_cmd(&scripts.gcra, limits, 0));
+    }
+    if let Some((key, count_key)) = jti {
+        pipe.add_command(jti_cmd(&scripts.jti, key, count_key));
+    }
+    if pipe.is_empty() {
+        return Ok((Vec::new(), Vec::new(), None));
+    }
+    let values = exec_scripted(conn, &pipe, scripts).await?;
+    let edge_now = super::unix_now_us();
+    let mut it = values.iter();
+    let mut next = || it.next().ok_or(StateError::Reply("pipeline reply count"));
+    let verdicts = if mget.is_empty() {
+        Vec::new()
+    } else {
+        parse_mget(next()?, mget.len())?
+    };
+    let outcomes = if limits.is_empty() {
+        Vec::new()
+    } else {
+        parse_gcra(next()?, limits.len(), edge_now)?
+    };
+    let jti = match jti {
+        Some(_) => Some(parse_jti(next()?)?),
+        None => None,
+    };
+    Ok((verdicts, outcomes, jti))
+}
+
+/// Round trip 2 with `mg_nonce_issue` v2.
+pub(crate) async fn nonce_issue_v2(
+    conn: &mut ConnectionManager,
+    scripts: &Scripts,
+    nonce_key: &str,
+    replay_key: Option<&str>,
+    ttl_ms: u64,
+    limits: &[PreparedLimit],
+) -> Result<NonceV2Reply, StateError> {
+    let mut pipe = redis::pipe();
+    pipe.add_command(nonce_v2_cmd(
+        &scripts.nonce_v2,
+        nonce_key,
+        replay_key,
+        ttl_ms,
+        limits,
+        0,
+    ));
+    let values = exec_scripted(conn, &pipe, scripts).await?;
+    let edge_now = super::unix_now_us();
+    let reply = values
+        .first()
+        .ok_or(StateError::Reply("pipeline reply count"))?;
+    parse_nonce_v2(reply, limits.len(), edge_now)
 }
 
 /// `EVALSHA mg_gcra` alone (async failure counting).
@@ -478,8 +662,103 @@ mod tests {
     #[test]
     fn scripts_hashes_are_sha1_hex() {
         let s = Scripts::new();
-        assert_eq!(s.gcra.len(), 40);
-        assert_ne!(s.gcra, s.nonce);
+        let all = s.in_load_order();
+        for (i, sha) in all.iter().enumerate() {
+            assert_eq!(sha.len(), 40);
+            assert!(all[..i].iter().all(|other| other != sha));
+        }
+    }
+
+    #[test]
+    fn nonce_v2_argv_layout() {
+        let l = limits();
+        let replay = Some("mg:rp:blog:turnstile:ab");
+        let a = args(&nonce_v2_cmd("sha", "mg:n:blog:00", replay, 0, &l, 7));
+        assert_eq!(
+            a[..5],
+            [
+                "EVALSHA",
+                "sha",
+                "4",
+                "mg:n:blog:00",
+                "mg:rp:blog:turnstile:ab"
+            ]
+        );
+        assert_eq!(a[5], l[0].key);
+        assert_eq!(a[6], l[1].key);
+        assert_eq!(
+            a[7..],
+            [
+                "1", "7", "1", "300000", "3000000", "5", "1", "3000000", "5", "1"
+            ]
+        );
+        let a = args(&nonce_v2_cmd("sha", "mg:n:blog:00", None, 660_000, &[], 0));
+        assert_eq!(
+            a,
+            [
+                "EVALSHA",
+                "sha",
+                "1",
+                "mg:n:blog:00",
+                "660000",
+                "0",
+                "0",
+                "300000"
+            ]
+        );
+    }
+
+    #[test]
+    fn jti_argv_layout() {
+        let a = args(&jti_cmd("sha", "mg:jti:blog:kj:j", "mg:jc:blog:kj"));
+        assert_eq!(
+            a,
+            [
+                "EVALSHA",
+                "sha",
+                "2",
+                "mg:jti:blog:kj:j",
+                "mg:jc:blog:kj",
+                "600",
+                "60000",
+                "40"
+            ]
+        );
+    }
+
+    #[test]
+    fn v2_reply_parsing() {
+        let arr = |v: Vec<i64>| Value::Array(v.into_iter().map(Value::Int).collect());
+        assert_eq!(
+            parse_nonce_v2(&arr(vec![0]), 1, 0).unwrap(),
+            NonceV2Reply::Reused
+        );
+        assert_eq!(
+            parse_nonce_v2(&arr(vec![2]), 1, 0).unwrap(),
+            NonceV2Reply::TokenReused
+        );
+        assert_eq!(
+            parse_nonce_v2(&arr(vec![1]), 0, 0).unwrap(),
+            NonceV2Reply::Fresh(vec![])
+        );
+        let fresh = parse_nonce_v2(&arr(vec![1, 1, 0, 5]), 1, 100).unwrap();
+        assert!(matches!(fresh, NonceV2Reply::Fresh(o) if o[0].new_tat_us == Some(105)));
+        assert!(parse_nonce_v2(&arr(vec![2, 1]), 0, 0).is_err());
+        assert!(parse_nonce_v2(&arr(vec![3]), 0, 0).is_err());
+        assert!(parse_nonce_v2(&arr(vec![1, 1, 0]), 1, 0).is_err());
+        assert!(parse_nonce_v2(&Value::Nil, 0, 0).is_err());
+        assert_eq!(parse_jti(&arr(vec![0])).unwrap(), JtiOutcome::Fresh);
+        assert_eq!(parse_jti(&arr(vec![1])).unwrap(), JtiOutcome::Replayed);
+        assert_eq!(parse_jti(&arr(vec![2])).unwrap(), JtiOutcome::KeyQuota);
+        for bad in [
+            arr(vec![]),
+            arr(vec![3]),
+            arr(vec![0, 0]),
+            Value::Int(0),
+            Value::Nil,
+        ] {
+            assert!(parse_jti(&bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -565,6 +844,8 @@ mod tests {
             let _ = parse_gcra(&v, n, r.next());
             let _ = parse_nonce(&v, n, r.next());
             let _ = parse_mget(&v, n);
+            let _ = parse_nonce_v2(&v, n, r.next());
+            let _ = parse_jti(&v);
         }
     }
 

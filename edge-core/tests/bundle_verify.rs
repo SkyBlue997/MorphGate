@@ -334,8 +334,8 @@ fn oversized_bundles_are_rejected() {
 }
 
 #[test]
-fn schema_version_must_be_1() {
-    for v in [0, 2, u32::MAX] {
+fn schema_version_must_be_1_or_2() {
+    for v in [0, 3, u32::MAX] {
         let mut b = bundle();
         b.schema_version = v;
         assert!(

@@ -12,13 +12,15 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, timeout_at};
 
 use super::health::{Backoff, Health};
-use super::local::{LocalGcra, NonceInsert, NonceSet, PreparedLimit, lock};
-use super::valkey::{self, Scripts, StreamBatch};
+use super::local::{JtiTable, LocalGcra, LocalJti, NonceInsert, NonceSet, PreparedLimit, lock};
+use super::valkey::{self, NonceV2Reply, RoundTrip1V2Reply, Scripts, StreamBatch};
 use super::verdicts::VerdictCache;
 use super::{
-    FAILURE_QUEUE_CAPACITY, LimitCheck, MAX_NONCE_TTL_MS, NonceIssue, NonceResult,
-    REQUEST_QUEUE_CAPACITY, RoundTrip1, RoundTrip1Result, StateConfig, StateError, StateMode,
-    VERDICT_CACHE_CAPACITY, VERDICT_CACHE_TTL_MS, metrics, nonce_key, unix_now_ms, unix_now_us,
+    FAILURE_QUEUE_CAPACITY, JTI_COUNTER_WINDOW_MS, JTI_IAT_SKEW_S, JTI_PER_KEY_LIMIT, JTI_TTL_S,
+    JtiOutcome, LimitCheck, MAX_NONCE_TTL_MS, NonceIssue, NonceIssueV2, NonceResult, NonceResultV2,
+    REQUEST_QUEUE_CAPACITY, RoundTrip1, RoundTrip1Result, RoundTrip1V2, RoundTrip1V2Result,
+    StateConfig, StateError, StateMode, TOKEN_REPLAY_TTL_MS, VERDICT_CACHE_CAPACITY,
+    VERDICT_CACHE_TTL_MS, metrics, nonce_key, replay_key, unix_now_ms, unix_now_us,
 };
 
 /// Timeout of `xadd_batch` (not on the request path).
@@ -52,6 +54,24 @@ enum Job {
         deadline: Instant,
         reply: Reply<()>,
     },
+    /// Phase 2 round trip 1 (`mg_jti` in the pipeline).
+    RoundTrip1V2 {
+        mget: Vec<String>,
+        limits: Vec<PreparedLimit>,
+        /// `mg:jti:…` and `mg:jc:…`.
+        jti: Option<(String, String)>,
+        deadline: Instant,
+        reply: Reply<RoundTrip1V2Reply>,
+    },
+    /// `mg_nonce_issue` v2.
+    NonceV2 {
+        key: String,
+        replay_key: Option<String>,
+        ttl_ms: u64,
+        limits: Vec<PreparedLimit>,
+        deadline: Instant,
+        reply: Reply<NonceV2Reply>,
+    },
 }
 
 impl Job {
@@ -61,6 +81,8 @@ impl Job {
             Job::RoundTrip1 { reply, .. } => drop(reply.send(Err(e))),
             Job::Nonce { reply, .. } => drop(reply.send(Err(e))),
             Job::Xadd { reply, .. } => drop(reply.send(Err(e))),
+            Job::RoundTrip1V2 { reply, .. } => drop(reply.send(Err(e))),
+            Job::NonceV2 { reply, .. } => drop(reply.send(Err(e))),
         }
     }
 
@@ -68,7 +90,9 @@ impl Job {
         match self {
             Job::RoundTrip1 { deadline, .. }
             | Job::Nonce { deadline, .. }
-            | Job::Xadd { deadline, .. } => *deadline,
+            | Job::Xadd { deadline, .. }
+            | Job::RoundTrip1V2 { deadline, .. }
+            | Job::NonceV2 { deadline, .. } => *deadline,
         }
     }
 }
@@ -85,6 +109,10 @@ struct Core {
     k_pseudo: [u8; 32],
     gcra: LocalGcra,
     nonces: NonceSet,
+    /// Phase 2: the in-process `jti` set (§9.2).
+    jtis: JtiTable,
+    /// Phase 2: the in-process provider-token replay set (§14.4).
+    replays: NonceSet,
     verdicts: VerdictCache,
     health: Health,
     scripts: Scripts,
@@ -180,7 +208,14 @@ impl StateService {
             process_start_ms: cfg.process_start_ms,
             k_pseudo: cfg.k_pseudo,
             gcra: LocalGcra::new(cfg.local_limiter_capacity),
-            nonces: NonceSet::new(cfg.local_nonce_capacity),
+            nonces: NonceSet::new(cfg.local_nonce_capacity, "nonce"),
+            jtis: JtiTable::new(
+                cfg.local_jti_capacity,
+                JTI_PER_KEY_LIMIT,
+                JTI_COUNTER_WINDOW_MS,
+                JTI_TTL_S * 1000,
+            ),
+            replays: NonceSet::new(cfg.local_rp_capacity, "rp"),
             verdicts: VerdictCache::new(
                 VERDICT_CACHE_CAPACITY,
                 Duration::from_millis(VERDICT_CACHE_TTL_MS),
@@ -372,6 +407,42 @@ async fn run_job(core: Arc<Core>, mut conn: ConnectionManager, generation: u64, 
             .await;
             let _ = reply.send(core.settle(generation, started, r));
         }
+        Job::RoundTrip1V2 {
+            mget,
+            limits,
+            jti,
+            deadline,
+            reply,
+        } => {
+            let r = timeout_at(
+                deadline,
+                valkey::round_trip1_v2(&mut conn, &core.scripts, &mget, &limits, jti.as_ref()),
+            )
+            .await;
+            let _ = reply.send(core.settle(generation, started, r));
+        }
+        Job::NonceV2 {
+            key,
+            replay_key,
+            ttl_ms,
+            limits,
+            deadline,
+            reply,
+        } => {
+            let r = timeout_at(
+                deadline,
+                valkey::nonce_issue_v2(
+                    &mut conn,
+                    &core.scripts,
+                    &key,
+                    replay_key.as_deref(),
+                    ttl_ms,
+                    &limits,
+                ),
+            )
+            .await;
+            let _ = reply.send(core.settle(generation, started, r));
+        }
         Job::Xadd {
             maxlen,
             entries,
@@ -437,7 +508,10 @@ async fn sweep(core: &Arc<Core>, mut shutdown: watch::Receiver<bool>) {
         let core = Arc::clone(core);
         let _ = tokio::task::spawn_blocking(move || {
             core.gcra.sweep(unix_now_us());
-            core.nonces.expire_all(unix_now_ms());
+            let now_ms = unix_now_ms();
+            core.nonces.expire_all(now_ms);
+            core.jtis.expire_all(now_ms);
+            core.replays.expire_all(now_ms);
             core.verdicts.sweep(std::time::Instant::now());
         })
         .await;
@@ -613,6 +687,208 @@ impl StateHandle {
             NonceResult::Fresh { limits: outcomes }
         } else {
             NonceResult::Unavailable { limits: outcomes }
+        }
+    }
+
+    /// Phase 2 round trip 1 (Phase 2 spec §9.2, §14.3): as
+    /// [`StateHandle::round_trip1`], plus the `MG-Proof` `jti` check when
+    /// `req.jti` is set (only for proofs that passed §6.7):
+    ///
+    /// 1. in every mode the in-process table is checked and updated first
+    ///    (per-key counter, then the 40 s set); a local replay or per-key
+    ///    quota is final;
+    /// 2. otherwise `EVALSHA mg_jti` runs in the same pipeline as the
+    ///    `MGET` and `mg_gcra`, and its answer is the result;
+    /// 3. without a Valkey answer the local result counts only with
+    ///    `local_replay_authoritative`, if the `jti` was recorded, the table
+    ///    was not full since `iat − 5 s`, and `iat − 5 s` is not before this
+    ///    process started (a proof accepted before the start would have had
+    ///    an earlier `iat`); otherwise [`JtiOutcome::Unavailable`].
+    pub async fn round_trip1_v2(&self, req: RoundTrip1V2, now_ms: i64) -> RoundTrip1V2Result {
+        let RoundTrip1V2 {
+            verdict_keys,
+            limits,
+            jti,
+        } = req;
+        let local_jti = jti.as_ref().map(|j| {
+            let keys = (j.key(), j.count_key());
+            let local = self.core.jtis.check(&keys.1, &keys.0, now_ms);
+            (j.iat_s, keys, local)
+        });
+        let decided = local_jti.as_ref().and_then(|(_, _, l)| match l {
+            LocalJti::Replay => Some(JtiOutcome::Replayed),
+            LocalJti::KeyQuota => Some(JtiOutcome::KeyQuota),
+            LocalJti::Fresh | LocalJti::Full => None,
+        });
+        let send_jti = match (&local_jti, decided) {
+            (Some((_, keys, _)), None) => Some(keys.clone()),
+            _ => None,
+        };
+        let deadline = Instant::now() + self.core.timeout;
+        let clock = std::time::Instant::now();
+        let mut verdicts = vec![None; verdict_keys.len()];
+        let mut fetch_idx = Vec::new();
+        let mut fetch_keys = Vec::new();
+        for (i, key) in verdict_keys.into_iter().enumerate() {
+            match self.core.verdicts.get(&key, clock) {
+                Some(v) => verdicts[i] = v,
+                None => {
+                    fetch_idx.push(i);
+                    fetch_keys.push(key);
+                }
+            }
+        }
+        let limits = self.core.prepare(&limits);
+        let nothing_to_send = fetch_keys.is_empty() && limits.is_empty() && send_jti.is_none();
+        if !nothing_to_send && self.core.valkey_usable() {
+            let mget = fetch_keys.clone();
+            let sent = limits.clone();
+            let r = self
+                .call(deadline, |reply| Job::RoundTrip1V2 {
+                    mget,
+                    limits: sent,
+                    jti: send_jti.clone(),
+                    deadline,
+                    reply,
+                })
+                .await;
+            if let Ok((values, outcomes, valkey_jti)) = r {
+                for ((i, key), v) in fetch_idx.into_iter().zip(fetch_keys).zip(values) {
+                    self.core.verdicts.put(key, v.clone(), clock);
+                    verdicts[i] = v;
+                }
+                return RoundTrip1V2Result {
+                    verdicts,
+                    limits: outcomes,
+                    mode: StateMode::Valkey,
+                    jti: decided.or(valkey_jti),
+                };
+            }
+        }
+        let now = unix_now_us();
+        let outcomes = limits
+            .iter()
+            .map(|l| self.core.gcra.check(l, l.write, now))
+            .collect();
+        let jti = local_jti.map(|(iat_s, _, local)| {
+            decided.unwrap_or_else(|| self.local_jti_verdict(local, iat_s))
+        });
+        RoundTrip1V2Result {
+            verdicts,
+            limits: outcomes,
+            mode: if nothing_to_send {
+                self.mode()
+            } else {
+                StateMode::Local
+            },
+            jti,
+        }
+    }
+
+    /// The local `jti` verdict without a Valkey answer (§9.2 "结论").
+    fn local_jti_verdict(&self, local: LocalJti, iat_s: i64) -> JtiOutcome {
+        let since_ms = iat_s.saturating_sub(JTI_IAT_SKEW_S).saturating_mul(1000);
+        let after_overflow = self
+            .core
+            .jtis
+            .last_overflow_ms()
+            .is_none_or(|t| t < since_ms);
+        if self.core.local_replay_authoritative
+            && local == LocalJti::Fresh
+            && since_ms >= self.core.process_start_ms
+            && after_overflow
+        {
+            JtiOutcome::Fresh
+        } else {
+            JtiOutcome::Unavailable
+        }
+    }
+
+    /// Round trip 2 with `mg_nonce_issue` v2 (Phase 2 spec §14.2–§14.4),
+    /// for `POST /__mg/c` v2 and `POST /__mg/c/renew`. The rules of
+    /// [`StateHandle::nonce_issue`] apply, in the script's order:
+    ///
+    /// 1. the local nonce set, then (with `req.replay`) the local
+    ///    provider-token set are checked and updated first, in every mode: a
+    ///    live nonce is [`NonceResultV2::Reused`] (nothing else changes), a
+    ///    live token [`NonceResultV2::TokenReused`] (the nonce stays
+    ///    consumed);
+    /// 2. with Valkey, `mg_nonce_issue` v2 decides;
+    /// 3. without a Valkey answer the quotas are counted in the local table
+    ///    (all-or-nothing), and the result is authoritative only if
+    ///    `local_replay_authoritative`, the nonce (and the token) were
+    ///    recorded, and the challenge was issued (`c_iat_ms`) after this
+    ///    process started and after either set was last full; otherwise
+    ///    [`NonceResultV2::Unavailable`]. (A provider token is bound to its
+    ///    challenge through `cData`, so it cannot have been used before the
+    ///    challenge was issued.)
+    pub async fn nonce_issue_v2(
+        &self,
+        req: NonceIssueV2,
+        now_ms: i64,
+        c_iat_ms: i64,
+    ) -> NonceResultV2 {
+        let deadline = Instant::now() + self.core.timeout;
+        let key = nonce_key(&req.site, &req.nonce);
+        let ttl_ms = req.ttl_ms.clamp(1, MAX_NONCE_TTL_MS);
+        let expiry_ms = now_ms.saturating_add(i64::try_from(ttl_ms).unwrap_or(i64::MAX));
+        let nonce_recorded = match self.core.nonces.insert(&key, expiry_ms, now_ms) {
+            NonceInsert::Exists => return NonceResultV2::Reused,
+            NonceInsert::Inserted => true,
+            NonceInsert::Full => false,
+        };
+        let replay_key = req
+            .replay
+            .as_ref()
+            .map(|r| replay_key(&req.site, &r.provider, &r.token_hash));
+        let token_recorded = match &replay_key {
+            None => true,
+            Some(rk) => {
+                let expiry =
+                    now_ms.saturating_add(i64::try_from(TOKEN_REPLAY_TTL_MS).unwrap_or(i64::MAX));
+                match self.core.replays.insert(rk, expiry, now_ms) {
+                    NonceInsert::Exists => return NonceResultV2::TokenReused,
+                    NonceInsert::Inserted => true,
+                    NonceInsert::Full => false,
+                }
+            }
+        };
+        let limits = self.core.prepare(&req.limits);
+        if self.core.valkey_usable() {
+            let sent = limits.clone();
+            let r = self
+                .call(deadline, |reply| Job::NonceV2 {
+                    key,
+                    replay_key: replay_key.clone(),
+                    ttl_ms,
+                    limits: sent,
+                    deadline,
+                    reply,
+                })
+                .await;
+            match r {
+                Ok(NonceV2Reply::Reused) => return NonceResultV2::Reused,
+                Ok(NonceV2Reply::TokenReused) => return NonceResultV2::TokenReused,
+                Ok(NonceV2Reply::Fresh(outcomes)) => {
+                    return NonceResultV2::Fresh { limits: outcomes };
+                }
+                Err(_) => {}
+            }
+        }
+        let now_us = u64::try_from(now_ms).unwrap_or(0).saturating_mul(1000);
+        let outcomes = self.core.gcra.check_all_or_nothing(&limits, now_us);
+        let after = |last: Option<i64>| last.is_none_or(|t| c_iat_ms > t);
+        let tokens_ok = replay_key.is_none() || after(self.core.replays.last_overflow_ms());
+        if self.core.local_replay_authoritative
+            && nonce_recorded
+            && token_recorded
+            && c_iat_ms >= self.core.process_start_ms
+            && after(self.core.nonces.last_overflow_ms())
+            && tokens_ok
+        {
+            NonceResultV2::Fresh { limits: outcomes }
+        } else {
+            NonceResultV2::Unavailable { limits: outcomes }
         }
     }
 

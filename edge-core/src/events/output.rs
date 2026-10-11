@@ -10,11 +10,12 @@
 use super::queue::{Counts, DropSink, EventMetrics, FINAL_FLUSH_BUDGET, shutdown_signal};
 use super::stream::StreamWriter;
 use super::vl::{PostOutcome, VlClient};
-use super::{EventClass, Sink, StreamEntry};
+use super::{CLASSES, EventClass, Sink, StreamEntry};
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tokio::sync::{Notify, watch};
@@ -32,7 +33,7 @@ pub(super) struct Limits {
     /// Most line bytes per batch; also the "flush now" threshold.
     pub max_bytes: usize,
     /// Backlog capacity per class (P0, P1, P2).
-    pub capacity: [usize; 3],
+    pub capacity: [usize; CLASSES],
     /// Flush at least this often.
     pub interval: Duration,
 }
@@ -195,7 +196,7 @@ impl Batch {
 /// [`Limits::capacity`].
 #[derive(Default)]
 struct Backlog {
-    queues: [VecDeque<Item>; 3],
+    queues: [VecDeque<Item>; CLASSES],
     items: usize,
     bytes: usize,
 }
@@ -208,6 +209,10 @@ pub(super) struct Lane {
     notify: Notify,
     limits: Limits,
     metrics: EventMetrics,
+    /// Phase 2 shutdown drain (§9.7): send whatever is held at once.
+    draining: AtomicBool,
+    /// A batch is taken and not yet delivered (or counted).
+    busy: AtomicBool,
 }
 
 impl Lane {
@@ -218,7 +223,25 @@ impl Lane {
             notify: Notify::new(),
             limits,
             metrics,
+            draining: AtomicBool::new(false),
+            busy: AtomicBool::new(false),
         }
+    }
+
+    /// Starts the shutdown drain: from now on the lane sends everything it
+    /// holds without waiting for the flush interval.
+    pub(super) fn start_draining(&self) {
+        self.draining.store(true, Ordering::Release);
+        self.notify.notify_one();
+    }
+
+    fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Acquire)
+    }
+
+    /// Nothing held and nothing in flight.
+    pub(super) fn is_idle(&self) -> bool {
+        !self.busy.load(Ordering::Acquire) && self.lock().items == 0
     }
 
     fn sink(&self) -> DropSink {
@@ -260,6 +283,7 @@ impl Lane {
         match threshold {
             None => self.metrics.add(self.sink(), class, 1),
             Some(true) => self.notify.notify_one(),
+            Some(false) if self.is_draining() => self.notify.notify_one(),
             Some(false) => {}
         }
     }
@@ -352,10 +376,15 @@ impl Lane {
                 _ = ticker.tick() => true,
                 () = self.notify.notified() => false,
             };
-            // A tick sends everything held; a threshold wake-up full batches.
-            while tick || self.is_full() {
+            // A tick (or the shutdown drain) sends everything held; a
+            // threshold wake-up full batches.
+            while tick || self.is_draining() || self.is_full() {
+                // Busy before the batch leaves the backlog, so `is_idle`
+                // never sees an empty backlog while a batch is in flight.
+                self.busy.store(true, Ordering::Release);
                 let mut batch = self.take(&EventClass::ALL);
                 if batch.is_empty() {
+                    self.busy.store(false, Ordering::Release);
                     break;
                 }
                 let delivered = {
@@ -383,6 +412,7 @@ impl Lane {
                     interrupted = Some(batch);
                     break 'run;
                 }
+                self.busy.store(false, Ordering::Release);
             }
         }
         self.finish(interrupted).await;
@@ -429,11 +459,12 @@ impl Lane {
         self.metrics.add_counts(sink, &left);
         if left.iter().any(|&n| n > 0) {
             log::info!(
-                "events: {} dropped {} / {} / {} P0 / P1 / P2 records at shutdown",
+                "events: {} dropped {} / {} / {} / {} P0 / P1 / P2 / telemetry records at shutdown",
                 sink.as_str(),
                 left[0],
                 left[1],
-                left[2]
+                left[2],
+                left[3]
             );
         }
     }
@@ -557,7 +588,7 @@ mod tests {
         Limits {
             max_items,
             max_bytes,
-            capacity: [capacity; 3],
+            capacity: [capacity; CLASSES],
             interval: Duration::from_secs(60),
         }
     }
@@ -606,7 +637,7 @@ mod tests {
                 EventClass::Sampled
             ]
         );
-        assert_eq!(lane.drain(), [0, 0, 0]);
+        assert_eq!(lane.drain(), [0; CLASSES]);
     }
 
     /// Batches respect both limits; a line larger than the byte limit

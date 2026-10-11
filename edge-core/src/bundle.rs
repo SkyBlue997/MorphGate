@@ -70,8 +70,16 @@ pub const MAX_SIGNED_BUNDLE_BYTES: usize = MAX_BUNDLE_BYTES + 1024;
 /// Domain prefix of the signing input (§3.2, `kat.json` `bundle_signature`).
 pub const SIGNING_DOMAIN: &[u8] = b"mg-bundle-v1\x00";
 
-/// The only `SiteBundle.schema_version` this Edge understands.
+/// `SiteBundle.schema_version` of a Phase 1 bundle (Phase 2 spec D-66: the
+/// Edge then runs strictly as in Phase 1).
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// `SiteBundle.schema_version` of a bundle that sets any Phase 2 field or
+/// value (Phase 2 spec §3.2).
+pub const SCHEMA_VERSION_PHASE2: u32 = 2;
+
+/// Every `SiteBundle.schema_version` this Edge accepts (D-66).
+pub const SCHEMA_VERSIONS: [u32; 2] = [SCHEMA_VERSION, SCHEMA_VERSION_PHASE2];
 
 /// Artifact names of Phase 1 and their size limits in bytes (§12.1).
 pub const ARTIFACT_LIMITS: &[(&str, u64)] = &[
@@ -118,8 +126,8 @@ pub enum BundleError {
     /// The Ed25519 signature does not verify.
     #[error("bundle signature does not verify")]
     BadSignature,
-    /// `SiteBundle.schema_version` is not [`SCHEMA_VERSION`].
-    #[error("unsupported schema_version {0} (expected {SCHEMA_VERSION})")]
+    /// `SiteBundle.schema_version` is not one of [`SCHEMA_VERSIONS`].
+    #[error("unsupported schema_version {0} (expected 1 or 2)")]
     SchemaVersion(u32),
     /// `SiteBundle.site_id` is not the site this bundle was fetched for.
     #[error("bundle is for site {found:?}, expected {expected:?}")]

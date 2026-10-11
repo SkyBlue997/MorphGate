@@ -24,7 +24,7 @@ pub(crate) struct StateMetrics {
     pub valkey_errors: IntCounterVec,
     /// `mg_state_mode{mode}`: 1 for the current mode.
     pub mode: IntGaugeVec,
-    /// `mg_state_local_overflow_total{table}`: `gcra`, `nonce`.
+    /// `mg_state_local_overflow_total{table}`: `gcra`, `nonce`, `jti`, `rp`.
     pub local_overflow: IntCounterVec,
     /// `mg_state_async_dropped_total`.
     pub async_dropped: IntCounter,
@@ -94,7 +94,7 @@ impl StateMetrics {
         for op in ["pipeline", "script_load", "stream"] {
             m.valkey_errors.with_label_values(&[op]);
         }
-        for table in ["gcra", "nonce"] {
+        for table in ["gcra", "nonce", "jti", "rp"] {
             m.local_overflow.with_label_values(&[table]);
         }
         m.set_mode(StateMode::Local);
