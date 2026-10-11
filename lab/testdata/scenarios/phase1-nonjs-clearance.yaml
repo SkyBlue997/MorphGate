@@ -62,6 +62,19 @@ requests:
     expect_cookie_absent: [__Host-mg_clr]
     expect_body_contains: '"error":"mg_challenge"'
 
+  # 2b. The verify entry a page's script sends it to after that JSON
+  #     challenge (spec §10.5, I-39): the same challenge page, never a
+  #     redirect back without a solved challenge.
+  - name: verify entry (navigation)
+    method: GET
+    path: /__mg/v?ret=%2Flab%2Fmembers%2F${run}%2Fhome
+    headers: *browser
+    expect_status: 403
+    expect_header: {Content-Type: text/html, Cache-Control: no-store}
+    expect_header_absent: [Location]
+    expect_cookie_absent: [__Host-mg_clr]
+    expect_body_contains: data-mg-ret="/lab/members/
+
   # 3. Form submission of the recorded, expired C (navigation, spec §10.3):
   #    unified failure, the challenge page in state "failed", no 303.
   - name: submit recorded expired C (form)

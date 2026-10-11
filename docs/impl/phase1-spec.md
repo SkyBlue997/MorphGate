@@ -52,6 +52,7 @@
 | I-36 | 2026-10-11，Phase 1 之后的增补（真实站点 monitor 期的反馈）：路由可设 `mode: monitor \| enforce`，缺省继承站点的 `monitor_only`（配置包 `Route.mode`，枚举 `RouteMode`：`INHERIT = 0`、`MONITOR = 1`、`ENFORCE = 2`；未知值使配置包无效）。它只改变 §9.9 执行层是否只记录：有效 monitor 时决定照常记入事件，`dry_run = true`、决定事件的 `monitor_only = true`，按 ALLOW 转发。§9.4 第 6 步一个请求经不同路径视图命中多条路由时，取其中**最严**的模式（`enforce` > 继承 > `monitor`）再按站点开关解析：换一种路径写法只会更严，不会降级为只记录。选中路由之前的处理（§9.3.1 协议拒绝、外部 Worker、监听器、站点不可用、bootstrap）仍只看站点级 `monitor_only`；例外是超限请求：站点 monitor 而配置包中有任一 `mode: enforce` 路由时，超限请求按 enforce 拒绝（它们跳过路由匹配，否则可以不经求值到达 enforce 路由）。`mgctl bundle verify` 列出覆盖的路由，`bundle.sign` 的审计 `diff` 记 `route_modes`。用途：整站 monitor 时先让一条测试路由 enforce，或在 enforce 站点上把新路由先放在 monitor | §3.2、§8.2、§8.3、§9.4、§9.9、I-2 |
 | I-37 | 2026-10-11，Phase 1 之后的增补（真实站点 monitor 期的反馈）：路由可设 `never_challenge: true`（配置包 `Route.never_challenge`，缺省 false）。用于挑战页会破坏的客户端，例如 `sendBeacon` 上报、只接受 JSON 的接口：这类路由上 §9.9 的 CHALLENGE 决定（规则、评分或限速器 `on_exceed: challenge` 给出的）只记录，`dry_run = true`，按 ALLOW 转发；BLOCK、RATE_LIMIT 照常执行，`fail_closed` 路由客户端 IP 未知时的 429 也不变。只允许用在 `low` / `medium` 且不 `require_clearance` 的路由上：构建器报错，Edge 转换时配置包无效。§9.4 第 6 步取所有命中路由的"与"：任一命中路由不带该标志就照常挑战，所以换一种路径写法只会更严；末尾 `/` 切换后的候选也算，精确路径要同时列出 `/x` 与 `/x/`。限速器 `on_exceed: challenge` 显式列出这样的路由时构建器报错（改用 `rate_limit` 或 `block`），不列 `routes`（覆盖全部路由）时只给警告。`mgctl bundle verify` 列出这些路由，`bundle.sign` 的审计 `diff` 记 `never_challenge` | §3.2、§8.2、§8.3、§9.4、§9.9 |
 | I-38 | 2026-10-11，Phase 1 之后的增补（真实站点反馈）：Edge → 源站认证头。`[[sites]]` 可设 `origin_keys`（凭证，§12.7 `mg-origin-keys`，与 `mg-upstream-keys` 同样的 1–2 个值，新的在前；`mgctl keys gen-origin [--rotate]` 生成）。设了它，Edge 转发给源站的每个请求最后都加上 `MG-Origin-Auth: v1;t=<unix 秒>;sig=<无填充 base64url>`，`sig = HMAC-SHA256(values[0] 解码后的 32 字节, msg)`；`msg` 依次为 `mg-origin-auth-v1`、`t`、方法、转发时的 origin-form 请求目标（路径加查询串）各一行，再按 `mg-client-ip`、`mg-request-id`、`mg-bot-score`、`mg-bot-class`、`mg-verified`、`mg-session`、`mg-tags`、`mg-reasons` 的顺序，对实际写入的头各写一行 `<名>:<值>`；每行以 `\n` 结尾。源站接受文件中的任一值、`t` 与本机时钟相差不超过 60 秒，校验通过前不信任任何 `MG-*` 头；参考实现 `adapters/origin/verify-origin-auth.mjs`，向量 `kat.json` `origin_auth`。客户端自带的 `MG-Origin-Auth` 与其他 `MG-*` 头一样在转发前删除。密钥只在 edge.toml：与 `upstream_keys` 一样是部署属性，配置包不引用它，也不会因它失效；文件格式错误时 `--check-config` 失败。不提供静态密钥头：静态值一旦进了源站日志就能被重放，HMAC 只多一次哈希。轮换时先更新源站（接受新旧两个值），再更新 Edge。用途：同一主机或同一容器网络里能连到源站的其他进程无法冒充 Edge 伪造 `MG-Client-IP` 等头 | §8.1、§9.9、§12.0、§12.7 |
+| I-39 | 2026-10-11，Phase 1 之后的增补（真实站点反馈）：fetch 被挑战时的标准入口 `GET` / `HEAD /__mg/v?ret=<返回路径>`。Phase 1 的脚本无法就地解 JSON Challenge，此前站点要自己写一个"验证"中转页。`ret` 取唯一一个 `ret` 参数，按 `%XX` 解码（`+` 不变），必须全是可见 ASCII 并通过 §6.4 校验，否则用 `fallback_ret`。该请求按"导航到 `ret`"做决策：路由按 `ret` 的路径选择，上下文的路径与查询串取 `ret` 的，其余（客户端、头、凭证）取请求本身的。§9.9 执行层上，已执行的 BLOCK、RATE_LIMIT（含 `hard.client_ip_unknown`）照常；其余结果（放行、monitor、`never_challenge`、425、任何类型的 CHALLENGE）一律改为 `pow` Challenge，事件中记为 `action = challenge`、`challenge_type = pow`、`rule_id = edge.verify`、`dry_run = false`；客户端 IP 未知时 429、不签发 C（D-23）。C 的 `route_class` 为 `ret` 的路由，难度按风险等级，`ret` 封入 C，解出后 303 回到 `ret`。已有凭证也照样挑战：页面只在 fetch 被挑战之后才来这里，而 `pow` 级凭证满足 Phase 1 所有非交互挑战（D-20）。monitor 站点同样挑战：这里从不转发源站。站点没有生效的配置包（bootstrap-open 等）时 404，其他方法 405 `Allow: GET, HEAD`；http 访客 308 到 `https://<host>/__mg/v?...` 本身。不用 `/__mg/r`：它留给 Phase 2 的凭证静默刷新（02 §3）。SDK 提供 `MorphGate.fetch()`（遇到 JSON Challenge 时跳转）、`verify()` 与 `verifyUrl()`；同一页面路径 60 秒内只跳一次（sessionStorage `mg_verify:<ret>`），没有存储时不跳 | §9.9、§10.1、§10.5、§11 |
 
 ## 0. 范围、决定与已落地文件
 
@@ -1955,6 +1956,7 @@ pub trait EventSink: Send + Sync {
 | `GET` / `HEAD /__mg/healthz` | 存活 | — | `no-store, private` | 已有 |
 | `GET` / `HEAD /__mg/s/<file>` | SDK 构建文件 | — | `public, max-age=31536000, immutable` | 实现 |
 | `POST /__mg/c` | 提交 Challenge 解答 | 8 KiB | `no-store, private` | 实现（站点 `bootstrap` 时 404，`lkg_invalid` / `bootstrap_closed` 时 503） |
+| `GET` / `HEAD /__mg/v?ret=<path>` | fetch 被挑战后的验证入口（I-39） | — | `no-store, private` | 实现（站点 `bootstrap` 时 404） |
 | `/__mg/c/renew`、`/__mg/r`、`/__mg/t`、其他 `/__mg/*` | 保留 | — | `no-store, private` | 404 |
 
 `/__mg/*` 由 Edge 在站点解析之后（§9.4 第 4 步之后）、路由匹配与决策之前应答，从不转发源站（包括 `mg_core::paths::is_reserved` 识别的所有规范化写法）。非允许的方法返回 405 与 `Allow`。在请求体读完之前应答时关闭 keep-alive（§9.9）。
@@ -2028,6 +2030,10 @@ pub trait EventSink: Send + Sync {
 ### 10.4 `/__mg/s/<file>`
 
 只提供 `sdk/manifest.json` 的 `files` 中列出的文件名（精确匹配，`[A-Za-z0-9._-]{1,64}`）；`Content-Type: text/javascript; charset=utf-8`；`Cache-Control: public, max-age=31536000, immutable`；`X-Content-Type-Options: nosniff`；文件在启动时读入内存并校验 SHA-256。其他名字 → 404（`no-store, private`）。
+
+### 10.5 `GET /__mg/v`（I-39）
+
+页面的 fetch 收到 JSON Challenge（§10.2）后，把页面导航到 `/__mg/v?ret=<encodeURIComponent(页面的 path + query)>`。Edge 按导航到 `ret` 做决策（路由、策略与限速器都是 `ret` 的），已执行的 BLOCK / RATE_LIMIT 照常应答，其余一律签发 `pow` 的 C 并返回挑战页（导航请求）或 JSON（其他请求），记为 `rule_id = edge.verify`。`ret` 无效时用 `fallback_ret`。解出后 `POST /__mg/c` 303 回到 `ret`，此后的 fetch 带着 `pow` 级凭证通过。访问记录的路径是 `/__mg/v`，决策事件的路径是 `ret` 的。
 
 ## 11. Web SDK Phase 1（WP-W1）
 

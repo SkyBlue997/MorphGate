@@ -209,6 +209,7 @@ impl Req {
             route: &route,
             monitor: false,
             never_challenge: false,
+            verify: false,
             profile: ListenerProfile::DirectTls,
             auth_method: "none",
             cf: None,
@@ -409,6 +410,47 @@ fn reasons(s: &Submitted) -> Vec<&str> {
 
 // ---------------------------------------------------------------------------
 // /__mg/s/<file> (§10.4)
+
+/// I-39: `/__mg/v?ret=` takes one percent-decoded return path; anything
+/// that is not a valid, plainly printable return path is the fallback.
+#[test]
+fn verify_ret_decodes_one_valid_return_path() {
+    let fb = "/start";
+    for (query, want) in [
+        (
+            "ret=%2Faccount%2Flogin%3Fnext%3D%252F",
+            "/account/login?next=%2F",
+        ),
+        ("ret=/members/a?x=1", "/members/a?x=1"),
+        ("ret=/members/a?x=1&y=2", "/members/a?x=1"), // unencoded `&` splits
+        ("x=1&ret=%2Fa%2Bb&y=2", "/a+b"),
+        ("ret=%2Fcaf%25C3%25A9", "/caf%C3%A9"),
+        ("ret=/a&ret=/b", fb),
+        ("", fb),
+        ("ret=", fb),
+        ("rett=%2Fa", fb),
+        ("ret=a", fb),
+        ("ret=%2F%2Fevil.example", fb),
+        ("ret=%2F%5Cevil.example", fb),
+        ("ret=https%3A%2F%2Fevil.example", fb),
+        ("ret=%2F__mg%2Fc", fb),
+        ("ret=%2F%255F%255Fmg%2Fc", fb),
+        ("ret=%2Fa%23b", fb),
+        ("ret=%2Fa%20b", fb),
+        ("ret=%2Fa%0d%0aSet-Cookie:x", fb),
+        ("ret=%2F%22%3E%3Cx%3E", "/\"><x>"), // escaped by the page
+        ("ret=%2Fcaf%C3%A9", fb),
+        ("ret=%2Fa%zz", fb),
+        ("ret=%2Fa%+1", fb),
+        ("ret=%2Fa%2", fb),
+    ] {
+        assert_eq!(verify_ret(query, fb), want, "{query}");
+    }
+    let long = format!("ret=/{}", "a".repeat(511));
+    assert_eq!(verify_ret(&long, fb).len(), 512);
+    let long = format!("ret=/{}", "a".repeat(512));
+    assert_eq!(verify_ret(&long, fb), fb);
+}
 
 #[test]
 fn sdk_files_are_served_from_the_manifest_only() {

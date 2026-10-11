@@ -16,8 +16,11 @@
  *   <script data-cfasync="false" src="/__mg/s/mg.<hex16>.js" nonce="…" data-mg-path-prefix="/__mg/"></script>
  * `data-cfasync="false"` (before `src`) keeps Cloudflare Rocket Loader away.
  *
- * Phase 1 sends exactly one request: the challenge form submission. Session
- * keys, MG-Proof, telemetry uploads and fetch wrapping land in Phase 2.
+ * Phase 1 sends one request, the challenge form submission, and offers one
+ * navigation: `MorphGate.fetch` (or `verify()` after the page's own check)
+ * sends a page whose fetch got the JSON challenge to `/__mg/v?ret=<path>`
+ * (I-39, `verify.ts`). Session keys, MG-Proof, telemetry uploads and
+ * solving challenges in place land in Phase 2.
  */
 
 import { collectAutomation, type AutomationSummary } from "./automation";
@@ -26,9 +29,12 @@ import { parseConfig, type MgConfig } from "./config";
 import { collectEnv, type EnvSummary } from "./env";
 import { installPowWorker, isWorkerScope, type PowWorkerScope } from "./pow";
 import { classifyResponse } from "./transport";
+import { isMgChallenge, startVerify, verifyUrl, type VerifyDeps } from "./verify";
 
 export { DEFAULT_PATH_PREFIX, endpointPath, normalizePathPrefix, parseConfig } from "./config";
 export type { MgConfig, MgEndpoint } from "./config";
+export { VERIFY_GUARD_MS, VERIFY_KEY_PREFIX, isMgChallenge, startVerify, verifyUrl } from "./verify";
+export type { VerifyDeps, VerifyLocation } from "./verify";
 
 export const SDK_VERSION = "0.1.0-phase1";
 
@@ -42,6 +48,12 @@ export interface MorphGateApi {
   readonly config: Readonly<MgConfig>;
   snapshot(): Snapshot;
   classifyResponse: typeof classifyResponse;
+  /** `/__mg/v?ret=<ret>`, by default for the current page (I-39). */
+  verifyUrl(ret?: string): string;
+  /** Send the page to the verify entry (once per path per minute); true when it navigates. */
+  verify(): boolean;
+  /** `fetch`; on the Edge's JSON challenge the page also goes to the verify entry. */
+  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
 declare global {
@@ -66,11 +78,24 @@ export function bootstrap(doc: Document = document, win: Window = window): Morph
     if (win.MorphGate) return win.MorphGate;
     const script = findOwnScript(doc);
     const config = Object.freeze(parseConfig(script?.dataset ?? {}));
+    const deps = (): VerifyDeps => ({
+      location: win.location,
+      storage: () => win.sessionStorage,
+      now: () => Date.now(),
+    });
+    const verify = (): boolean => startVerify(config, deps());
     const api: MorphGateApi = Object.freeze({
       version: SDK_VERSION,
       config,
       snapshot: (): Snapshot => ({ env: collectEnv(), automation: collectAutomation() }),
       classifyResponse,
+      verifyUrl: (ret?: string): string => verifyUrl(config, ret ?? win.location.pathname + win.location.search),
+      verify,
+      fetch: async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const response = await win.fetch(input, init);
+        if (await isMgChallenge(response)) verify();
+        return response;
+      },
     });
     Object.defineProperty(win, "MorphGate", { value: api, configurable: false, writable: false, enumerable: false });
     if (config.debug) console.debug("[morphgate]", SDK_VERSION, config, api.snapshot());

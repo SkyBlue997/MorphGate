@@ -12,7 +12,7 @@
 | 主题 | Phase 1 做法 | 规格 |
 |---|---|---|
 | Challenge 类型 | 只有 `invisible` 与 `pow`；规则或矩阵要求 `interactive` 时按 `pow` 执行（D-08）；`step_up`、`attestation` 与 TARPIT 在配置包构建与 Edge 加载时被拒（I-19、D-09） | [§5.5](impl/phase1-spec.md#55-默认处置矩阵wp-r1)、[§6.2](impl/phase1-spec.md#62-密封-c) |
-| 端点 | `POST /__mg/c`、`GET /__mg/s/<file>`、`/__mg/healthz`；`/__mg/c/renew`、`/__mg/r`、`/__mg/t` 返回 404 | [§10.1](impl/phase1-spec.md#101-端点) |
+| 端点 | `POST /__mg/c`、`GET /__mg/s/<file>`、`/__mg/healthz`，以及 fetch 被挑战后的验证入口 `GET /__mg/v?ret=`（2026-10-11 增补，I-39）；`/__mg/c/renew`、`/__mg/r`、`/__mg/t` 返回 404 | [§10.1](impl/phase1-spec.md#101-端点)、[§10.5](impl/phase1-spec.md#105-get-mgvi-39) |
 | 失败后升级 | 新 C 一律为 `pow`，风险段升一级（`very_high` 不变）；失败配额两级；没有交互式可升（D-27、D-28、I-10） | [§6.3](impl/phase1-spec.md#63-pow)、[§9.8](impl/phase1-spec.md#98-限速wp-e1b-接线) |
 | PoW | Web Worker 中的纯 JS SHA-256，WebCrypto 只做自检（D-12） | [§11.4](impl/phase1-spec.md#114-pow-实现) |
 | 凭证 | PASETO v4.local；`lvl` 只有 `invisible` / `pow`（缺省 1800 s）；新增 `sst`、`bind.ipa`、`ruc`；`ipp` 必有（D-29、D-05、I-30） | [§6.5](impl/phase1-spec.md#65-清关凭证paseto-v4local) |
@@ -445,6 +445,7 @@ rate_limits:
 | 提交限速、失败配额、签发配额 | `429` + `Retry-After`；JSON 为 `{"error":"mg_rate_limited","retry_after":N,"request_id"}` |
 | 早期数据 | `425`（§4.3） |
 | 阻断 | `403` 通用页或 `{"error":"mg_blocked","request_id"}` |
+| `GET /__mg/v?ret=<path>`（I-39） | 按导航到 `ret` 决策：阻断、限速照常；其余一律 `403` 的 `pow` 挑战（页面或 JSON），解出后 `303` → `ret`；SDK 的 `MorphGate.fetch()` 遇到 JSON Challenge 时跳到这里 |
 | `/__mg/c/renew`、`/__mg/r`、`/__mg/t` 与其他保留路径 | `404`；已有端点的其他方法 `405` + `Allow` |
 
 ## 10. 参考

@@ -1,8 +1,9 @@
 //! The Edge's own endpoints under `/__mg/` (docs/impl/phase1-spec.md §10):
-//! the SDK files (`/__mg/s/<file>`, §10.4) and the challenge submission
+//! the SDK files (`/__mg/s/<file>`, §10.4), the challenge submission
 //! (`POST /__mg/c`, §10.3, with §9.7, §9.8, D-27, D-28, D-35, D-37, I-10,
-//! I-18, I-28). `/__mg/healthz` and the reserved 404 stay in
-//! [`crate::enforce`].
+//! I-18, I-28) and the return path of the verify entry (`GET /__mg/v`,
+//! §10.5, I-39; the proxy runs its decision). `/__mg/healthz` and the
+//! reserved 404 stay in [`crate::enforce`].
 //!
 //! # `/__mg/s/<file>`
 //!
@@ -10,6 +11,15 @@
 //! name) is answered from memory with `text/javascript`, the immutable cache
 //! policy and `nosniff` ([`sdk_file`]); any other name is 404 (`no-store`),
 //! any other method 405 with `Allow: GET, HEAD`.
+//!
+//! # `GET /__mg/v?ret=<path>`
+//!
+//! A script whose fetch got the JSON challenge sends the page there with
+//! its own path; the Edge challenges and the solved form returns to `ret`.
+//! [`verify_ret`] reads `ret`: exactly one `ret` parameter, percent-decoded
+//! (`+` stays `+`), visible ASCII (as a raw request target is) and
+//! `validate_ret`; anything else is the bundle's `fallback_ret`. The page
+//! escapes it and the 303 `Location` percent-encodes it, as for any `ret`.
 //!
 //! # `POST /__mg/c`
 //!
@@ -96,6 +106,8 @@ use std::time::Duration;
 pub const SDK_ALLOW: &str = "GET, HEAD";
 /// `Allow` of `/__mg/c`.
 pub const SUBMIT_ALLOW: &str = "POST";
+/// `Allow` of `/__mg/v`.
+pub const VERIFY_ALLOW: &str = "GET, HEAD";
 /// The whole body must arrive within this (§10.3 step 3).
 pub const BODY_DEADLINE: Duration = Duration::from_secs(5);
 /// `Retry-After` of the unknown-client-IP and replay-store answers.
@@ -169,6 +181,48 @@ pub fn sdk_file(sdk: &SdkDir, path: &str, method: &str) -> EdgeResponse {
         }
         None => EdgeResponse::not_found(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// /__mg/v
+
+/// The return path of `/__mg/v?<query>` (see the module documentation):
+/// the decoded `ret` parameter when it is a valid return path, otherwise
+/// `fallback`.
+pub fn verify_ret(query: &str, fallback: &str) -> String {
+    let mut values = query
+        .split('&')
+        .filter_map(|pair| pair.strip_prefix("ret="));
+    let (Some(value), None) = (values.next(), values.next()) else {
+        return fallback.to_owned();
+    };
+    percent_decode(value)
+        .filter(|ret| ret.bytes().all(|b| matches!(b, 0x21..=0x7e)) && validate_ret(ret).is_ok())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+/// `%XX` decoding of an ASCII string; `None` for a malformed escape or a
+/// result that is not ASCII.
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = bytes.get(i + 1..i + 3)?;
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out.is_ascii()
+        .then(|| String::from_utf8(out).ok())
+        .flatten()
 }
 
 // ---------------------------------------------------------------------------

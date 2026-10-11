@@ -502,7 +502,7 @@ func TestPhase1Scenarios(t *testing.T) {
 		prefixes []string
 	}{
 		{"phase1-impersonator.yaml", 26, []string{"/lab/impersonator/r1/", "/lab/crawler/r1/"}},
-		{"phase1-nonjs-clearance.yaml", 9, []string{"/lab/members/r1/", "/__mg/c"}},
+		{"phase1-nonjs-clearance.yaml", 10, []string{"/lab/members/r1/", "/__mg/c", "/__mg/v?ret=%2Flab%2Fmembers%2Fr1%2F"}},
 	} {
 		s, err := Load("../../testdata/scenarios/" + tc.file)
 		if err != nil {
@@ -527,7 +527,7 @@ func TestPhase1Scenarios(t *testing.T) {
 			}
 			// Every challenge submission and protected page must show that
 			// no clearance was issued and no redirect happened (§15 WP-L1).
-			if strings.HasPrefix(r.Path, "/__mg/c") || strings.HasPrefix(r.Path, "/lab/members/") {
+			if strings.HasPrefix(r.Path, "/__mg/") || strings.HasPrefix(r.Path, "/lab/members/") {
 				if !slices.Contains(r.ExpectCookieAbsent, "__Host-mg_clr") || !slices.Contains(r.ExpectHeaderAbsent, "Location") {
 					t.Errorf("%s: requests[%d] (%s) does not forbid __Host-mg_clr and Location", tc.file, i, r.Name)
 				}

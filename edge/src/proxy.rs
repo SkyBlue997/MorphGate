@@ -654,6 +654,25 @@ impl EdgeProxy {
                     .submit(session, ctx, &site, serving, &method, &raw, &removed)
                     .await;
             }
+            RouteKind::Verify => {
+                // Decided below as a navigation to its `ret` (I-39); only
+                // an active bundle has a policy and keys to challenge with.
+                let resp = if method != "GET" && method != "HEAD" {
+                    Some(EdgeResponse::method_not_allowed(mg_endpoints::VERIFY_ALLOW))
+                } else if !matches!(serving, Serving::Active(_)) || ctx.oversize.is_some() {
+                    Some(EdgeResponse::not_found())
+                } else {
+                    None
+                };
+                if let Some(mut resp) = resp {
+                    if !session.is_body_empty() {
+                        resp.close = true;
+                    }
+                    return self
+                        .answer_early(session, ctx, &target.path, ev::ROUTE_EDGE, resp)
+                        .await;
+                }
+            }
             RouteKind::EdgeReserved => {
                 let resp = EdgeResponse::not_found();
                 return self
@@ -680,11 +699,20 @@ impl EdgeProxy {
                     ctx.target = Target::for_record(&target.path);
                     return self.no_environment(session, ctx, site_id).await;
                 };
+                // `/__mg/v` is decided as a navigation to its `ret` (I-39).
+                let verify = ctx.route_kind == RouteKind::Verify;
+                let ret_target = verify
+                    .then(|| {
+                        let fallback = challenge::fallback_ret(&bundle.challenge);
+                        parse_target(mg_endpoints::verify_ret(&target.query, fallback).as_bytes())
+                    })
+                    .flatten();
+                let decided = ret_target.as_ref().unwrap_or(&target);
                 let rm = select_route(
                     env,
                     &ctx.host,
                     &method,
-                    &target.path,
+                    &decided.path,
                     bundle.case_insensitive_paths,
                     &FALLBACK_ROUTE,
                 );
@@ -723,11 +751,12 @@ impl EdgeProxy {
                     monitor,
                     bundle,
                     &method,
-                    &target,
+                    decided,
                     &raw,
                     &removed,
                 );
                 facts.never_challenge = rm.never_challenge;
+                facts.verify = verify;
                 let services = Services {
                     state: &self.shared.state,
                     k_pseudo: &self.shared.k_pseudo,
@@ -747,7 +776,8 @@ impl EdgeProxy {
                             bundle,
                             ctx,
                             method: &method,
-                            target: &target,
+                            target: decided,
+                            origin_form: &target.origin_form,
                             raw: &raw,
                             removed: &removed,
                             rec: &rec,
@@ -759,6 +789,11 @@ impl EdgeProxy {
                     e => EdgeResponse::for_enforcement(e, &ctx.request_id, || {
                         is_navigation(&crate::context::req_headers(&raw, &removed))
                     }),
+                };
+                // `enforce` never forwards `/__mg/v`; never proxy it anyway.
+                let answer = match answer {
+                    None if verify => Some(EdgeResponse::not_found()),
+                    answer => answer,
                 };
                 if answer.is_none() {
                     ctx.decision_headers =
@@ -804,7 +839,10 @@ struct ChallengeInput<'a> {
     bundle: &'a BundleRuntime,
     ctx: &'a EdgeCtx,
     method: &'a str,
+    /// The decided target: the request's, or the `ret` of `/__mg/v`.
     target: &'a Target,
+    /// The request's own origin-form target (the https redirect's).
+    origin_form: &'a [u8],
     raw: &'a [(String, Vec<u8>)],
     removed: &'a BTreeSet<String>,
     rec: &'a DecisionRecord,
@@ -868,6 +906,7 @@ impl EdgeProxy {
             route,
             monitor,
             never_challenge: false,
+            verify: false,
             profile: self.listener.profile,
             auth_method: ctx.auth_method,
             cf: ctx.cf.as_ref(),
@@ -907,7 +946,7 @@ impl EdgeProxy {
                 method: c.method,
                 path: &c.target.path,
                 query: &c.target.query,
-                origin_form: &c.target.origin_form,
+                origin_form: c.origin_form,
                 http_visitor,
                 navigation: is_navigation(&headers),
                 accept_language: crate::context::header(&headers, "accept-language"),

@@ -71,6 +71,34 @@ describe("bootstrap", () => {
     expect(snapshot?.env.v).toBe(1);
   });
 
+  it("MorphGate.fetch sends a challenged page to the verify entry (I-39)", async () => {
+    const { bootstrap } = await import("../src/index");
+    const assigned: string[] = [];
+    const store = new Map<string, string>();
+    const challenge = JSON.stringify({ error: "mg_challenge", type: "invisible", challenge: "v1.abc", retry: true });
+    const bodies = [challenge, '{"ok":1}'];
+    const win = {
+      location: { pathname: "/posts/7", search: "?x=1", assign: (url: string) => void assigned.push(url) },
+      sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) },
+      fetch: async () =>
+        new Response(bodies.shift() ?? "", {
+          status: bodies.length === 1 ? 403 : 200,
+          headers: { "content-type": "application/json" },
+        }),
+    } as unknown as Window;
+    const api = bootstrap(fakeDocument({}), win);
+    expect(api?.verifyUrl()).toBe("/__mg/v?ret=%2Fposts%2F7%3Fx%3D1");
+    expect(api?.verifyUrl("/a")).toBe("/__mg/v?ret=%2Fa");
+    const r = await api?.fetch("/api/save", { method: "POST" });
+    expect(r?.status).toBe(403);
+    expect(await r?.text()).toBe(challenge);
+    expect(assigned).toEqual(["/__mg/v?ret=%2Fposts%2F7%3Fx%3D1"]);
+    expect((await api?.fetch("/api/other"))?.status).toBe(200);
+    expect(assigned).toHaveLength(1);
+    // The guard holds for an explicit call too.
+    expect(api?.verify()).toBe(false);
+  });
+
   it("returns null instead of throwing when the host page is hostile", async () => {
     const { bootstrap } = await import("../src/index");
     const doc = {
