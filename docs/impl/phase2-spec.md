@@ -31,7 +31,7 @@
 
   Phase 2 新增：
   - **外部 Provider 绝不 fail-open**。
-  - **中国大陆访客与国家未知的访客从不选用 Turnstile**。
+  - **Turnstile 只在所有者配置的主机、路由与国家范围内选用**；大陆访客同样可以选用，失败时自动回退到内置验证（D-70）。
   - **交互式通过只是封顶的人类证据**（03 §4.1 的 −0.8），不是安全边界。
   - **改变决策、挑战或凭证要求的行为，都由配置包或 `edge.toml` 开关控制**。`schema_version = 1` 的配置包让 Edge 严格按 Phase 1 运行（D-66），所以升级二进制本身不改变线上的决策与挑战。以下改动随新二进制无条件生效，它们不改变决策：D-62 的脱敏、关闭时的事件刷写与 `ruc` 事件；`mg:ev` v2；JSON 应答中的 `"v": 2`；`/__mg/s/mg.js` 别名。
   - **只做防御**：测试与 CI 不访问任何外部服务，Turnstile 一律用回环 mock；Validation Lab 不含任何求解逻辑。
@@ -50,13 +50,13 @@
 
 | 在范围内（代码与测试） | 不在范围内 |
 |---|---|
-| Edge：交互式挑战 `self_hold` 与 `pow_a11y`（密封 C、挑战页模板 v2 与 JSON 挑战、按住与 PoW 的服务端校验、交互评分 shadow）；`/__mg/c` v2（会话密钥签名、Provider 载荷、交互遥测）；`/__mg/c/renew`（含首次绑定密钥）；失败升级；`/__mg/v` 签发交互式（D-58）；路由 `proof: required` 的 `MG-Proof` 校验与 `jti` 防重放；`min_level`（D-64）；`/__mg/r` 凭证静默刷新；`/__mg/t` 遥测；`/__mg/s/mg.js` 稳定别名；Turnstile Provider（可选，经 `OutboundHttp`）；转发前删除 MorphGate Cookie（D-61）；本机应急开关（D-60）；I-35 复审；`mg:ev` v2；事件与指标 | Edge 侧 HTML 注入（D-39）；页内覆盖层（D-57）；`MG-Nonce`、`step_up`、`bh`（D-55）；吊销集与 pub/sub（D-54，Phase 3）；站点账号替代路径（D-56）；大陆 Provider `tencent` / `aliyun_v2`（Phase 4）；双 Provider 升级、学习型交互模型、内存困难 PoW、Privacy Pass（09 §14）；按设备类别定难度；`mg:w:*` 与按连接的特征；`bind.tfp`；`bind.ctp` 转为软绑定（仍只 shadow）；每日访问记录归档（§22） |
+| Edge：交互式挑战 `self_hold` 与 `pow_a11y`（密封 C、挑战页模板 v2 与 JSON 挑战、按住与 PoW 的服务端校验、交互评分 shadow）；`/__mg/c` v2（会话密钥签名、Provider 载荷、交互遥测）；`/__mg/c/renew`（含首次绑定密钥）；失败升级；`/__mg/v` 签发交互式（D-58）；路由 `proof: required` 的 `MG-Proof` 校验与 `jti` 防重放；`min_level`（D-64）；`/__mg/r` 凭证静默刷新；`/__mg/t` 遥测；`/__mg/s/mg.js` 稳定别名；Turnstile Provider（可选，经 `OutboundHttp`）；转发前删除 MorphGate Cookie（D-61）；本机应急开关（D-60）；I-35 复审；`mg:ev` v2；事件与指标 | Edge 侧 HTML 注入（D-39）；页内覆盖层（D-57）；`MG-Nonce`、`step_up`、`bh`（D-55）；吊销集与 pub/sub（D-54，Phase 3）；站点账号替代路径（D-56）；其他外部 Provider，包括大陆的 `tencent` / `aliyun_v2`（D-70：大陆访客也用 Turnstile，不再规划）；双 Provider 升级、学习型交互模型、内存困难 PoW、Privacy Pass（09 §14）；按设备类别定难度；`mg:w:*` 与按连接的特征；`bind.tfp`；`bind.ctp` 转为软绑定（仍只 shadow）；每日访问记录归档（§22） |
 | mg-core：`self_hold` / `pow_a11y` 的 Provider 实现、Provider 选择（纯函数）、交互评分（硬检查 + 软特征）、失败升级函数、`min_level`、`identity.proof` 的可用性、刷新判定 | Decision Core 在每个请求上使用 SDK 遥测（CLIENT / BEHAVIOR 族只经挑战提交与近线 verdict 进入评分，§5.6） |
 | mg-challenge：交互式 C 的字段与寿命、epoch 窗口、`ui_seed` 派生、PoW v2、JWK 与指纹、ES256 验签、提交与续期签名、`MG-Proof`、凭证 v2、Turnstile `cData` 与幂等键 | — |
 | mg-edge-core：Valkey 键与 Lua 脚本 v2、`jti` / Provider token 重放集合（含本地模式）、`mg:ev` v2 写入、出站 HTTP 与 siteverify 客户端、回环 mock siteverify、遥测 schema 单一实现 | — |
 | Go：站点 YAML 新字段、配置包构建与校验、`mgctl turnstile`、近线 worker `mg-nearline` | mg-control 服务的新功能（Phase 3）；`mgctl cf apply` |
 | Web SDK v1：会话密钥、`MG-Proof`、fetch 包装（就地求解、刷新、`cf-mitigated`）、交互式界面（按住、键盘、切换、`pow_a11y`）、续期、Turnstile 加载、遥测、zh-CN / en、挑战页模板 v2、npm provenance | 高熵指纹（画布、音频等）；Morph 构建 |
-| Validation Lab：交互式挑战的否定性场景、CN / 未知国家从不下发 Turnstile、近线在回环上的端到端 | 任何求解逻辑；面向非白名单目标的流量；负载生成 |
+| Validation Lab：交互式挑战的否定性场景、`denied_countries` 中的国家从不下发 Turnstile、近线在回环上的端到端 | 任何求解逻辑；面向非白名单目标的流量；负载生成 |
 
 **所有者操作**（代码之外，见 §19）：
 - Phase 1 验收收尾；
@@ -124,6 +124,7 @@ WP-D2 把"需改设计文档"一栏为"是"的条目写回设计文档或 ADR。
 | D-67 | **新的内置限速器都分两级**，同 D-28：按 `ip` 实体的主限额，加按 `ipp` 的宽松限额（缺省为 4 倍；`mg.a11y.issue` 为 20 倍，§7.9）。只按 `/24` 计数时，CGNAT、校园网或移动网段中的一个客户端就能让整个前缀被拒 | 09 §12.3 写的是"ipp、会话"，而挑战前没有会话 | 是（09 §12.3） |
 | D-68 | **Phase 2 中所有级别的凭证证据保持 −0.4**（`identity.clearance`）。交互级的更强证据（03 §4.1 的 −0.8）只能在交互评分改为 `enforce` 之后，以新裁决引入 | `self_hold` 的检查除服务端时间窗外都依赖客户端自报的数据；交互级凭证的成本下限只是 PoW 加 1.2–2.5 s 等待，不能给它两倍于 `pow` 的人类证据 | 是（03 §4.1、09 §11.2） |
 | D-69 | **本文改动的其他 Phase 1 契约**（Phase 1 规格的章节，均在本文完整重述）：§0.1（D-39）；§6.1、§6.2（D-42）；§6.5、§6.6（D-46）；§8.1（`edge.toml` 新键，§10.1）；§8.2、§8.3（站点 YAML 与缺省值，§3.2、§10.2）；§9.5（`http.cookie_names` 排除新 Cookie，§9.5）；§9.7（`mg_nonce_issue` v2 与新键，§14）；§9.9（D-61）；§10.2、§10.3（JSON 应答的 `v`、失败时附的 C，§7、§11.2）；§10.4（SDK 别名）；§10.5 与 I-39（D-58）；§11.1、§11.2（manifest v2 与模板 v2，§12.2、§12.3）；§11.3（交互式 PoW 不受 60 s 总时限，§12.6）；§13.3–§13.6（事件与 `mg:ev` v2，§13.1、§15）；§17 第 2 步（Edge ACL，§14.5）；D-27 与 I-10（D-50）；I-32（遥测写入条件，§15.2） | Phase 1 规格冻结；实现者只读本文即可知道哪些 Phase 1 契约已改 | 否 |
+| D-70 | **所有者决定（2026-10-12）：大陆访客与国家未知的访客也可以选用 Turnstile**，不另提供 Turnstile 以外的外部方案。取消原稿"CN 与未知国家从不选用 Turnstile"的硬编码规则；`denied_countries` 缺省为空，所有者可以随时写入 `CN` 恢复排除。Cloudflare 官方说明 Turnstile 不支持中国大陆：大陆访客的 api.js 加载失败、控件报错或 siteverify 不可用时，SDK 与 Edge 按 §8.3、§8.5 自动回退到 `self_hold` / `pow_a11y`，不计失败，所以大陆访客最坏是多等一次加载超时（5 s），不会被锁在外面。被选中 Turnstile 的大陆访客，其 IP 会经 siteverify 发给 Cloudflare，隐私说明须写明（§19 第 2 步） | 所有者不需要大陆专用的验证码服务；内置的按住验证与自动回退已经覆盖 Turnstile 不可用的情况 | 是（09 §6.3、§8、§15；07 的 Provider 规划） |
 
 ### 0.4 规格评审通过后先行落地的契约文件
 
@@ -369,7 +370,7 @@ message ProviderConfig {                 // Phase 2: id "turnstile" only; self_h
   string sitekey = 3;                    // public widget sitekey
   repeated string secret_refs = 4;       // must be empty (D-51): the secret is in edge.toml
   repeated string allowed_countries = 5; // must be empty
-  repeated string denied_countries = 6;  // ISO 3166-1 alpha-2, added to the hard-coded CN
+  repeated string denied_countries = 6;  // ISO 3166-1 alpha-2 countries that never get Turnstile; empty by default, nothing is hard-coded (D-70)
   repeated string route_ids = 7;         // empty = every route
   uint32 timeout_ms = 8;                 // 1000..5000
   string fallback = 9;                   // Phase 2: "self_hold" only (D-51); anything else makes the bundle invalid
@@ -554,13 +555,13 @@ pub fn select_providers(input: &SelectionInput<'_>) -> Vec<ProviderId>;
 
 规则，按顺序执行：
 
-1. 国家：任一来源为 `CN`，按 CN 处理；两个来源都缺，按"未知"处理。
+1. 国家：取 §8.1 的两个来源；两个来源都缺时为"未知"。
 2. Turnstile 只在以下条件**全部**满足时才可选：
    - `turnstile` 已配置且 `usable`；
    - `route_ids` 为空或包含本路由；
    - 没有任何命中路由带 `redact_path`：这类路由的 URL 可能含一次性令牌，不应让第三方脚本运行在这样的页面上；
    - `host` 精确等于 `hostnames` 之一（小写比较）；
-   - 国家已知；两个来源中的任何一个都不是 `CN`，也不在 `denied_countries` 中（两个来源不一致时，任一来源命中即不提供）。
+   - `denied_countries` 为空时不看国家（D-70）；非空时，国家必须已知，且两个来源都不在其中（两个来源不一致时，任一来源命中即不提供）。
 
    续期与提交时按当前请求重新判断本条（§7.4、§7.5）。
 3. 起点为 `[self_hold, pow_a11y]`。
@@ -1108,7 +1109,7 @@ Phase 1 的前置规则照旧：客户端 IP 未知时返回 429 且不签发（
 
 ## 8. Provider 与 Turnstile（WP-C6 客户端，WP-E2c 接线）
 
-Turnstile 是可选的、零成本的外部 Provider，只用于非大陆访客。它的通过不能单独签发凭证：只有密封 C、已消费的 nonce、绑定、会话密钥签名与 PoW 都通过，才采纳它的结果（09 §6.1）。没有配置 Turnstile 的站点不受本节影响。
+Turnstile 是可选的、零成本的外部 Provider。所有者决定大陆访客同样可以选用（D-70）；Cloudflare 官方说明它不支持中国大陆，这时按 §8.3、§8.5 自动回退到内置验证。它的通过不能单独签发凭证：只有密封 C、已消费的 nonce、绑定、会话密钥签名与 PoW 都通过，才采纳它的结果（09 §6.1）。没有配置 Turnstile 的站点不受本节影响。
 
 ### 8.1 国家判定
 
@@ -1117,7 +1118,7 @@ Turnstile 是可选的、零成本的外部 Provider，只用于非大陆访客�
 | GeoLite2 | 配置包的 `geoip-country` 工件；没有该工件或查不到时为"无" |
 | Cloudflare | 站点 `cloudflare.location_headers = true` 且上游认证通过时的 `cf-ipcountry`（Phase 1 规格 §9.3）；`XX`、`T1` 与格式不对的值为"无" |
 
-任一来源为 `CN`，按 CN 处理；两个来源都为"无"，按"未知"处理。两种情况都不提供 Turnstile（§5.4 第 2 条）。Cloudflare 官方说明 Turnstile 不支持中国大陆，所以这条规则是硬编码的，配置只能在其上追加国家。
+两个来源都为"无"时，国家为"未知"。国家只用于 `denied_countries`（§5.4 第 2 条）：它缺省为空，没有硬编码的国家（D-70）；非空时，任一来源命中即不提供 Turnstile，国家未知时同样不提供。所有者想恢复"大陆访客不用 Turnstile"，写 `deny_countries: [CN]` 即可。
 
 ### 8.2 配置与校验
 
@@ -1424,7 +1425,7 @@ providers:                           # at most one entry in Phase 2
     mode: shadow                     # or enforce
     timeout_ms: 4000                 # 1000..5000
     fallback: self_hold              # the only value in Phase 2 (D-51)
-    deny_countries: []               # added to CN
+    deny_countries: []               # countries that never get Turnstile; empty by default (D-70)
 
 events:
   telemetry_behavior: false
@@ -1457,7 +1458,7 @@ environments:
 - `proof: required` 的路由，`channel` 为 `web` 且允许非安全方法：表单 POST 必须改用 `MorphGate.fetch` 发送，否则带不上证明（D-40）；
 - `min_level: interactive` 或交互式限速器只作用于含 POST、不含 GET 的路由：访客通过挑战后会丢失表单输入，应在页面路由（GET）上要求；
 - `scoring.mode: enforce`：提醒 `t_pass` 必须高于所有者用辅助技术完成的样本的最高分（§7.8、§19 第 5 步）；
-- 启用了 Turnstile，但站点既没有 `geoip-country` 工件，也没有开启 `cloudflare.location_headers`：国家永远未知，Turnstile 永远不会被选中；
+- 启用了 Turnstile 且 `deny_countries` 非空，但站点既没有 `geoip-country` 工件，也没有开启 `cloudflare.location_headers`：国家永远未知，Turnstile 永远不会被选中；
 - `events.telemetry_behavior: true`：提醒先更新隐私说明（07 贯穿各阶段）。
 
 **`schema_version`**：YAML 中出现任何一个 Phase 2 键或取值（如 `type: interactive` 的限速器）时，配置包写 `schema_version = 2`；否则写 1，与 Phase 1 构建器的输出逐字节相同。golden 配置包同时保留两种（§17 WP-G4）。
@@ -2287,7 +2288,7 @@ Phase 1 的字段之外，新增 §3.3 的 `renew_no`、`bound`、`ix`、`provid
 
 - **交付**：Provider 接线（`cdata_ok` 闭包，§8.4）；国家判定（§8.1）；CSP（§8.3）；token 重放；熔断与自动禁用的接线；`turnstile_keys` 凭证与文件校验；`[outbound]` 配置与 `MG_EDGE_TEST_OUTBOUND`；cargo-fuzz 目标 `siteverify_response`、`turnstile_keys`（§2.4）；告警规则与每日检查脚本中 Turnstile 的部分（§19 第 8 步）。
 - **测试**（用 WP-C6 的 mock siteverify，绝不访问外网）：
-  - CN、未知国家与 `denied_countries`（任一来源命中）从不提供 Turnstile；续期与提交时国家变为 CN 或未知则去掉 Turnstile、不调用 siteverify；
+  - `denied_countries` 为空时 CN 与未知国家照常提供 Turnstile；非空时，命中（任一来源）或国家未知则不提供；续期与提交时不再满足则去掉 Turnstile、不调用 siteverify；
   - 主机不在 `hostnames` 中、或路由带 `redact_path` 时不提供；
   - §8.5 的每一行；shadow 下 `Pass` 签发 `interactive_ext:turnstile`、失败不计；
   - 缺少凭证时 `--check-config` 失败，运行中为 `disabled(no_secret)` 并记录 ERROR 日志；文件格式错误与 `site` 不符；
@@ -2300,7 +2301,7 @@ Phase 1 的字段之外，新增 §3.3 的 `renew_no`、`bound`、`ix`、`provid
 - **交付**：
   - 新场景（只回放固定请求，不含求解逻辑，D-59）：
     - 交互式挑战页不引用第三方源；
-    - CN / 未知国家的请求从不得到带 Turnstile 的 C（配合 Edge 的回环 mock 配置）；
+    - `denied_countries` 中国家的请求从不得到带 Turnstile 的 C（配合 Edge 的回环 mock 配置）；
     - 重放录制的交互式提交、篡改 C、`provider` 不在集合中，一律失败；
     - 外部 `CF-Worker` 照旧 403。
   - `lab-e2e` 加入 `mg-nearline`：用 Lab 的诱饵请求触发 `scanner`（shadow 下产生 `kind=verdict` 与日志），再切到 enforce，确认之后的请求带上来源为 `nearline/scanner` 的 verdict，结果是风险抬高（挑战），而不是阻断；
@@ -2343,14 +2344,14 @@ Phase 1 规格 §16 的分层全部保留：单元测试、多语言共读的已
 | 0 | 完成 Phase 1 验收：monitor 期指标、附加延迟、`cf audit` 全绿、浏览器回归（Phase 1 规格 §17、§18） |
 | 1a | **单机改用本机 Valkey**（D-38）。安装 Valkey（≥ 7.2）：只监听回环或 unix socket（`unixsocketperm 770`），`appendonly yes`、`appendfsync everysec`，`maxmemory-policy noeviction`，先设一个宽松的 `maxmemory`。按 §14.5 与 §13.6 的完整规则建 ACL 用户，密码以 systemd credential 交付。`edge.toml` `[valkey] mode = "valkey"`，`local_replay_authoritative = true` 保留；配置包的 `events.stream` 仍为 `false`。在流量低时 reload：进行中的挑战可能失败一次，访客重试即可。确认 `mg_state_mode{mode="valkey"} = 1`，观察 `used_memory` 24 小时 |
 | 1b | 设 `maxmemory = 24 小时峰值 × 2 + stream_maxlen × 400 B`（缺省 `MAXLEN ~ 300000` 约 120 MB），然后在站点 YAML 设 `events.stream: true`。`noeviction` 下内存不足会让 `XADD` 与限速写入失败，所以这一步不能省略 |
-| 2 | **隐私说明**（在任何新的客户端信号上线之前）：会话公钥与证明；交互遥测；刷新时的遥测（若开启 `telemetry_behavior`）；行为摘要（若开启）；Turnstile（若开启）。说明不能使用 `proof: required` 接口的情形（浏览器禁用存储时，§12.4） |
+| 2 | **隐私说明**（在任何新的客户端信号上线之前）：会话公钥与证明；交互遥测；刷新时的遥测（若开启 `telemetry_behavior`）；行为摘要（若开启）；Turnstile（若开启：访客 IP 经 siteverify 发给 Cloudflare，大陆访客同样如此，D-70）。说明不能使用 `proof: required` 接口的情形（浏览器禁用存储时，§12.4） |
 | 3a | **换二进制**：部署新的 `mg-edge` 与 `mgctl`，保留 SDK 0.2.x 目录与 `schema_version = 1` 的配置包。确认决策分布与挑战比例同升级前一致（只比较 Phase 1 已有的指标族）。预期的差异：`/__mg/s/mg.js` 别名可用；JSON 应答带 `"v": 2`；`mg:ev` 条目为 v2；新的指标族。`schema_version = 1` 下源站仍收到 MorphGate 的 Cookie（D-61 不生效） |
 | 3b | **站点模板与接入**：<br>- 模板改用 `<script data-cfasync="false" src="/__mg/s/mg.js" defer></script>`，放在站点自身脚本之前（别名对 v1 目录同样可用）；站点代码按 §12.1 的接入约定调用 `MorphGate`。<br>- 站点 CSP 允许同源脚本与 `worker-src 'self'`（或经 `script-src` 回退），否则就地求解在主线程运行。<br>- **Service Worker**：站点的 Service Worker 不得处理 `/__mg/` 下的任何请求。fetch 处理器对 `new URL(event.request.url).pathname.startsWith('/__mg/')` 直接返回（不调用 `respondWith`）；用 Workbox 时设 `navigateFallbackDenylist: [/^\/__mg\//]`，且不为 `/__mg/` 注册任何缓存路由。核对：Service Worker 生效时打开 `/__mg/v?ret=/`，页面含 `#mg-challenge`；开发者工具中 `/__mg/s/mg.js` 不是 "from ServiceWorker"。`mg_sw_intercept_reports_total` 增加说明仍有截获。<br>- 需要证明或就地解挑战的接口改用 `MorphGate.fetch`（XHR / axios 用 `proofHeader()`）；`proof: required` 的路由不返回跳转 |
 | 3c | **换 SDK 0.3 目录**，并把配置包改为 `schema_version = 2`：在站点 YAML 中显式写出 `clearance.refresh: false`，构建器即写 `schema_version = 2`，功能仍全关（交互式关闭、没有 `proof`）。保留上一个 SDK 目录在主机上，供应急使用（第 10 步）。确认源站不再收到 MorphGate 的 Cookie（D-61） |
 | 4 | **证明**：给选定的接口路由设 `proof: required`，先配 `mode: monitor`（I-36），观察 `mg_proof_verify_total` 与 dry_run 事件数日，再改为 enforce |
 | 5 | **交互式**：`challenge.interactive.enabled: true`，评分保持 shadow。<br>- 测试路由：`name: mg-test`、`paths: [/__test-interactive]`、`mode: enforce`、`min_level: interactive`；重复测试时在开发者工具中删除 `__Host-mg_clr`，或用隐私窗口。<br>- 浏览器：四条路径分别在微信内置浏览器（Android、iOS）、QQ 浏览器、UC、华为 / 小米自带浏览器、Safari、Chrome 上走完；另在 200% 缩放、320 CSS px 宽度与 reduced motion 下各走一遍。<br>- 辅助技术：VoiceOver（iOS / macOS）、TalkBack 或厂商的屏幕朗读、点明安卓、NVDA、争渡读屏；只用键盘；iOS 切换控制或语音控制。<br>- 每条路径记录：目的说明被读出、开始与结果被播报、失败后焦点位置、完成时间（`ix.act_ms`）。<br>- 改为 `enforce` 之前，上述辅助技术与仅键盘的路径各完成 ≥ 5 次，记录 `kind=feedback` 的 `ix.score`；`t_pass` 必须高于这些样本的最大值（§7.8） |
 | 6 | **近线**：安装 `mg-nearline`（配置、`LoadCredentialEncrypted`、`SupplementaryGroups=valkey` 或回环 TCP、systemd 单元），检测器全部 shadow。观察 `kind=verdict` 与 `mg_nl_*` 至少 7 天，按 ASN 检查 shadow verdict 的误伤：电信 AS4134 / AS4812、联通 AS4837、移动 AS9808 / AS56040，以及常见的代理出口与监控探针。没有误伤再逐个改为 enforce。压住一条误伤的近线 verdict：<br>`valkey-cli --user owner … SET 'mg:v:<site>:<type>:<key>' '{"risk":0,"labels":[],"source":"owner","version":"owner","reasons":["owner.suppress"],"expires_at_ms":<ms>}' PX <ttl_ms>`<br>（`<key>` 取 `kind=verdict` 事件中的伪名键；近线不会覆盖它，到期后自然恢复） |
-| 7 | **Turnstile（可选，只用于非大陆访客）**：<br>1. 在 Cloudflare 控制台创建 widget：Managed 模式，主机名只列生产 FQDN，`region: world`。<br>2. 运行 `mgctl turnstile secret import`，部署 credential（缺少它时 `--check-config` 失败，§8.2）。<br>3. Provider 配置为 `mode: shadow`、`selection: escalate_after_fail`。<br>4. 在 staging 上用 Cloudflare 的测试 sitekey 在浏览器里手工核对一次（D-52）。<br>5. 用 `Content-Security-Policy-Report-Only` 核对 `script-src`、`frame-src` 与 `style-src`，确认没有违规。<br>6. 隐私说明已含 Turnstile（第 2 步）后再启用 |
+| 7 | **Turnstile（可选，大陆访客同样可以选用，D-70）**：<br>1. 在 Cloudflare 控制台创建 widget：Managed 模式，主机名只列生产 FQDN，`region: world`。<br>2. 运行 `mgctl turnstile secret import`，部署 credential（缺少它时 `--check-config` 失败，§8.2）。<br>3. Provider 配置为 `mode: shadow`、`selection: escalate_after_fail`。<br>4. 在 staging 上用 Cloudflare 的测试 sitekey 在浏览器里手工核对一次（D-52）。<br>5. 用 `Content-Security-Policy-Report-Only` 核对 `script-src`、`frame-src` 与 `style-src`，确认没有违规。<br>6. 隐私说明已含 Turnstile（第 2 步）后再启用 |
 | 8 | **告警**，两种形式任选其一（都由 WP-E2b 交付，WP-E2c 补上 Turnstile 的部分）：<br>- 有 VictoriaMetrics 时，用 vmagent 抓取 `/metrics`、用 vmalert 加载 `deploy/vmalert/mg-phase2.rules.yml`（含下列每条表达式；日志类条件用 vmalert 对 VictoriaLogs 的查询）；<br>- 没有时，每日运行 `scripts/mg-daily-check.sh`：它在状态文件中保存上一次的 `/metrics` 快照与 `MainPID`（进程变了就只报告不比较，计数器在 reload 后归零），打印增量与比例，并按 01 §8 的方法核对 `cf audit` 第 18 项。<br>条件：<br>- `mg_provider_verify_total` 中 `unavailable` / `misconfigured` 的比例 > 5%（1 小时）；<br>- `mg_double_challenge_total` 1 小时增加 > 10；<br>- `mg_nl_backlog > 10000` 持续 10 分钟，或 `mg_nl_lag_seconds > 600`；<br>- `mg_site_forced_monitor == 1` 持续超过 1 小时；<br>- `mg_endpoint_cache_hit_reports_total`、`mg_sw_intercept_reports_total`、`mg_token_ruc_total`、`mg_state_local_overflow_total` 任一增加；<br>- `mg_challenge_renew_total{result="unavailable"}` 增加；<br>- 启用了交互式的站点 `mg_interactive_available == 0`；<br>- `proof: required` 路由上 `mg_proof_verify_total` 中非 `valid` 的比例 > 5%（访客在循环）；<br>- `kind=feedback` 中 `ic.too_fast`、`ic.hold_short`、`ic.no_trusted_input` 占交互式提交的比例 > 5%（SDK 或界面回归）；<br>- Valkey `used_memory / maxmemory > 0.8`（脚本用 `valkey-cli INFO memory`）；<br>- 人为摩擦超过 §20 的阈值 |
 | 9 | **回滚**，按顺序：<br>① 配置包关掉 Phase 2 功能（交互式、`proof`、Provider、`clearance.refresh: false`），发布 `schema_version = 1` 的配置包：此后只签发 v1 凭证；<br>② 换回 SDK 0.2.x 目录；<br>③ 等待实际配置的 `max(ttl_*)`（≤ 7200 s），让 v2 凭证全部过期；<br>④ 站点模板去掉 SDK 标签，或改回 0.2.x 的哈希文件名：回滚后的 Phase 1 二进制没有 `/__mg/s/mg.js` 别名；<br>⑤ 删除 `edge.toml` 的 Phase 2 键；<br>⑥ 换回 Edge 二进制 |
 | 10 | **应急**：<br>- 整站只记录：`sudoedit /etc/morphgate/edge.toml`，在该站点的 `[[sites]]` 下设 `force_monitor = true`；`sudo systemctl reload mg-edge`（`ExecReload` 先运行 `--check-config`）；确认 `mg_site_forced_monitor{site="<site>"} = 1`。然后签发并部署一个 monitor 配置包，最后撤销 `force_monitor` 并再次 reload（D-60）。<br>- SDK 故障：把 `[sdk] dir` 改回保留的上一个目录并 reload。别名在 Cloudflare 与浏览器各最多缓存 300 s，Service Worker 若违反第 3b 步的规则还会更久 |
@@ -2365,7 +2366,7 @@ Phase 1 规格 §16 的分层全部保留：单元测试、多语言共读的已
 | 并发双提交恰好一个进入签发 | 对真实 Valkey 的并发测试 | WP-C5、WP-E2a |
 | Turnstile 绑定失败 100% 拒绝 | mock siteverify：子域主机名、`action` 不符、他人 nonce 的 `cdata`、`challenge_ts` 越界、重复 token | WP-E2c |
 | Turnstile 故障时正确回退且不放行 | api.js 加载失败（SDK 测试）；siteverify 超时、5xx、secret 错误（Edge 测试） | WP-W2、WP-E2c |
-| CN 与未知国家从不得到 Turnstile | 选择函数真值表；续期与提交时的重新判断；Edge 测试；Lab 场景 | WP-R4、WP-E2c、WP-L2 |
+| `denied_countries` 中的国家从不得到 Turnstile；大陆访客的 Turnstile 失败时回退到内置验证且不计失败 | 选择函数真值表；续期与提交时的重新判断；Edge 测试；Lab 场景；SDK 的加载超时与错误回退测试 | WP-R4、WP-E2c、WP-W2、WP-L2 |
 | 人类被要求交互式挑战的比例 < 0.1% | 所有者 shadow 数据，两个数都看：<br>- **访客级**（主）：`mg_nl_interactive_visitor_share`（7 天，分母 ≥ 2,000 时才有值，§13.3），同时报告 `mg_nl_interactive_abandon_share`：收到挑战却没有通过的访客才是真正的摩擦；<br>- **请求级**（辅）：7 天内 `mg_challenge_total{type="interactive", result="issued"}` 的增量除以 `mg_navigations_total` 的增量。交互式 JSON 挑战之后的 `/__mg/v` 会再计一次，所以它是上界。<br>两者都只算告警的 7 天窗口，不按天判定：本站每天的流量下 0.1% 只有几个访客 | 所有者、WP-N1 |
 | 按住中位 < 4 s；`pow_a11y` 中位 < 10 s | 真实设备上 `kind=feedback` 的 `ix.act_ms`（从第一次激活到提交）按 Provider 取中位数，含低端机。`elapsed_ms` 含阅读页面的时间，只用于硬检查 | 所有者 |
 | 只用键盘、用读屏软件都能完成 | 所有者按 §19 第 5 步的矩阵手工验证；SDK 的结构、播报与焦点测试 | 所有者、WP-W2 |
@@ -2392,6 +2393,7 @@ Phase 1 规格 §16 的分层全部保留：单元测试、多语言共读的已
 | 所有者站点的 `cf audit` 第 18 项：RTT 信号 24 h 缺失率 69.7%（在 I-42 修正口径之前测得） | EDGE_TLS / RTT 信号的可用性 | 升级到含 I-42 的版本后重新测量；若仍偏高，检查 Transform Rule 字段在 HTTP/3 与连接复用下的可用性 |
 | 单机上 `mg:ev` v2 条目的实际大小与 Valkey 的内存占用 | `maxmemory` 的公式（§19 第 1b 步按每条 400 B 估算） | 第 1a、1b 步 |
 | 行为摘要的价值与隐私成本 | 是否开启 `telemetry_behavior` | shadow 之后 |
+| 大陆访客选用 Turnstile 后的实际效果：api.js 加载失败与超时的比例、siteverify 的结果、回退到内置验证的比例与多出的等待时间（D-70） | 是否在 `deny_countries` 中写入 `CN` | Turnstile 启用后的 shadow 期 |
 | `scanner` 与 `high_rate` 检测器在 enforce 下是否误伤监控探针、共享出口与代理出口 | 诱饵名单、阈值与共享出口的判定 | 第 6 步 |
 
 ## 22. Phase 1 遗留项的处置
@@ -2459,7 +2461,7 @@ Phase 1 规格 §16 的分层全部保留：单元测试、多语言共读的已
 | S-15 | minor | 续期的过期与到顶分支不检查绑定与签名、不消费 nonce，一个旧 C 可以无限分叉 | 采纳；与 C-5 冲突，取本条，继承的字段按 C-5 | — | §7.4；§6.10 `open_for_renew` |
 | S-16 | minor | 刷新没有说明 `bind` 与 `kid`；按会话的限速在凭证验证之前 | 采纳；与 C-47 冲突，取本条：`bind` 原样复制 | — | §5.7；§6.8；§9.3 |
 | S-17 | minor | shadow 的 `Pass` 未定义；`fail_closed` 只在校验之后生效；siteverify 没有并发上限；旧 secret 重试用同一个幂等键 | 部分采纳：Phase 2 只接受 `fallback: self_hold`，因为内置 Provider 总在集合中，`fail_closed` 不增加保护；缺少凭证时 `--check-config` 失败。其余采纳 | — | D-51；§6.9；§8.2；§8.4；§8.5 |
-| S-18 | minor | 续期与提交时不重新判断国家，可能把大陆访客的 IP 发给 Cloudflare；`redact_path` 页面会加载 api.js | 采纳 | — | §5.4；§7.4 第 9 步；§7.5 第 5 步 |
+| S-18 | minor | 续期与提交时不重新判断国家，可能把大陆访客的 IP 发给 Cloudflare；`redact_path` 页面会加载 api.js | 采纳；评审之后所有者决定大陆访客也可以选用 Turnstile（D-70），重新判断改为针对 `denied_countries` | — | §5.4；§7.4 第 9 步；§7.5 第 5 步 |
 | S-19 | minor | siteverify URL 可以指向任意回环端口，配置错误会静默放宽校验 | 采纳 | — | §8.4；§10.1；§15.5 |
 | S-20 | minor | 脚本可读的 Cookie 暴露访客用过无障碍路径；两者都进入 `http.cookie_names` 与事件 | 采纳；状态 Cookie 另加 `iat`（C-51、U-14） | 评审引用 `edge/src/context.rs:70-81` | D-46；§6.8；§9.5 |
 | S-21 | minor | `ph` 对带令牌的路径计算；刷新时的遥测是新的收集；会话公钥成为长期标识 | 采纳 | — | §13.1；§9.3；§12.4；§19 第 2 步 |
