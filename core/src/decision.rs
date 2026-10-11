@@ -5,8 +5,10 @@ use crate::context::{RequestContext, TokenLevel};
 use crate::enums::{Action, BotClass, ChallengeType, EntityType};
 use crate::policy::RuleMode;
 use crate::signal::Signal;
+use crate::telemetry::{A11yMode, InputModality};
 use crate::values::{Confidence, RiskBand, Score};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// Scorer output (docs/03 §4).
@@ -263,7 +265,12 @@ impl EntityVerdict {
 
 /// Outcome of one challenge submission (`POST /__mg/c`), emitted as a
 /// `kind = feedback` event (docs/02 §7). Never contains telemetry values.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Phase 2 (docs/impl/phase2-spec.md §3.3, §15.1) adds `renew_no`, `bound`,
+/// `ix` and `provider`; their zero values are not serialized, so Phase 1
+/// events are unchanged. [`InteractionSummary`] holds `f32`s, so the type is
+/// `PartialEq` only.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChallengeResult {
     pub request_id: String,
@@ -290,6 +297,73 @@ pub struct ChallengeResult {
     pub reason_codes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cf_ray: Option<String>,
+    /// `renew_no` of the submitted C (Phase 2).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub renew_no: u32,
+    /// The submitted C carried `bind.jkt` (Phase 2).
+    #[serde(skip_serializing_if = "is_false")]
+    pub bound: bool,
+    /// Interactive submissions only (Phase 2 spec §5.5, §7.8).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ix: Option<InteractionSummary>,
+    /// Only when an external provider was verified (Phase 2 spec §8.5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderOutcome>,
+}
+
+wire_enum! {
+    /// Whether an assessment or an external provider is enforced or only
+    /// recorded (`InteractionSummary.mode`, `ProviderOutcome.mode`).
+    #[derive(Default)]
+    pub enum EvalMode {
+        #[default]
+        Shadow => "shadow",
+        Enforce => "enforce",
+    }
+}
+
+/// Interaction assessment of an interactive submission (Phase 2 spec §3.3,
+/// §5.5, §7.7, §7.8). `features` uses only the keys of the §7.8 table.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InteractionSummary {
+    pub mode: EvalMode,
+    /// `0..=1` (§7.8).
+    pub score: f32,
+    pub a11y_mode: A11yMode,
+    pub input_modality: InputModality,
+    /// Reported by the client, 10 ms resolution.
+    pub hold_ms: u32,
+    /// Recomputed from `ui_seed` (§6.3).
+    pub required_hold_ms: u32,
+    /// Server clock: body read complete − `C.iat`.
+    pub elapsed_ms: u32,
+    /// The soft features of §7.8 that fired, by key.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub features: BTreeMap<String, f32>,
+    /// Reported by the client: first activation to submission, 100 ms resolution (§7.6).
+    pub act_ms: u32,
+}
+
+/// Result of an external provider verification (Phase 2 spec §3.3, §8.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderOutcome {
+    /// `turnstile`.
+    pub id: ProviderId,
+    pub outcome: VerdictOutcome,
+    pub mode: EvalMode,
+    pub latency_ms: u32,
+    /// Siteverify error codes from the bounded set of §8.5.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub error_codes: Vec<String>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// One decision, as written to the event pipeline (docs/02 §7).
@@ -554,8 +628,13 @@ mod tests {
             risk_band: Some(RiskBand::High),
             reason_codes: vec!["pow_ok".into()],
             cf_ray: None,
+            ..ChallengeResult::default()
         };
         let v = serde_json::to_value(&r).unwrap();
+        // Phase 2 fields at their zero values are not written (Phase 1 shape).
+        for absent in ["renew_no", "bound", "ix", "provider"] {
+            assert!(v.get(absent).is_none(), "{absent}");
+        }
         assert_eq!(v["type"], "interactive");
         assert_eq!(v["provider_id"], "pow_a11y");
         assert_eq!(v["outcome"], "pass");
@@ -563,6 +642,42 @@ mod tests {
         assert_eq!(v["risk_band"], "high");
         assert!(v.get("cf_ray").is_none());
         assert_eq!(serde_json::from_value::<ChallengeResult>(v).unwrap(), r);
+
+        // Phase 2 fields (spec §3.3).
+        let r2 = ChallengeResult {
+            renew_no: 3,
+            bound: true,
+            ix: Some(InteractionSummary {
+                mode: EvalMode::Shadow,
+                score: 0.25,
+                a11y_mode: A11yMode::Single,
+                input_modality: InputModality::Keyboard,
+                hold_ms: 0,
+                required_hold_ms: 1_834,
+                elapsed_ms: 2_610,
+                features: [("untrusted".to_string(), 0.2_f32)].into(),
+                act_ms: 2_300,
+            }),
+            provider: Some(ProviderOutcome {
+                id: ProviderId::Turnstile,
+                outcome: VerdictOutcome::Fail,
+                mode: EvalMode::Enforce,
+                latency_ms: 140,
+                error_codes: vec!["timeout-or-duplicate".into()],
+            }),
+            ..r.clone()
+        };
+        let v = serde_json::to_value(&r2).unwrap();
+        assert_eq!(v["renew_no"], 3);
+        assert_eq!(v["bound"], true);
+        assert_eq!(v["ix"]["mode"], "shadow");
+        assert_eq!(v["ix"]["a11y_mode"], "single");
+        assert_eq!(v["ix"]["input_modality"], "keyboard");
+        assert_eq!(v["ix"]["features"]["untrusted"], 0.2_f32 as f64);
+        assert_eq!(v["provider"]["id"], "turnstile");
+        assert_eq!(v["provider"]["outcome"], "fail");
+        assert_eq!(v["provider"]["mode"], "enforce");
+        assert_eq!(serde_json::from_value::<ChallengeResult>(v).unwrap(), r2);
 
         // The outcome vocabulary is exactly docs/02 §7's.
         let outcomes: Vec<_> = VerdictOutcome::ALL.iter().map(|o| o.as_str()).collect();

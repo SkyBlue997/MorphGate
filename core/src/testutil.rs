@@ -64,6 +64,8 @@ impl Req {
                 sensitivity: RouteSensitivity::Low,
                 require_clearance: false,
                 fail_closed: false,
+                proof_required: false,
+                min_level: None,
             },
             headers: Vec::new(),
             query: String::new(),

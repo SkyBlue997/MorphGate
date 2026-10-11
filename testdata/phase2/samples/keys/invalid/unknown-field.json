@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "kind": "mg-turnstile-keys",
+  "site": "blog",
+  "values": [
+    "0x4AAAAAAAkat-test-secret-current-00000000"
+  ],
+  "note": "x"
+}

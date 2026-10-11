@@ -1,0 +1,30 @@
+{
+  "v": 2,
+  "type": "interactive",
+  "c": "AAECAwQFBgcICQoLDA0ODw",
+  "p": "self_hold",
+  "pp": "",
+  "t": "[]",
+  "pow": {
+    "counters": [
+      12,
+      3401,
+      77,
+      912,
+      4005,
+      18,
+      230,
+      6600
+    ]
+  },
+  "ret": "/account/login",
+  "ts": 1790000000123,
+  "build": "0123456789abcdef",
+  "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0",
+    "y": "fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"
+  },
+  "sig": "KFMTu3eTHR4f28hSvbb51hVqfboDvoTnhAvWvSQBLLqNQphqRCbTigP7YS1tONTRv3vp4bx0OZIpZovBXJPxFg"
+}

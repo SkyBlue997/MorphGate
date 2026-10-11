@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "challenge_ts": "2026-09-21T14:13:50.000Z",
+  "hostname": "example.com",
+  "error-codes": [],
+  "action": "login",
+  "cdata": "73JZ2i2xITj7ZpLLQN4TQePZjAncib9iP5EDW7ZYrFI",
+  "metadata": {
+    "ephemeral_id": "x:kat0000000000000000"
+  },
+  "extra": [
+    1,
+    2
+  ]
+}

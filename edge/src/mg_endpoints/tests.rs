@@ -200,6 +200,7 @@ impl Req {
             sensitivity: RouteSensitivity::Low,
             require_clearance: false,
             fail_closed: false,
+            ..Default::default()
         };
         let removed = BTreeSet::new();
         let facts = Facts {

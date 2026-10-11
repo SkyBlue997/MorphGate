@@ -115,6 +115,7 @@ fn bundle() -> SiteBundle {
         allow_sample_rate: 1.0,
         access_log: false,
         stream: false,
+        ..Default::default()
     });
     let env = &mut b.environments[0];
     env.routes = vec![default_route()];

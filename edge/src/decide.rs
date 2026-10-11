@@ -458,6 +458,7 @@ mod tests {
             sensitivity,
             require_clearance: false,
             fail_closed,
+            ..Default::default()
         }
     }
 

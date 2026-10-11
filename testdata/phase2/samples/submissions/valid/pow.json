@@ -1,0 +1,23 @@
+{
+  "v": 2,
+  "type": "pow",
+  "c": "AAECAwQFBgcICQoLDA0ODw",
+  "p": "",
+  "pp": "",
+  "t": "",
+  "pow": {
+    "counters": [
+      38467
+    ]
+  },
+  "ret": "/",
+  "ts": 0,
+  "build": "0123456789abcdef",
+  "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "T1gOXNU7zX4NE9zjRUjOz1nUJlgkk68gI1B3xFc6XU8",
+    "y": "tpZOtXHGQ4ZJdi770NPlYzgh4Fd2x2be8h_gKh7h9xo"
+  },
+  "sig": "nJQUtzz5xlcuK7MebdTaWxFEFe7dETOnilsSJxf8xsQbBtnWVfqusuOk7OKGrDKVNqjmIJ1k1fAd_VS5UmwcCQ"
+}

@@ -230,6 +230,22 @@ jobs:
     name: Go (vet, test, generated code)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # Valkey for the near-line worker tests (docs/impl/phase2-spec.md §0.4,
+    # §17 WP-N1). Same digest-pinned image as the rust job; bump them together.
+    services:
+      valkey:
+        image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+        ports:
+          - 127.0.0.1:6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      MG_TEST_VALKEY_URL: redis://127.0.0.1:6379/
+      # A missing Valkey fails the tests instead of skipping them.
+      MG_REQUIRE_VALKEY: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

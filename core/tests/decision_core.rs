@@ -73,6 +73,8 @@ impl Request {
                 sensitivity: RouteSensitivity::Low,
                 require_clearance: false,
                 fail_closed: false,
+                proof_required: false,
+                min_level: None,
             },
             headers,
             rate: Vec::new(),
@@ -97,6 +99,8 @@ impl Request {
             sensitivity: RouteSensitivity::Critical,
             require_clearance: true,
             fail_closed: true,
+            proof_required: false,
+            min_level: None,
         };
         self
     }

@@ -587,6 +587,7 @@ type Http struct {
 	EarlyData          bool                   `protobuf:"varint,13,opt,name=early_data,json=earlyData,proto3" json:"early_data,omitempty"`                             // Early-Data: 1 -> treat as replayable
 	Priority           string                 `protobuf:"bytes,14,opt,name=priority,proto3" json:"priority,omitempty"`                                                 // Tier 1 x-mg-cf-priority (browser HTTP/2 priority), weak
 	AcceptEncodingOrig string                 `protobuf:"bytes,15,opt,name=accept_encoding_orig,json=acceptEncodingOrig,proto3" json:"accept_encoding_orig,omitempty"` // Tier 1 x-mg-cf-accept-encoding (original value)
+	Navigation         bool                   `protobuf:"varint,16,opt,name=navigation,proto3" json:"navigation,omitempty"`                                            // the Phase 1 navigation test (Phase 1 spec §9.9), exposed as http.navigation
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -724,6 +725,13 @@ func (x *Http) GetAcceptEncodingOrig() string {
 		return x.AcceptEncodingOrig
 	}
 	return ""
+}
+
+func (x *Http) GetNavigation() bool {
+	if x != nil {
+		return x.Navigation
+	}
+	return false
 }
 
 // Identity layer (CEL identity.*).
@@ -1388,11 +1396,16 @@ type ChallengeResult struct {
 	Outcome    string                 `protobuf:"bytes,6,opt,name=outcome,proto3" json:"outcome,omitempty"` // pass | fail | unavailable | misconfigured
 	Lvl        string                 `protobuf:"bytes,7,opt,name=lvl,proto3" json:"lvl,omitempty"`         // invisible | pow | interactive | interactive_a11y
 	// | interactive_ext:{provider}   (attested: reserved, mobile later)
-	AttemptNo     uint32   `protobuf:"varint,8,opt,name=attempt_no,json=attemptNo,proto3" json:"attempt_no,omitempty"`
-	SolveMs       uint32   `protobuf:"varint,9,opt,name=solve_ms,json=solveMs,proto3" json:"solve_ms,omitempty"`
-	RiskBand      string   `protobuf:"bytes,10,opt,name=risk_band,json=riskBand,proto3" json:"risk_band,omitempty"`          // low | medium | high | very_high
-	ReasonCodes   []string `protobuf:"bytes,11,rep,name=reason_codes,json=reasonCodes,proto3" json:"reason_codes,omitempty"` // internal only
-	CfRay         string   `protobuf:"bytes,12,opt,name=cf_ray,json=cfRay,proto3" json:"cf_ray,omitempty"`
+	AttemptNo   uint32   `protobuf:"varint,8,opt,name=attempt_no,json=attemptNo,proto3" json:"attempt_no,omitempty"`
+	SolveMs     uint32   `protobuf:"varint,9,opt,name=solve_ms,json=solveMs,proto3" json:"solve_ms,omitempty"`
+	RiskBand    string   `protobuf:"bytes,10,opt,name=risk_band,json=riskBand,proto3" json:"risk_band,omitempty"`          // low | medium | high | very_high
+	ReasonCodes []string `protobuf:"bytes,11,rep,name=reason_codes,json=reasonCodes,proto3" json:"reason_codes,omitempty"` // internal only
+	CfRay       string   `protobuf:"bytes,12,opt,name=cf_ray,json=cfRay,proto3" json:"cf_ray,omitempty"`
+	// Phase 2 (spec §3.3); outcome (6) now also takes unavailable / misconfigured.
+	RenewNo       uint32              `protobuf:"varint,13,opt,name=renew_no,json=renewNo,proto3" json:"renew_no,omitempty"`
+	Bound         bool                `protobuf:"varint,14,opt,name=bound,proto3" json:"bound,omitempty"`      // the submitted C carried bind.jkt
+	Ix            *InteractionSummary `protobuf:"bytes,15,opt,name=ix,proto3" json:"ix,omitempty"`             // interactive only
+	Provider      *ProviderOutcome    `protobuf:"bytes,16,opt,name=provider,proto3" json:"provider,omitempty"` // only when an external provider was verified
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1511,6 +1524,220 @@ func (x *ChallengeResult) GetCfRay() string {
 	return ""
 }
 
+func (x *ChallengeResult) GetRenewNo() uint32 {
+	if x != nil {
+		return x.RenewNo
+	}
+	return 0
+}
+
+func (x *ChallengeResult) GetBound() bool {
+	if x != nil {
+		return x.Bound
+	}
+	return false
+}
+
+func (x *ChallengeResult) GetIx() *InteractionSummary {
+	if x != nil {
+		return x.Ix
+	}
+	return nil
+}
+
+func (x *ChallengeResult) GetProvider() *ProviderOutcome {
+	if x != nil {
+		return x.Provider
+	}
+	return nil
+}
+
+// Interaction assessment of an interactive submission (Phase 2 spec §5.5, §7.7, §7.8).
+type InteractionSummary struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Mode           string                 `protobuf:"bytes,1,opt,name=mode,proto3" json:"mode,omitempty"`                                                                                     // "shadow" | "enforce"
+	Score          float32                `protobuf:"fixed32,2,opt,name=score,proto3" json:"score,omitempty"`                                                                                 // 0..1, section 7.8
+	A11YMode       string                 `protobuf:"bytes,3,opt,name=a11y_mode,json=a11yMode,proto3" json:"a11y_mode,omitempty"`                                                             // none | single | pow_only (D-65)
+	InputModality  string                 `protobuf:"bytes,4,opt,name=input_modality,json=inputModality,proto3" json:"input_modality,omitempty"`                                              // mouse | touch | pen | keyboard | mixed | none
+	HoldMs         uint32                 `protobuf:"varint,5,opt,name=hold_ms,json=holdMs,proto3" json:"hold_ms,omitempty"`                                                                  // reported by the client, 10 ms resolution
+	RequiredHoldMs uint32                 `protobuf:"varint,6,opt,name=required_hold_ms,json=requiredHoldMs,proto3" json:"required_hold_ms,omitempty"`                                        // recomputed from ui_seed
+	ElapsedMs      uint32                 `protobuf:"varint,7,opt,name=elapsed_ms,json=elapsedMs,proto3" json:"elapsed_ms,omitempty"`                                                         // server clock: body read complete - C.iat
+	Features       map[string]float32     `protobuf:"bytes,8,rep,name=features,proto3" json:"features,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"fixed32,2,opt,name=value"` // the soft features of section 7.8; bounded key set
+	ActMs          uint32                 `protobuf:"varint,9,opt,name=act_ms,json=actMs,proto3" json:"act_ms,omitempty"`                                                                     // reported by the client: first activation to submission, 100 ms resolution (section 7.6)
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *InteractionSummary) Reset() {
+	*x = InteractionSummary{}
+	mi := &file_morphgate_v1_decision_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InteractionSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InteractionSummary) ProtoMessage() {}
+
+func (x *InteractionSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_morphgate_v1_decision_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InteractionSummary.ProtoReflect.Descriptor instead.
+func (*InteractionSummary) Descriptor() ([]byte, []int) {
+	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *InteractionSummary) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *InteractionSummary) GetScore() float32 {
+	if x != nil {
+		return x.Score
+	}
+	return 0
+}
+
+func (x *InteractionSummary) GetA11YMode() string {
+	if x != nil {
+		return x.A11YMode
+	}
+	return ""
+}
+
+func (x *InteractionSummary) GetInputModality() string {
+	if x != nil {
+		return x.InputModality
+	}
+	return ""
+}
+
+func (x *InteractionSummary) GetHoldMs() uint32 {
+	if x != nil {
+		return x.HoldMs
+	}
+	return 0
+}
+
+func (x *InteractionSummary) GetRequiredHoldMs() uint32 {
+	if x != nil {
+		return x.RequiredHoldMs
+	}
+	return 0
+}
+
+func (x *InteractionSummary) GetElapsedMs() uint32 {
+	if x != nil {
+		return x.ElapsedMs
+	}
+	return 0
+}
+
+func (x *InteractionSummary) GetFeatures() map[string]float32 {
+	if x != nil {
+		return x.Features
+	}
+	return nil
+}
+
+func (x *InteractionSummary) GetActMs() uint32 {
+	if x != nil {
+		return x.ActMs
+	}
+	return 0
+}
+
+// Result of an external provider verification (Phase 2 spec §8.5).
+type ProviderOutcome struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`           // "turnstile"
+	Outcome       string                 `protobuf:"bytes,2,opt,name=outcome,proto3" json:"outcome,omitempty"` // pass | fail | unavailable | misconfigured
+	Mode          string                 `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`       // shadow | enforce
+	LatencyMs     uint32                 `protobuf:"varint,4,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
+	ErrorCodes    []string               `protobuf:"bytes,5,rep,name=error_codes,json=errorCodes,proto3" json:"error_codes,omitempty"` // siteverify error codes from the bounded set of section 8.5
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProviderOutcome) Reset() {
+	*x = ProviderOutcome{}
+	mi := &file_morphgate_v1_decision_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProviderOutcome) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProviderOutcome) ProtoMessage() {}
+
+func (x *ProviderOutcome) ProtoReflect() protoreflect.Message {
+	mi := &file_morphgate_v1_decision_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProviderOutcome.ProtoReflect.Descriptor instead.
+func (*ProviderOutcome) Descriptor() ([]byte, []int) {
+	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ProviderOutcome) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ProviderOutcome) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *ProviderOutcome) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *ProviderOutcome) GetLatencyMs() uint32 {
+	if x != nil {
+		return x.LatencyMs
+	}
+	return 0
+}
+
+func (x *ProviderOutcome) GetErrorCodes() []string {
+	if x != nil {
+		return x.ErrorCodes
+	}
+	return nil
+}
+
 type EntityVerdict struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Type          EntityType             `protobuf:"varint,1,opt,name=type,proto3,enum=morphgate.v1.EntityType" json:"type,omitempty"`
@@ -1528,7 +1755,7 @@ type EntityVerdict struct {
 
 func (x *EntityVerdict) Reset() {
 	*x = EntityVerdict{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[14]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1540,7 +1767,7 @@ func (x *EntityVerdict) String() string {
 func (*EntityVerdict) ProtoMessage() {}
 
 func (x *EntityVerdict) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[14]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1553,7 +1780,7 @@ func (x *EntityVerdict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityVerdict.ProtoReflect.Descriptor instead.
 func (*EntityVerdict) Descriptor() ([]byte, []int) {
-	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{14}
+	return file_morphgate_v1_decision_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *EntityVerdict) GetType() EntityType {
@@ -1632,7 +1859,7 @@ type Tls_Ja4 struct {
 
 func (x *Tls_Ja4) Reset() {
 	*x = Tls_Ja4{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[15]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1644,7 +1871,7 @@ func (x *Tls_Ja4) String() string {
 func (*Tls_Ja4) ProtoMessage() {}
 
 func (x *Tls_Ja4) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[15]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1689,13 +1916,15 @@ type Identity_Token struct {
 	// | interactive_ext:{provider}   (attested: reserved, mobile later)
 	Age           uint32               `protobuf:"varint,3,opt,name=age,proto3" json:"age,omitempty"` // seconds since issuance; 0 without a token
 	Bind          *Identity_Token_Bind `protobuf:"bytes,4,opt,name=bind,proto3" json:"bind,omitempty"`
+	Bound         bool                 `protobuf:"varint,5,opt,name=bound,proto3" json:"bound,omitempty"`                       // the clearance carries cnf.jkt (Phase 2 spec §4.1)
+	LevelAge      uint32               `protobuf:"varint,6,opt,name=level_age,json=levelAge,proto3" json:"level_age,omitempty"` // now - lat in seconds (v1 tokens: now - iat)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Identity_Token) Reset() {
 	*x = Identity_Token{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[16]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1707,7 +1936,7 @@ func (x *Identity_Token) String() string {
 func (*Identity_Token) ProtoMessage() {}
 
 func (x *Identity_Token) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[16]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1751,18 +1980,33 @@ func (x *Identity_Token) GetBind() *Identity_Token_Bind {
 	return nil
 }
 
-// Per-request proof of possession (docs/04 §6.1).
+func (x *Identity_Token) GetBound() bool {
+	if x != nil {
+		return x.Bound
+	}
+	return false
+}
+
+func (x *Identity_Token) GetLevelAge() uint32 {
+	if x != nil {
+		return x.LevelAge
+	}
+	return 0
+}
+
+// Per-request proof of possession (docs/04 §6.1; MG-Proof, Phase 2 spec §4.1, §6.7).
 type Identity_Proof struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Valid         bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
 	Replayed      bool                   `protobuf:"varint,2,opt,name=replayed,proto3" json:"replayed,omitempty"` // jti seen before
+	Present       bool                   `protobuf:"varint,3,opt,name=present,proto3" json:"present,omitempty"`   // an MG-Proof header was present
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Identity_Proof) Reset() {
 	*x = Identity_Proof{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[17]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1774,7 +2018,7 @@ func (x *Identity_Proof) String() string {
 func (*Identity_Proof) ProtoMessage() {}
 
 func (x *Identity_Proof) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[17]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1804,6 +2048,13 @@ func (x *Identity_Proof) GetReplayed() bool {
 	return false
 }
 
+func (x *Identity_Proof) GetPresent() bool {
+	if x != nil {
+		return x.Present
+	}
+	return false
+}
+
 // Authorised AI agent (docs/05 §3-§4).
 type Identity_Agent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1816,7 +2067,7 @@ type Identity_Agent struct {
 
 func (x *Identity_Agent) Reset() {
 	*x = Identity_Agent{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[18]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1828,7 +2079,7 @@ func (x *Identity_Agent) String() string {
 func (*Identity_Agent) ProtoMessage() {}
 
 func (x *Identity_Agent) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[18]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1883,7 +2134,7 @@ type Identity_Crawler struct {
 
 func (x *Identity_Crawler) Reset() {
 	*x = Identity_Crawler{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[19]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1895,7 +2146,7 @@ func (x *Identity_Crawler) String() string {
 func (*Identity_Crawler) ProtoMessage() {}
 
 func (x *Identity_Crawler) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[19]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1989,7 +2240,7 @@ type Identity_Token_Bind struct {
 
 func (x *Identity_Token_Bind) Reset() {
 	*x = Identity_Token_Bind{}
-	mi := &file_morphgate_v1_decision_proto_msgTypes[20]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2001,7 +2252,7 @@ func (x *Identity_Token_Bind) String() string {
 func (*Identity_Token_Bind) ProtoMessage() {}
 
 func (x *Identity_Token_Bind) ProtoReflect() protoreflect.Message {
-	mi := &file_morphgate_v1_decision_proto_msgTypes[20]
+	mi := &file_morphgate_v1_decision_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2115,7 +2366,7 @@ const file_morphgate_v1_decision_proto_rawDesc = "" +
 	"\x06cipher\x18\x02 \x01(\tR\x06cipher\x12!\n" +
 	"\fciphers_sha1\x18\x03 \x01(\tR\vciphersSha1\x12\x19\n" +
 	"\bext_sha1\x18\x04 \x01(\tR\aextSha1\x12\x1b\n" +
-	"\thello_len\x18\x05 \x01(\rR\bhelloLen\"\xf7\x03\n" +
+	"\thello_len\x18\x05 \x01(\rR\bhelloLen\"\x97\x04\n" +
 	"\x04Http\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12A\n" +
 	"\x0eversion_source\x18\x02 \x01(\x0e2\x1a.morphgate.v1.SignalSourceR\rversionSource\x12\x16\n" +
@@ -2135,26 +2386,32 @@ const file_morphgate_v1_decision_proto_rawDesc = "" +
 	"\n" +
 	"early_data\x18\r \x01(\bR\tearlyData\x12\x1a\n" +
 	"\bpriority\x18\x0e \x01(\tR\bpriority\x120\n" +
-	"\x14accept_encoding_orig\x18\x0f \x01(\tR\x12acceptEncodingOrig\"\xef\x06\n" +
+	"\x14accept_encoding_orig\x18\x0f \x01(\tR\x12acceptEncodingOrig\x12\x1e\n" +
+	"\n" +
+	"navigation\x18\x10 \x01(\bR\n" +
+	"navigation\"\xbc\a\n" +
 	"\bIdentity\x122\n" +
 	"\x05token\x18\x01 \x01(\v2\x1c.morphgate.v1.Identity.TokenR\x05token\x122\n" +
 	"\x05proof\x18\x02 \x01(\v2\x1c.morphgate.v1.Identity.ProofR\x05proof\x122\n" +
 	"\x05agent\x18\x03 \x01(\v2\x1c.morphgate.v1.Identity.AgentR\x05agent\x128\n" +
-	"\acrawler\x18\x04 \x01(\v2\x1e.morphgate.v1.Identity.CrawlerR\acrawler\x1a\xe0\x01\n" +
+	"\acrawler\x18\x04 \x01(\v2\x1e.morphgate.v1.Identity.CrawlerR\acrawler\x1a\x93\x02\n" +
 	"\x05Token\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x14\n" +
 	"\x05level\x18\x02 \x01(\tR\x05level\x12\x10\n" +
 	"\x03age\x18\x03 \x01(\rR\x03age\x125\n" +
-	"\x04bind\x18\x04 \x01(\v2!.morphgate.v1.Identity.Token.BindR\x04bind\x1a`\n" +
+	"\x04bind\x18\x04 \x01(\v2!.morphgate.v1.Identity.Token.BindR\x04bind\x12\x14\n" +
+	"\x05bound\x18\x05 \x01(\bR\x05bound\x12\x1b\n" +
+	"\tlevel_age\x18\x06 \x01(\rR\blevelAge\x1a`\n" +
 	"\x04Bind\x12\x10\n" +
 	"\x03uah\x18\x01 \x01(\tR\x03uah\x12\x10\n" +
 	"\x03ipp\x18\x02 \x01(\tR\x03ipp\x12\x10\n" +
 	"\x03jkt\x18\x03 \x01(\tR\x03jkt\x12\x10\n" +
 	"\x03ctp\x18\x04 \x01(\tR\x03ctp\x12\x10\n" +
-	"\x03tfp\x18\x05 \x01(\tR\x03tfp\x1a9\n" +
+	"\x03tfp\x18\x05 \x01(\tR\x03tfp\x1aS\n" +
 	"\x05Proof\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x1a\n" +
-	"\breplayed\x18\x02 \x01(\bR\breplayed\x1aJ\n" +
+	"\breplayed\x18\x02 \x01(\bR\breplayed\x12\x18\n" +
+	"\apresent\x18\x03 \x01(\bR\apresent\x1aJ\n" +
 	"\x05Agent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bgrant_id\x18\x02 \x01(\tR\agrantId\x12\x16\n" +
@@ -2231,7 +2488,7 @@ const file_morphgate_v1_decision_proto_rawDesc = "" +
 	"\x0ebundle_version\x18\b \x01(\x04R\rbundleVersion\x12!\n" +
 	"\fmonitor_only\x18\t \x01(\bR\vmonitorOnly\x12)\n" +
 	"\x04hits\x18\n" +
-	" \x03(\v2\x15.morphgate.v1.RuleHitR\x04hits\"\xf3\x02\n" +
+	" \x03(\v2\x15.morphgate.v1.RuleHitR\x04hits\"\x91\x04\n" +
 	"\x0fChallengeResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x17\n" +
@@ -2248,7 +2505,33 @@ const file_morphgate_v1_decision_proto_rawDesc = "" +
 	"\trisk_band\x18\n" +
 	" \x01(\tR\briskBand\x12!\n" +
 	"\freason_codes\x18\v \x03(\tR\vreasonCodes\x12\x15\n" +
-	"\x06cf_ray\x18\f \x01(\tR\x05cfRay\"\x84\x02\n" +
+	"\x06cf_ray\x18\f \x01(\tR\x05cfRay\x12\x19\n" +
+	"\brenew_no\x18\r \x01(\rR\arenewNo\x12\x14\n" +
+	"\x05bound\x18\x0e \x01(\bR\x05bound\x120\n" +
+	"\x02ix\x18\x0f \x01(\v2 .morphgate.v1.InteractionSummaryR\x02ix\x129\n" +
+	"\bprovider\x18\x10 \x01(\v2\x1d.morphgate.v1.ProviderOutcomeR\bprovider\"\x84\x03\n" +
+	"\x12InteractionSummary\x12\x12\n" +
+	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x14\n" +
+	"\x05score\x18\x02 \x01(\x02R\x05score\x12\x1b\n" +
+	"\ta11y_mode\x18\x03 \x01(\tR\ba11yMode\x12%\n" +
+	"\x0einput_modality\x18\x04 \x01(\tR\rinputModality\x12\x17\n" +
+	"\ahold_ms\x18\x05 \x01(\rR\x06holdMs\x12(\n" +
+	"\x10required_hold_ms\x18\x06 \x01(\rR\x0erequiredHoldMs\x12\x1d\n" +
+	"\n" +
+	"elapsed_ms\x18\a \x01(\rR\telapsedMs\x12J\n" +
+	"\bfeatures\x18\b \x03(\v2..morphgate.v1.InteractionSummary.FeaturesEntryR\bfeatures\x12\x15\n" +
+	"\x06act_ms\x18\t \x01(\rR\x05actMs\x1a;\n" +
+	"\rFeaturesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x02R\x05value:\x028\x01\"\x8f\x01\n" +
+	"\x0fProviderOutcome\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\aoutcome\x18\x02 \x01(\tR\aoutcome\x12\x12\n" +
+	"\x04mode\x18\x03 \x01(\tR\x04mode\x12\x1d\n" +
+	"\n" +
+	"latency_ms\x18\x04 \x01(\rR\tlatencyMs\x12\x1f\n" +
+	"\verror_codes\x18\x05 \x03(\tR\n" +
+	"errorCodes\"\x84\x02\n" +
 	"\rEntityVerdict\x12,\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x18.morphgate.v1.EntityTypeR\x04type\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x12\n" +
@@ -2272,7 +2555,7 @@ func file_morphgate_v1_decision_proto_rawDescGZIP() []byte {
 	return file_morphgate_v1_decision_proto_rawDescData
 }
 
-var file_morphgate_v1_decision_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_morphgate_v1_decision_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_morphgate_v1_decision_proto_goTypes = []any{
 	(*RequestContext)(nil),      // 0: morphgate.v1.RequestContext
 	(*UpstreamInfo)(nil),        // 1: morphgate.v1.UpstreamInfo
@@ -2288,25 +2571,28 @@ var file_morphgate_v1_decision_proto_goTypes = []any{
 	(*RuleHit)(nil),             // 11: morphgate.v1.RuleHit
 	(*DecisionEvent)(nil),       // 12: morphgate.v1.DecisionEvent
 	(*ChallengeResult)(nil),     // 13: morphgate.v1.ChallengeResult
-	(*EntityVerdict)(nil),       // 14: morphgate.v1.EntityVerdict
-	(*Tls_Ja4)(nil),             // 15: morphgate.v1.Tls.Ja4
-	(*Identity_Token)(nil),      // 16: morphgate.v1.Identity.Token
-	(*Identity_Proof)(nil),      // 17: morphgate.v1.Identity.Proof
-	(*Identity_Agent)(nil),      // 18: morphgate.v1.Identity.Agent
-	(*Identity_Crawler)(nil),    // 19: morphgate.v1.Identity.Crawler
-	(*Identity_Token_Bind)(nil), // 20: morphgate.v1.Identity.Token.Bind
-	(Channel)(0),                // 21: morphgate.v1.Channel
-	(UpstreamProfileKind)(0),    // 22: morphgate.v1.UpstreamProfileKind
-	(SignalSource)(0),           // 23: morphgate.v1.SignalSource
-	(SignalFamily)(0),           // 24: morphgate.v1.SignalFamily
-	(SignalState)(0),            // 25: morphgate.v1.SignalState
-	(BotClass)(0),               // 26: morphgate.v1.BotClass
-	(Action)(0),                 // 27: morphgate.v1.Action
-	(ChallengeType)(0),          // 28: morphgate.v1.ChallengeType
-	(EntityType)(0),             // 29: morphgate.v1.EntityType
+	(*InteractionSummary)(nil),  // 14: morphgate.v1.InteractionSummary
+	(*ProviderOutcome)(nil),     // 15: morphgate.v1.ProviderOutcome
+	(*EntityVerdict)(nil),       // 16: morphgate.v1.EntityVerdict
+	(*Tls_Ja4)(nil),             // 17: morphgate.v1.Tls.Ja4
+	(*Identity_Token)(nil),      // 18: morphgate.v1.Identity.Token
+	(*Identity_Proof)(nil),      // 19: morphgate.v1.Identity.Proof
+	(*Identity_Agent)(nil),      // 20: morphgate.v1.Identity.Agent
+	(*Identity_Crawler)(nil),    // 21: morphgate.v1.Identity.Crawler
+	(*Identity_Token_Bind)(nil), // 22: morphgate.v1.Identity.Token.Bind
+	nil,                         // 23: morphgate.v1.InteractionSummary.FeaturesEntry
+	(Channel)(0),                // 24: morphgate.v1.Channel
+	(UpstreamProfileKind)(0),    // 25: morphgate.v1.UpstreamProfileKind
+	(SignalSource)(0),           // 26: morphgate.v1.SignalSource
+	(SignalFamily)(0),           // 27: morphgate.v1.SignalFamily
+	(SignalState)(0),            // 28: morphgate.v1.SignalState
+	(BotClass)(0),               // 29: morphgate.v1.BotClass
+	(Action)(0),                 // 30: morphgate.v1.Action
+	(ChallengeType)(0),          // 31: morphgate.v1.ChallengeType
+	(EntityType)(0),             // 32: morphgate.v1.EntityType
 }
 var file_morphgate_v1_decision_proto_depIdxs = []int32{
-	21, // 0: morphgate.v1.RequestContext.channel:type_name -> morphgate.v1.Channel
+	24, // 0: morphgate.v1.RequestContext.channel:type_name -> morphgate.v1.Channel
 	1,  // 1: morphgate.v1.RequestContext.upstream:type_name -> morphgate.v1.UpstreamInfo
 	2,  // 2: morphgate.v1.RequestContext.net:type_name -> morphgate.v1.Net
 	3,  // 3: morphgate.v1.RequestContext.tls:type_name -> morphgate.v1.Tls
@@ -2314,35 +2600,38 @@ var file_morphgate_v1_decision_proto_depIdxs = []int32{
 	5,  // 5: morphgate.v1.RequestContext.http:type_name -> morphgate.v1.Http
 	6,  // 6: morphgate.v1.RequestContext.identity:type_name -> morphgate.v1.Identity
 	7,  // 7: morphgate.v1.RequestContext.client:type_name -> morphgate.v1.ClientSignals
-	14, // 8: morphgate.v1.RequestContext.verdicts:type_name -> morphgate.v1.EntityVerdict
-	22, // 9: morphgate.v1.UpstreamInfo.profile:type_name -> morphgate.v1.UpstreamProfileKind
-	15, // 10: morphgate.v1.Tls.ja4:type_name -> morphgate.v1.Tls.Ja4
-	23, // 11: morphgate.v1.Http.version_source:type_name -> morphgate.v1.SignalSource
-	16, // 12: morphgate.v1.Identity.token:type_name -> morphgate.v1.Identity.Token
-	17, // 13: morphgate.v1.Identity.proof:type_name -> morphgate.v1.Identity.Proof
-	18, // 14: morphgate.v1.Identity.agent:type_name -> morphgate.v1.Identity.Agent
-	19, // 15: morphgate.v1.Identity.crawler:type_name -> morphgate.v1.Identity.Crawler
-	24, // 16: morphgate.v1.Signal.family:type_name -> morphgate.v1.SignalFamily
-	25, // 17: morphgate.v1.Signal.state:type_name -> morphgate.v1.SignalState
-	23, // 18: morphgate.v1.Signal.source:type_name -> morphgate.v1.SignalSource
-	26, // 19: morphgate.v1.RiskAssessment.bot_class:type_name -> morphgate.v1.BotClass
-	27, // 20: morphgate.v1.Decision.action:type_name -> morphgate.v1.Action
-	28, // 21: morphgate.v1.Decision.challenge_type:type_name -> morphgate.v1.ChallengeType
-	27, // 22: morphgate.v1.RuleHit.action:type_name -> morphgate.v1.Action
+	16, // 8: morphgate.v1.RequestContext.verdicts:type_name -> morphgate.v1.EntityVerdict
+	25, // 9: morphgate.v1.UpstreamInfo.profile:type_name -> morphgate.v1.UpstreamProfileKind
+	17, // 10: morphgate.v1.Tls.ja4:type_name -> morphgate.v1.Tls.Ja4
+	26, // 11: morphgate.v1.Http.version_source:type_name -> morphgate.v1.SignalSource
+	18, // 12: morphgate.v1.Identity.token:type_name -> morphgate.v1.Identity.Token
+	19, // 13: morphgate.v1.Identity.proof:type_name -> morphgate.v1.Identity.Proof
+	20, // 14: morphgate.v1.Identity.agent:type_name -> morphgate.v1.Identity.Agent
+	21, // 15: morphgate.v1.Identity.crawler:type_name -> morphgate.v1.Identity.Crawler
+	27, // 16: morphgate.v1.Signal.family:type_name -> morphgate.v1.SignalFamily
+	28, // 17: morphgate.v1.Signal.state:type_name -> morphgate.v1.SignalState
+	26, // 18: morphgate.v1.Signal.source:type_name -> morphgate.v1.SignalSource
+	29, // 19: morphgate.v1.RiskAssessment.bot_class:type_name -> morphgate.v1.BotClass
+	30, // 20: morphgate.v1.Decision.action:type_name -> morphgate.v1.Action
+	31, // 21: morphgate.v1.Decision.challenge_type:type_name -> morphgate.v1.ChallengeType
+	30, // 22: morphgate.v1.RuleHit.action:type_name -> morphgate.v1.Action
 	0,  // 23: morphgate.v1.DecisionEvent.ctx:type_name -> morphgate.v1.RequestContext
 	8,  // 24: morphgate.v1.DecisionEvent.signals:type_name -> morphgate.v1.Signal
 	9,  // 25: morphgate.v1.DecisionEvent.risk:type_name -> morphgate.v1.RiskAssessment
 	10, // 26: morphgate.v1.DecisionEvent.decision:type_name -> morphgate.v1.Decision
 	11, // 27: morphgate.v1.DecisionEvent.hits:type_name -> morphgate.v1.RuleHit
-	28, // 28: morphgate.v1.ChallengeResult.type:type_name -> morphgate.v1.ChallengeType
-	29, // 29: morphgate.v1.EntityVerdict.type:type_name -> morphgate.v1.EntityType
-	23, // 30: morphgate.v1.Tls.Ja4.source:type_name -> morphgate.v1.SignalSource
-	20, // 31: morphgate.v1.Identity.Token.bind:type_name -> morphgate.v1.Identity.Token.Bind
-	32, // [32:32] is the sub-list for method output_type
-	32, // [32:32] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	31, // 28: morphgate.v1.ChallengeResult.type:type_name -> morphgate.v1.ChallengeType
+	14, // 29: morphgate.v1.ChallengeResult.ix:type_name -> morphgate.v1.InteractionSummary
+	15, // 30: morphgate.v1.ChallengeResult.provider:type_name -> morphgate.v1.ProviderOutcome
+	23, // 31: morphgate.v1.InteractionSummary.features:type_name -> morphgate.v1.InteractionSummary.FeaturesEntry
+	32, // 32: morphgate.v1.EntityVerdict.type:type_name -> morphgate.v1.EntityType
+	26, // 33: morphgate.v1.Tls.Ja4.source:type_name -> morphgate.v1.SignalSource
+	22, // 34: morphgate.v1.Identity.Token.bind:type_name -> morphgate.v1.Identity.Token.Bind
+	35, // [35:35] is the sub-list for method output_type
+	35, // [35:35] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_morphgate_v1_decision_proto_init() }
@@ -2351,14 +2640,14 @@ func file_morphgate_v1_decision_proto_init() {
 		return
 	}
 	file_morphgate_v1_common_proto_init()
-	file_morphgate_v1_decision_proto_msgTypes[19].OneofWrappers = []any{}
+	file_morphgate_v1_decision_proto_msgTypes[21].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_morphgate_v1_decision_proto_rawDesc), len(file_morphgate_v1_decision_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

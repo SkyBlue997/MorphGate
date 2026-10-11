@@ -125,6 +125,7 @@ pub fn pow_claims(iat_ms: i64) -> SealedChallengeClaims {
         pow: Some(PowParams {
             alg: mg_challenge::POW_ALG.into(),
             difficulty: 16,
+            ..PowParams::default()
         }),
         ret_hash: mg_challenge::ret_hash("/account/login").to_vec(),
         bind: ChallengeBind {
@@ -133,6 +134,7 @@ pub fn pow_claims(iat_ms: i64) -> SealedChallengeClaims {
             ipa: mg_challenge::ipa(64500).map(|h| h.to_vec()),
             ..ChallengeBind::default()
         },
+        renew_no: 0,
     }
 }
 

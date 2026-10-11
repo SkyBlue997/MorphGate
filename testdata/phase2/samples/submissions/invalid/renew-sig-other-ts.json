@@ -1,0 +1,12 @@
+{
+  "v": 2,
+  "c": "AAECAwQFBgcICQoLDA0ODw",
+  "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "rrXA79fsqDJ_SXUTgnEyOO__YXLSTtRXSSJhNH9YKH0",
+    "y": "fy_r8gTN8v7j6GHSFRr_lW7pGX4MxTFboW1NVnc6-PA"
+  },
+  "ts": 1790000480001,
+  "sig": "psi0GlH6WNDOjqN2Zn_OZd_sYS4uLAHamRRJ5OGSn-vTPZ6khK_gm_hgqKQJCNsMAYg74ROg6Jr99DcgKheVHQ"
+}

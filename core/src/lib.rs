@@ -63,9 +63,11 @@ pub mod mask;
 pub mod paths;
 pub mod pipeline;
 pub mod policy;
+pub mod providers;
 pub mod scoring;
 pub mod sealed;
 pub mod signal;
+pub mod telemetry;
 #[cfg(test)]
 mod testutil;
 pub mod ua;
@@ -83,8 +85,8 @@ pub use context::{
     TokenLevel, TokenStatus, UpstreamAuthMethod, UpstreamInfo,
 };
 pub use decision::{
-    ChallengeResult, Decision, DecisionError, DecisionEvent, EntityVerdict, HitOutcome,
-    RiskAssessment, RuleHit,
+    ChallengeResult, Decision, DecisionError, DecisionEvent, EntityVerdict, EvalMode, HitOutcome,
+    InteractionSummary, ProviderOutcome, RiskAssessment, RuleHit,
 };
 pub use detectors::phase1_detectors;
 pub use enums::{
@@ -99,6 +101,10 @@ pub use pipeline::{
 pub use scoring::{FamilyMode, ScorerV1, ScoringConfig};
 pub use sealed::{ChallengeBind, ClaimsError, PowParams, SealedChallengeClaims};
 pub use signal::Signal;
+pub use telemetry::{
+    A11yMode, InputModality, IxFallback, IxHold, IxLocale, IxMode, IxPage, IxPow, IxPre,
+    IxRangeError, IxSingle, IxTelemetry, KeyStore, PowImpl,
+};
 pub use values::{Confidence, Evidence, RiskBand, Score};
 
 /// What `Debug` prints in place of a client IP (spec §2.4 item 5).

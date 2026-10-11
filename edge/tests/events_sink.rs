@@ -30,6 +30,7 @@ fn bundle() -> SiteBundle {
         allow_sample_rate: 0.0,
         access_log: true,
         stream: true,
+        ..Default::default()
     });
     let c = b.challenge.as_mut().unwrap();
     c.pow_bits = Some(PowBits {

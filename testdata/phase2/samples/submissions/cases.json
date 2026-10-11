@@ -1,0 +1,175 @@
+{
+  "about": "Request bodies (application/json) of POST /__mg/c v2 (spec §7.5) and POST /__mg/c/renew (spec §7.4). c is a placeholder, never opened: these samples exercise the body rules (step 3, ic.body) and the signature (step 8 / renew step 6, ic.sig) only. Signatures are ES256 over the message of spec §6.6 built from the body itself",
+  "cases": [
+    {
+      "file": "valid/interactive-self-hold.json",
+      "endpoint": "/__mg/c",
+      "expect": "ok"
+    },
+    {
+      "file": "valid/interactive-turnstile.json",
+      "endpoint": "/__mg/c",
+      "expect": "ok"
+    },
+    {
+      "file": "valid/interactive-pow-a11y-without-ix.json",
+      "endpoint": "/__mg/c",
+      "expect": "ok"
+    },
+    {
+      "file": "valid/pow.json",
+      "endpoint": "/__mg/c",
+      "expect": "ok"
+    },
+    {
+      "file": "valid/unknown-top-level-field.json",
+      "endpoint": "/__mg/c",
+      "expect": "ok"
+    },
+    {
+      "file": "valid/renew.json",
+      "endpoint": "/__mg/c/renew",
+      "expect": "ok"
+    },
+    {
+      "file": "invalid/v-3.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/interactive-v1.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/missing-jwk.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/missing-sig.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/jwk-not-object.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/counters-0.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/counters-9.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/counter-2-pow-53.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/counter-negative.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/ts-negative.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/ts-2-pow-53-plus-1.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/ts-float.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/t-not-string.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/t-not-object.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/t-duplicate-key.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/pp-4097-bytes.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/t-2049-bytes.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/duplicate-top-level-key.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/larger-than-8-kib.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/not-json.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/sig-other-message.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.sig"
+    },
+    {
+      "file": "invalid/sig-other-key.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.sig"
+    },
+    {
+      "file": "invalid/jwk-extra-ext.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.sig"
+    },
+    {
+      "file": "invalid/sig-der.json",
+      "endpoint": "/__mg/c",
+      "expect": "ic.sig"
+    },
+    {
+      "file": "invalid/renew-missing-jwk.json",
+      "endpoint": "/__mg/c/renew",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/renew-v-1.json",
+      "endpoint": "/__mg/c/renew",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/renew-ts-float.json",
+      "endpoint": "/__mg/c/renew",
+      "expect": "ic.body"
+    },
+    {
+      "file": "invalid/renew-sig-other-ts.json",
+      "endpoint": "/__mg/c/renew",
+      "expect": "ic.sig"
+    }
+  ]
+}

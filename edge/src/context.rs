@@ -554,6 +554,7 @@ pub fn build(f: &Facts<'_>, intel: &Intel) -> Built {
         early_data: early_data(f.raw_headers),
         priority: tier1.and_then(|t| t.priority.clone()),
         accept_encoding_orig: tier1.and_then(|t| t.accept_encoding_orig.clone()),
+        ..Default::default()
     };
 
     // identity: cf_vbot here; clearance and crawler in crate::identity.
@@ -629,6 +630,7 @@ mod tests {
             sensitivity: RouteSensitivity::Critical,
             require_clearance: true,
             fail_closed: true,
+            ..Default::default()
         }
     }
 

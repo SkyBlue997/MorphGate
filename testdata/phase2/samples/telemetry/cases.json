@@ -1,0 +1,293 @@
+{
+  "about": "Telemetry samples, one JSON text per file (the trailing newline is not part of it). t/: the content of the t string of a /__mg/c v2 submission (spec §7.5, §7.6). behavior/: the summary of a behavior report (spec §12.8). report/: POST /__mg/t request bodies (spec §9.4). The single edge-core decoder (spec §15.2) and the SDK both test against them",
+  "expectations": {
+    "ok": "decodes; unknown fields are dropped; for t, ix becomes a mg_core::IxTelemetry within its bounds",
+    "t_rejected": "the whole t is rejected: the submission fails at step 3 (ic.body)",
+    "ix_rejected": "t decodes but its ix does not fit spec §7.6: no IxTelemetry (the submission then has no ix)",
+    "summary_rejected": "the behavior summary does not fit spec §12.8",
+    "report_dropped": "the request is accepted (204) but this report is dropped and counted as invalid",
+    "bad_request": "the request is rejected: 400 mg_bad_request"
+  },
+  "cases": [
+    {
+      "file": "t/valid/hold.json",
+      "expect": "ok"
+    },
+    {
+      "file": "t/valid/single.json",
+      "expect": "ok"
+    },
+    {
+      "file": "t/valid/pow-only.json",
+      "expect": "ok"
+    },
+    {
+      "file": "t/valid/external.json",
+      "expect": "ok"
+    },
+    {
+      "file": "t/valid/empty.json",
+      "expect": "ok"
+    },
+    {
+      "file": "t/valid/env-auto-only.json",
+      "expect": "ok"
+    },
+    {
+      "file": "t/valid/unknown-fields-dropped.json",
+      "expect": "ok"
+    },
+    {
+      "file": "t/valid/bounds.json",
+      "expect": "ok"
+    },
+    {
+      "file": "t/invalid/ix-v-2.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-mode-unknown.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-modality-unknown.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-locale-unknown.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-ks-unknown.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-fallback-unknown.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-sv-invalid.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-sv-17-chars.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-trusted-4.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-act-ms-over-cap.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-act-ms-not-100ms.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-hold-ms-over-cap.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-hold-ms-not-10ms.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-hold-cancels-16.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-hold-offset-out-of-range.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-hold-pressure-negative.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-pre-straight-1-1.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-pre-bucket-32.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-page-vis-during-16.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-pow-impl-unknown.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/ix-not-object.json",
+      "expect": "ix_rejected"
+    },
+    {
+      "file": "t/invalid/not-object.json",
+      "expect": "t_rejected"
+    },
+    {
+      "file": "t/invalid/not-json.json",
+      "expect": "t_rejected"
+    },
+    {
+      "file": "t/invalid/duplicate-key.json",
+      "expect": "t_rejected"
+    },
+    {
+      "file": "t/invalid/nested-17.json",
+      "expect": "t_rejected"
+    },
+    {
+      "file": "t/invalid/larger-than-2048-bytes.json",
+      "expect": "t_rejected"
+    },
+    {
+      "file": "behavior/valid/full.json",
+      "expect": "ok"
+    },
+    {
+      "file": "behavior/valid/minimal.json",
+      "expect": "ok"
+    },
+    {
+      "file": "behavior/valid/unknown-fields-dropped.json",
+      "expect": "ok"
+    },
+    {
+      "file": "behavior/valid/bounds.json",
+      "expect": "ok"
+    },
+    {
+      "file": "behavior/invalid/v-2.json",
+      "expect": "summary_rejected"
+    },
+    {
+      "file": "behavior/invalid/speed-17-counts.json",
+      "expect": "summary_rejected"
+    },
+    {
+      "file": "behavior/invalid/scroll-speed-9-counts.json",
+      "expect": "summary_rejected"
+    },
+    {
+      "file": "behavior/invalid/count-65536.json",
+      "expect": "summary_rejected"
+    },
+    {
+      "file": "behavior/invalid/bucket-32.json",
+      "expect": "summary_rejected"
+    },
+    {
+      "file": "behavior/invalid/area-var-2.json",
+      "expect": "summary_rejected"
+    },
+    {
+      "file": "behavior/invalid/count-negative.json",
+      "expect": "summary_rejected"
+    },
+    {
+      "file": "behavior/invalid/larger-than-2048-bytes.json",
+      "expect": "summary_rejected"
+    },
+    {
+      "file": "report/valid/upstream-challenge.json",
+      "expect": "ok"
+    },
+    {
+      "file": "report/valid/cache-hit.json",
+      "expect": "ok"
+    },
+    {
+      "file": "report/valid/behavior.json",
+      "expect": "ok"
+    },
+    {
+      "file": "report/valid/sw-intercept.json",
+      "expect": "ok"
+    },
+    {
+      "file": "report/valid/key-unavailable.json",
+      "expect": "ok"
+    },
+    {
+      "file": "report/valid/eight-reports.json",
+      "expect": "ok"
+    },
+    {
+      "file": "report/valid/unknown-report-field-dropped.json",
+      "expect": "ok"
+    },
+    {
+      "file": "report/valid/cache-hit-static.json",
+      "expect": "report_dropped"
+    },
+    {
+      "file": "report/invalid/v-2.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/no-reports.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/nine-reports.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/two-upstream-challenge.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/two-cache-hit.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/unknown-kind.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/scope-unknown.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/count-0.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/count-101.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/path-with-query.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/path-513-bytes.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/cache-hit-not-mg.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/key-unavailable-reason-unknown.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/behavior-summary-invalid.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/duplicate-key.json",
+      "expect": "bad_request"
+    },
+    {
+      "file": "report/invalid/larger-than-16-kib.json",
+      "expect": "bad_request"
+    }
+  ]
+}

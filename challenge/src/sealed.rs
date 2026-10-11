@@ -353,15 +353,17 @@ fn cipher(key: &[u8; 32]) -> XChaCha20Poly1305 {
     XChaCha20Poly1305::new(key.into())
 }
 
-/// Step 4 shape checks shared by seal and open: PoW present with the Phase 1
-/// algorithm and at most 32 bits, a 16-byte `ret` hash, `uah` and `ipp`
-/// bound with 16-byte hashes, every other binding absent or 16 bytes. (The
-/// 16-byte nonce is enforced by the native type.)
+/// Step 4 shape checks shared by seal and open: PoW present with a known
+/// algorithm (`sha256-hashcash-v1`, or `-v2` of Phase 2; which one a type
+/// needs, and `k`, are rules of `SealedChallengeClaims::check`, Phase 2 spec
+/// §6.2) and at most 32 bits, a 16-byte `ret` hash, `uah` and `ipp` bound
+/// with 16-byte hashes, every other binding absent or 16 bytes. (The 16-byte
+/// nonce is enforced by the native type.)
 fn has_valid_shape(c: &SealedChallengeClaims) -> bool {
-    let pow_ok = c
-        .pow
-        .as_ref()
-        .is_some_and(|p| p.alg == POW_ALG && p.difficulty <= MAX_POW_BITS);
+    let pow_ok = c.pow.as_ref().is_some_and(|p| {
+        (p.alg == POW_ALG || p.alg == SealedChallengeClaims::POW_ALG_V2)
+            && p.difficulty <= MAX_POW_BITS
+    });
     let hash = |h: &Option<Vec<u8>>| h.as_ref().is_some_and(|v| v.len() == BIND_HASH_LEN);
     let optional_hash = |h: &Option<Vec<u8>>| h.as_ref().is_none_or(|v| v.len() == BIND_HASH_LEN);
     let b = &c.bind;
@@ -392,6 +394,8 @@ fn to_proto(c: &SealedChallengeClaims) -> ProtoClaims {
         pow: c.pow.as_ref().map(|p| ProtoPow {
             alg: p.alg.clone(),
             difficulty: p.difficulty,
+            k: p.k,
+            a11y_difficulty: p.a11y_difficulty,
         }),
         ret: c.ret_hash.clone(),
         bind: Some(ProtoBind {
@@ -402,6 +406,7 @@ fn to_proto(c: &SealedChallengeClaims) -> ProtoClaims {
             tfp: c.bind.tfp.clone(),
             ipa: c.bind.ipa.clone(),
         }),
+        renew_no: c.renew_no,
     }
 }
 
@@ -452,6 +457,8 @@ fn from_proto(
         pow: p.pow.map(|pow| PowParams {
             alg: pow.alg,
             difficulty: pow.difficulty,
+            k: pow.k,
+            a11y_difficulty: pow.a11y_difficulty,
         }),
         ret_hash: p.ret,
         bind: ChallengeBind {
@@ -462,6 +469,7 @@ fn from_proto(
             tfp: bind.tfp,
             ipa: bind.ipa,
         },
+        renew_no: p.renew_no,
     })
 }
 
@@ -504,6 +512,7 @@ mod tests {
             pow: Some(PowParams {
                 alg: POW_ALG.into(),
                 difficulty: 16,
+                ..PowParams::default()
             }),
             ret_hash: vec![3; 16],
             bind: ChallengeBind {
@@ -511,6 +520,7 @@ mod tests {
                 ipp: Some(vec![5; 16]),
                 ..ChallengeBind::default()
             },
+            renew_no: 0,
         }
     }
 
@@ -545,10 +555,21 @@ mod tests {
             s.seal(&c, "example.com", &rng),
             Err(SealError::Invalid(ClaimsError::InvalidLifetime))
         );
-        let shapes: [fn(&mut SealedChallengeClaims); 9] = [
-            |c| c.site = "shop".into(),
-            |c| c.pow = None,
+        // Phase 2 spec §6.2: the PoW rules are part of `check`, which runs first.
+        for mutate in [
+            (|c| c.pow = None) as fn(&mut SealedChallengeClaims),
             |c| c.pow.as_mut().unwrap().alg = "sha1".into(),
+            |c| c.pow.as_mut().unwrap().k = 1,
+        ] {
+            let mut c = claims();
+            mutate(&mut c);
+            assert_eq!(
+                s.seal(&c, "example.com", &rng),
+                Err(SealError::Invalid(ClaimsError::InvalidPow))
+            );
+        }
+        let shapes: [fn(&mut SealedChallengeClaims); 7] = [
+            |c| c.site = "shop".into(),
             |c| c.pow.as_mut().unwrap().difficulty = 33,
             |c| c.ret_hash = vec![3; 15],
             |c| c.bind.ipp = None,
