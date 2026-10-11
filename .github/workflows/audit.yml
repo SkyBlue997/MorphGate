@@ -1,0 +1,106 @@
+name: Dependency audit
+
+# Known vulnerabilities, licenses and sources of every dependency: Rust
+# (cargo-deny with deny.toml and the RustSec database), Go (govulncheck on
+# both modules) and the Web SDK (pnpm audit). Runs on every pull request and
+# weekly, because new advisories appear without any change here. `make audit`
+# runs the same checks locally.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs (the comment names the
+# release the SHA was taken from); bump SHA and comment together.
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in step with the Makefile's audit target. Both tools come from
+  # their package registries, which verify every download: cargo checks each
+  # crate against the SHA-256 in the crates.io index (--locked uses the
+  # tool's own Cargo.lock), Go checks modules against the checksum database.
+  CARGO_DENY_VERSION: "0.20.2"
+  GOVULNCHECK_VERSION: "v1.8.0"
+
+jobs:
+  rust:
+    name: Rust (cargo-deny)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@3920daf79df8fb8df1dbef6e64563e2901a73745 # branch 1.91 (installs 1.91.1)
+
+      # Caches ~/.cargo/bin, so cargo-deny is built once per version.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: cargo-deny-${{ env.CARGO_DENY_VERSION }}
+
+      - name: Install cargo-deny ${{ env.CARGO_DENY_VERSION }}
+        run: |
+          if [ "$(cargo deny --version 2>/dev/null)" != "cargo-deny ${CARGO_DENY_VERSION}" ]; then
+            cargo install cargo-deny --version "${CARGO_DENY_VERSION}" --locked --force
+          fi
+          cargo deny --version
+
+      - name: cargo deny check
+        run: cargo deny --locked check --hide-inclusion-graph
+
+  go:
+    name: Go (govulncheck)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache-dependency-path: "*/go.sum"
+
+      - name: govulncheck control-plane
+        working-directory: control-plane
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+
+      - name: govulncheck lab
+        working-directory: lab
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+
+  web:
+    name: Web SDK (pnpm audit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+
+      # pnpm version comes from sdk/web/package.json "packageManager".
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: sdk/web/package.json
+
+      # Every dependency, build tools included: the published assets are
+      # built with them. The SDK itself has no runtime dependencies.
+      - name: pnpm audit
+        run: pnpm -C sdk/web audit

@@ -11,7 +11,7 @@ The repository has been tested locally on macOS arm64 and in CI on Ubuntu 24.04 
 | Tool | Requirement |
 |---|---|
 | Rust and Cargo | Rust 1.88 or newer; CI uses 1.91.1 for the main test/build job and separately checks the 1.88 minimum |
-| Go | Go 1.25; also needed by BoringSSL's build-time generators |
+| Go | Go 1.27; also needed by BoringSSL's build-time generators |
 | Native build tools | CMake, a C/C++ compiler, Clang and the libclang shared library for bindgen; on macOS, install the Apple command-line developer tools as well |
 | Node.js | Node 26 matches CI; the SDK declares Node 22 or newer |
 | pnpm | 10.23.0, as pinned in `sdk/web/package.json` |

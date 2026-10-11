@@ -46,6 +46,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `make edge-run` / `make edge-smoke` | Run mg-edge with the dev config; loopback end-to-end smoke test |
 | `make lab-e2e` | Validation Lab end-to-end on loopback: test keys, a signed enforce bundle, Valkey, mg-edge, an origin that checks `MG-Origin-Auth`, and the scenarios (impersonating crawlers, no clearance without JavaScript, route-level monitor and `never_challenge`); not part of `check`, CI runs it |
 | `make lab-egress-check` | Needs a Docker daemon (CI runs it): the Lab allowlist holds at the tool and network-egress layers |
+| `make audit` | Dependency audit, needs the network: `cargo deny check` (`deny.toml`: RustSec advisories, licenses, sources), govulncheck on both Go modules, `pnpm audit` for the Web SDK. Not part of `check`; `.github/workflows/audit.yml` runs it on every PR and weekly |
 
 ## Design docs
 
