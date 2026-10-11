@@ -33,6 +33,7 @@ var (
 	EnvironmentNames = []string{"production", "staging", "test", "dev"}
 	Channels         = []string{"web", "api", "mobile"}
 	Sensitivities    = []string{"low", "medium", "high", "critical"}
+	RouteModes       = []string{"monitor", "enforce"}
 	LimiterKeys      = []string{"ip", "ip_prefix", "asn", "session", "route"}
 	LimiterActions   = []string{"signal", "challenge", "rate_limit", "block"}
 	LimiterModes     = []string{"enforce", "dry_run"}
@@ -239,7 +240,10 @@ type Route struct {
 	RequireClearance bool
 	FailClosed       bool
 	RedactPath       bool
-	Implicit         bool
+	// Mode overrides Site.MonitorOnly for this route: "monitor", "enforce",
+	// or "" to inherit it (spec I-36).
+	Mode     string
+	Implicit bool
 }
 
 // RateLimit is one rate_limits: entry.

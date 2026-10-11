@@ -44,6 +44,17 @@ message Route {
   repeated string paths = 9;     // glob patterns (policy glob syntax) matched against every path view (spec §9.4)
   bool require_clearance = 10;   // CHALLENGE unless a valid clearance token is presented
   bool redact_path = 11;         // events and access records log "/<route name>" instead of the path (tokenized URLs)
+  RouteMode mode = 12;           // monitor / enforce override of SiteBundle.monitor_only (spec I-36)
+}
+
+// Per-route override of the site's monitor switch (spec I-36). When a request
+// matches several routes through different path views (spec §9.4), the
+// strictest wins: ENFORCE > INHERIT > MONITOR. An unknown value makes the
+// bundle invalid.
+enum RouteMode {
+  ROUTE_MODE_INHERIT = 0;        // follow SiteBundle.monitor_only
+  ROUTE_MODE_MONITOR = 1;        // record decisions, enforce nothing
+  ROUTE_MODE_ENFORCE = 2;        // enforce even when SiteBundle.monitor_only is set
 }
 
 message CompiledRule {
@@ -121,7 +132,7 @@ message SiteBundle {
   repeated ProviderConfig providers = 6; // interactive providers: Phase 2 (empty in Phase 1)
   repeated ArtifactRef artifacts = 7;
   repeated string token_key_ids = 8; // clearance key ids: [0] signs, all verify (material: edge credentials)
-  bool monitor_only = 9;         // global monitor switch: record decisions, enforce nothing
+  bool monitor_only = 9;         // site monitor switch: record decisions, enforce nothing (Route.mode overrides it)
   // Optional activation delay for sensitive changes (docs/02 §6): the Edge
   // swaps to this bundle atomically at or after this time. 0 = immediately.
   int64 not_before_ms = 10;

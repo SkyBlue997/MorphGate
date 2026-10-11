@@ -12,7 +12,7 @@ use common::policy::{default_route, eq, field, glob, limiter, route, rule, strin
 use common::{Edge, TestEnv, answered_log, blog_bundle, cf, get, origin_log, sign};
 use mg_challenge::{ClearanceBind, MintParams, TokenKeySet};
 use mg_core::{Net, RiskBand, TokenLevel};
-use mg_proto::v1::{Action, RouteSensitivity as S, SiteBundle};
+use mg_proto::v1::{Action, RouteMode, RouteSensitivity as S, SiteBundle};
 
 const CHROME: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
                       (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -202,6 +202,87 @@ fn monitor_evaluates_and_only_records() {
             .header("mg-client-ip"),
         Some("unknown")
     );
+}
+
+/// Sets the mode of the route `name` (I-36).
+fn with_mode(mut b: SiteBundle, name: &str, mode: RouteMode) -> SiteBundle {
+    let route = b.environments[0]
+        .routes
+        .iter_mut()
+        .find(|r| r.name == name)
+        .unwrap();
+    route.mode = mode as i32;
+    b
+}
+
+/// I-36: a `mode: enforce` route enforces while the site is in monitor;
+/// another spelling of its path still matches it (the strictest mode of the
+/// matched routes applies); the other routes keep recording.
+#[test]
+fn enforce_route_on_a_monitor_site() {
+    let env = TestEnv::new("dec-route-enforce");
+    let edge = start(&env, &with_mode(bundle(true), "admin", RouteMode::Enforce));
+
+    let json = format!("{}Accept: application/json\r\n", cf("198.51.100.50"));
+    let r = get(env.listen, "example.com", "/admin/x", &json);
+    assert_eq!(r.status, 403, "{}", r.head);
+    let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+    assert_eq!(v["error"], "mg_blocked");
+    let line = answered_log(&edge, &r.body);
+    assert!(
+        line.contains(" rule=block-admin action=block dry_run=false "),
+        "{line}"
+    );
+    // The raw view of an encoded slash falls to the (inheriting) default
+    // route, the decoded view to admin: enforced.
+    let r = get(env.listen, "example.com", "/admin%2Fy", &json);
+    assert_eq!(r.status, 403, "{}", r.head);
+    assert!(
+        env.origin.last("/admin").is_none(),
+        "nothing reached the origin"
+    );
+
+    // The other routes still only record: a members page without clearance
+    // is recorded as a challenge and forwarded.
+    let r = get(
+        env.listen,
+        "example.com",
+        "/members/x",
+        &browser("198.51.100.51"),
+    );
+    assert_eq!(r.status, 200, "{}", r.head);
+    let line = origin_log(&env, &edge, "/members/x");
+    assert!(line.contains(" action=challenge dry_run=true "), "{line}");
+}
+
+/// I-36: a `mode: monitor` route only records while the site enforces, but
+/// a path that also matches an enforcing route is enforced.
+#[test]
+fn monitor_route_on_an_enforce_site() {
+    let env = TestEnv::new("dec-route-monitor");
+    let edge = start(&env, &with_mode(bundle(false), "admin", RouteMode::Monitor));
+
+    let r = get(
+        env.listen,
+        "example.com",
+        "/admin/x",
+        &browser("198.51.100.60"),
+    );
+    assert_eq!(r.status, 200, "{}", r.head);
+    let line = origin_log(&env, &edge, "/admin/x");
+    assert!(
+        line.contains(" rule=block-admin action=block dry_run=true "),
+        "{line}"
+    );
+    // The raw view `/admin%2Fy` matches only the default route, which
+    // inherits the site's enforce: max(monitor, inherit) enforces.
+    let json = format!("{}Accept: application/json\r\n", cf("198.51.100.61"));
+    let r = get(env.listen, "example.com", "/admin%2Fy", &json);
+    assert_eq!(r.status, 403, "{}", r.head);
+    // Other routes enforce as before.
+    let r = get(env.listen, "example.com", "/members/x", &json);
+    assert_eq!(r.status, 403, "{}", r.head);
+    assert!(r.header("mg-challenge").is_some(), "{}", r.head);
 }
 
 /// Enforce: BLOCK and RATE_LIMIT answers (§9.9), JSON or HTML by request
