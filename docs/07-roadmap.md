@@ -24,7 +24,7 @@ P0 (1-2w) --> P1 (4-6w) --> P2 (5-7w) --> P3 (5-7w)        main line: 15-22 week
 
 Phase 4 / 5 的单项可在 Phase 1 稳定后按需插入（例如某站点改用境内 CDN 时提前做对应 UpstreamProfile），不必等 Phase 3 结束。
 
-**当前进度**（2026-10-12）：Phase 0 完成；Phase 1 的实现阶段 1–3 已完成，所有者站点自 2026-09-28 起经 Cloudflare 以 monitor 模式运行，验收收尾由所有者进行（见 [Phase 1 实现进度](#phase-1-实现进度)）；Phase 2 的规格与实现阶段 1–2 已合入，阶段 3 进行中（见 [Phase 2 实现进度](#phase-2-实现进度)）。
+**当前进度**（2026-10-12）：Phase 0 完成；Phase 1 的实现阶段 1–3 已完成，所有者站点自 2026-09-28 起经 Cloudflare 以 monitor 模式运行，验收收尾由所有者进行（见 [Phase 1 实现进度](#phase-1-实现进度)）；Phase 2 的规格与实现阶段 1–3 已合入（见 [Phase 2 实现进度](#phase-2-实现进度)），接下来是所有者按 Phase 2 规格 §19 逐步启用。
 
 ## Phase 0：基础（1–2 周）
 
@@ -161,16 +161,16 @@ Phase 2 的验收口径（证据与责任人见 [规格 §20](impl/phase2-spec.m
 | 规格 | 12 个工作包、决定 D-38..D-70、全部跨组件契约、三份独立评审；契约文件先行落地 | 完成（PR #19、#20） |
 | 实现阶段 1 | 7 个并行工作包：`mg-core` Provider 与交互评估（R4）、`mg-challenge` 原语（R5）、`mg-edge-core` 状态 / 事件 / 配置包（C5）与出站 HTTP（C6）、Go 站点 YAML 与 `mgctl turnstile`（G4）、近线 worker（N1）、Web SDK v1（W2） | 完成（PR #22–#30） |
 | 实现阶段 2 | `mg-edge` 依次接线：交互式与 SDK manifest v2 切换（E2a）、证明 / 刷新 / 遥测 / 观测（E2b）、Turnstile（E2c） | 完成（PR #32–#37） |
-| 实现阶段 3 | Validation Lab 的 Phase 2 场景与近线端到端（L2）；设计文档勘误、威胁模型 v1、ADR-0011、隐私说明模板（D2） | 进行中 |
+| 实现阶段 3 | Validation Lab 的 Phase 2 场景与近线端到端（L2）；设计文档勘误、威胁模型 v1、ADR-0011、隐私说明模板（D2） | 完成（PR #39、#40） |
 | 所有者运行步骤 | Phase 1 验收收尾、本机 Valkey、模板接入、分路由启用证明与交互式、辅助技术实测、隐私说明、可选 Turnstile（[规格 §19](impl/phase2-spec.md#19-所有者运维手册代码之外)） | 未开始 |
 
 | 验收项 | 当前状态 |
 |---|---|
-| 重放、拼接、篡改的 C 100% 拒绝；跨客户端提交（已绑定的 C）100% 拒绝；并发双提交只有一个进入签发 | `edge/tests` 回环用例通过（WP-E2a）；Lab 否定性场景随 WP-L2 |
+| 重放、拼接、篡改的 C 100% 拒绝；跨客户端提交（已绑定的 C）100% 拒绝；并发双提交只有一个进入签发 | `edge/tests` 回环用例通过（WP-E2a）；`make lab-e2e` 的 `phase2-submissions` 通过（WP-L2） |
 | Turnstile 绑定失败 100% 拒绝；故障时回退且不放行；三条路径在 CI 中覆盖 | mock siteverify 用例通过（WP-C6、WP-E2c）；SDK 回退测试通过（WP-W2） |
-| `deny_countries` 中的国家从不得到 Turnstile | 选择函数真值表与 Edge 测试通过；Lab 场景随 WP-L2 |
+| `deny_countries` 中的国家从不得到 Turnstile | 选择函数真值表与 Edge 测试通过；`make lab-e2e` 的 `phase2-challenge-page` 通过 |
 | 人类交互式比例 < 0.1%；按住中位 < 4 s，`pow_a11y` 中位 < 10 s；键盘与读屏可完成 | 指标与事件已提供，待所有者的 shadow 数据与辅助技术实测 |
-| 近线事件到 verdict p95 < 10 s | 待 `lab-e2e`（WP-L2）与生产 `mg_nl_lag_seconds` |
+| 近线事件到 verdict p95 < 10 s | `make lab-e2e` 中 verdict 在触发后 ≤ 10 s 出现（WP-L2）；生产待 `mg_nl_lag_seconds` |
 | 附加延迟 p99 < 5 ms（含证明校验）；升级二进制不改变线上行为 | `schema_version = 1` 的 Edge 测试通过；生产数据待所有者 |
 
 ## Phase 3：AI Agent 治理与控制面（5–7 周）

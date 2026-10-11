@@ -61,7 +61,7 @@ The design documents describe the target design for every phase and mark what Ph
 | [Phase 2 implementation spec](docs/impl/phase2-spec.md) | Phase 2 work packages and contracts: interactive challenges, session keys and `MG-Proof`, token v2 and refresh, telemetry, Turnstile, the near-line worker, events and metrics, and the owner's runbook; the integrator rulings at the top override the body |
 | [Phase 2 status](docs/impl/phase2-status.md) | What each work package delivered, rulings, acceptance status, the owner's next steps and open items |
 
-Phase 0, Phase 1 and Phase 2 stages 1–2 are merged to `master`, with all CI jobs passing; Phase 2 stage 3 (Validation Lab scenarios, documentation) is in progress. See [Getting started](docs/getting-started.md) to build from source, and [CLAUDE.md](CLAUDE.md) for development commands and repository layout.
+Phase 0, Phase 1 and Phase 2 (stages 1–3) are merged to `master`, with all CI jobs passing. See [Getting started](docs/getting-started.md) to build from source, and [CLAUDE.md](CLAUDE.md) for development commands and repository layout.
 
 ## License
 
