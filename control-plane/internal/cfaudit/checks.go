@@ -212,14 +212,15 @@ func failed(l Level) Status {
 	return StatusWarn
 }
 
-// permissionHints name the read permission an endpoint needs. Cloudflare's
-// exact permission names still have to be confirmed per account (docs/08
-// §2.10), so they are hints, not a contract.
+// permissionHints name the read permission an endpoint needs, as confirmed
+// on a Free zone in 2026-10 (adapters/cloudflare/README.md, "审计 token 的权限").
+// Cloudflare may rename permissions, so they are hints, not a contract.
 var permissionHints = []struct{ fragment, hint string }{
 	{"/rulesets/phases/" + cfapi.PhaseLateTransform, "Transform Rules Read"},
 	{"/rulesets/phases/" + cfapi.PhaseCacheSettings, "Cache Rules Read"},
 	{"/rulesets/phases/", "Zone WAF Read"},
-	{"/managed_headers", "Transform Rules Read"},
+	// Managed Transforms are gated by Bot Management, not Transform Rules.
+	{"/managed_headers", "Bot Management Read"},
 	{"/bot_management", "Bot Management Read"},
 	{"/origin_tls_client_auth", "SSL and Certificates Read"},
 	{"/cfd_tunnel/", "Cloudflare Tunnel Read (account)"},

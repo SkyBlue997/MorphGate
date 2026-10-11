@@ -252,6 +252,53 @@ fn every_family_is_served_with_its_labels() {
     }
 }
 
+/// The sum of every `site="blog"` series of `family`.
+fn site_total(text: &str, family: &str) -> f64 {
+    text.lines()
+        .filter(|l| l.starts_with(&format!("{family}{{")) && l.contains("site=\"blog\""))
+        .filter_map(|l| l.rsplit_once(' ')?.1.parse::<f64>().ok())
+        .sum()
+}
+
+/// I-42: missing signals are counted for exactly the requests that
+/// `mg_requests_total` counts, so their ratio is the §17 / `cf audit`
+/// check 18 missing rate. `/__mg/*` requests and requests answered before
+/// the decision step count in neither.
+#[test]
+fn missing_signals_count_with_requests() {
+    let env = TestEnv::new("metrics-missing");
+    env.write_lkg("blog", &sign(&blog_bundle(1)));
+    let edge = env.spawn(&env.write_config(&env.default_config("")));
+    edge.wait_metric("mg_config_version{site=\"blog\"}", 10, |v| v == 1.0);
+    let rtt = "mg_upstream_signal_missing_total{profile=\"cloudflare\",signal=\"rtt\"}";
+    let before = edge.metrics_text();
+    let rtt0 = common::metric_value(&before, rtt).unwrap_or(0.0);
+    let requests0 = site_total(&before, "mg_requests_total");
+
+    // cf() forwards no x-mg-cf-* header: every Tier 0 signal is missing.
+    let ip = "198.51.100.42";
+    for (path, headers, status) in [
+        ("/", cf(ip), 200),
+        ("/__mg/nothing", cf(ip), 404),
+        (
+            "/",
+            format!("{}CF-Worker: attacker.example\r\n", cf(ip)),
+            403,
+        ),
+    ] {
+        let r = get(env.listen, "example.com", path, &headers);
+        assert_eq!(r.status, status, "{path}: {}\n{}", r.head, r.body);
+    }
+
+    // Recorded when the request is logged, after the response is sent.
+    edge.wait_metric(rtt, 10, |v| v >= rtt0 + 1.0);
+    let after = edge.metrics_text();
+    let rtt1 = common::metric_value(&after, rtt).unwrap_or(0.0);
+    let requests1 = site_total(&after, "mg_requests_total");
+    assert_eq!(requests1 - requests0, 1.0, "{after}");
+    assert_eq!(rtt1 - rtt0, 1.0, "{after}");
+}
+
 // ---------------------------------------------------------------------------
 // An origin whose connections are delayed by the kernel: its accept queue is
 // filled with idle connections, so the Edge's SYN is dropped and only

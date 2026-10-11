@@ -55,6 +55,7 @@
 | I-39 | 2026-10-11，Phase 1 之后的增补（真实站点反馈）：fetch 被挑战时的标准入口 `GET` / `HEAD /__mg/v?ret=<返回路径>`。Phase 1 的脚本无法就地解 JSON Challenge，此前站点要自己写一个"验证"中转页。`ret` 取唯一一个 `ret` 参数，按 `%XX` 解码（`+` 不变），必须全是可见 ASCII 并通过 §6.4 校验，否则用 `fallback_ret`。该请求按"导航到 `ret`"做决策：路由按 `ret` 的路径选择，上下文的路径与查询串取 `ret` 的，其余（客户端、头、凭证）取请求本身的。§9.9 执行层上，已执行的 BLOCK、RATE_LIMIT（含 `hard.client_ip_unknown`）照常；其余结果（放行、monitor、`never_challenge`、425、任何类型的 CHALLENGE）一律改为 `pow` Challenge，事件中记为 `action = challenge`、`challenge_type = pow`、`rule_id = edge.verify`、`dry_run = false`；客户端 IP 未知时 429、不签发 C（D-23）。C 的 `route_class` 为 `ret` 的路由，难度按风险等级，`ret` 封入 C，解出后 303 回到 `ret`。已有凭证也照样挑战：页面只在 fetch 被挑战之后才来这里，而 `pow` 级凭证满足 Phase 1 所有非交互挑战（D-20）。monitor 站点同样挑战：这里从不转发源站。站点没有生效的配置包（bootstrap-open 等）时 404，其他方法 405 `Allow: GET, HEAD`；http 访客 308 到 `https://<host>/__mg/v?...` 本身。不用 `/__mg/r`：它留给 Phase 2 的凭证静默刷新（02 §3）。SDK 提供 `MorphGate.fetch()`（遇到 JSON Challenge 时跳转）、`verify()` 与 `verifyUrl()`；同一页面路径 60 秒内只跳一次（sessionStorage `mg_verify:<ret>`），没有存储时不跳 | §9.9、§10.1、§10.5、§11 |
 | I-40 | 2026-10-11，Phase 1 之后的增补（真实站点反馈）：源站头 `MG-Client-IP-Prefix`，即 Edge 计数与绑定所用的客户端实体：IPv4 为 `<地址>/32`，IPv6 为所在 /64（`mg_core::Net::entity_of`，如 `2001:db8:abcd:12::/64`），IPv4 映射的 IPv6 地址按 IPv4 处理；客户端 IP 未知时为字面量 `unknown`。每个转发的请求都带（与 `MG-Client-IP` 同为无条件写入），客户端自带的同名头与其他 `MG-*` 头一样在转发前删除，并列入 I-38 的签名头（紧跟 `mg-client-ip`）。用途：源站自己的限速、封禁或审计按 IPv6 /64 聚合时与 Edge 口径一致，不必各自解析地址；同一 /64 内轮换地址的客户端在源站看来是同一实体 | §9.9 |
 | I-41 | 2026-10-11，Phase 1 之后的修正（真实站点反馈）：`mg-edge.service` 的 `ExecReload=` 第一行改为不读凭据的 `mg-edge --version`，`--check-config` 移到第二行，仍在发 `SIGQUIT` 之前，失败时旧进程继续服务。原因：systemd 255（Ubuntu 24.04）只给第二行起的 `ExecReload=` 准备 `$CREDENTIALS_DIRECTORY`，单元有挂载命名空间时第一行看到的 `/run/credentials` 不可访问，第一行的 `--check-config` 必然以 Permission denied 失败，reload 永远做不成（只能 `restart`，连接会断开片刻）；systemd 256 起每一行都有凭据。凭据更新（§17 第 5 步各轮换步骤里的"更新 credential 并 reload"）何时生效：systemd 255 在第二行起重新装载凭据，reload 即生效；systemd 260 起靠单元里的 `RefreshOnReload=credentials`；systemd 256–259 只保留启动时装载的凭据，须改用 `systemctl restart mg-edge`。`edge/tests/shipped_configs.rs::reload_checks_the_configuration_first` 检查行序与 `RefreshOnReload=` |
+| I-42 | 2026-10-11，Phase 1 之后的修正（真实站点反馈）：`mg_upstream_signal_missing_total` 只为计入 `mg_requests_total` 的请求（到达决策步骤的请求，§13.7）计数，在请求结束记录指标时与 `mg_requests_total` 一起增加。此前它在头部解析后就计数，`/__mg/*` 请求（SDK 文件、挑战提交、保留路径）和在决策之前应答的请求（外部 Worker 403、站点不可用 503）计入分子，却不在 `mg_requests_total` 这个分母里，§17 与 `mgctl cf audit` 第 18 项的缺失率因此偏高。`/__mg/v` 按导航决策，两边都计入。`mg_cf_connecting_ip_missing_total` 是"应恒为 0"的计数，不是比率的分子，计数位置不变。`edge/tests/metrics.rs::missing_signals_count_with_requests` 检查口径 | §9.3、§13.7、§14.3 |
 
 ## 0. 范围、决定与已落地文件
 
@@ -1574,7 +1575,7 @@ Pingora 0.9 的 `Server::run_forever()` 在守护进程模式（`-d`，systemd �
 4. 认证通过的 `cloudflare` 请求：只按下表解析**精确的连字符小写名**；下划线变体永不解析。
 5. 从请求中删除所有命中头族的头（包括认证通过时 Cloudflare 添加的），然后为源站重新写入 §9.9 规定的头。`direct_tls`（或未认证）请求只要带了任一头族，计一次 `mg_upstream_headers_stripped_total{profile}`。
 
-**`cloudflare` 解析表**（值非法按缺失处理；"告警"指计入 `mg_upstream_signal_missing_total{profile="cloudflare", signal}`，`signal` 取头名去掉 `x-mg-cf-` 前缀）：
+**`cloudflare` 解析表**（值非法按缺失处理；"告警"指计入 `mg_upstream_signal_missing_total{profile="cloudflare", signal}`，`signal` 取头名去掉 `x-mg-cf-` 前缀；只有到达决策步骤的请求才计数，I-42）：
 
 | 头 | 校验 | 目标 | 缺失 / 非法时 |
 |---|---|---|---|
@@ -2342,7 +2343,7 @@ User-Agent: morphgate-dev-tooling
 | `mg_upstream_headers_stripped_total` | counter | profile | |
 | `mg_cf_connecting_ip_missing_total` | counter | site | |
 | `mg_cf_foreign_worker_total` | counter | site | 新增 |
-| `mg_upstream_signal_missing_total` | counter | profile, signal | |
+| `mg_upstream_signal_missing_total` | counter | profile, signal | 只计到达决策步骤的请求，与 `mg_requests_total` 同口径（I-42） |
 | `mg_token_verify_total` | counter | result | |
 | `mg_ratelimit_exceeded_total` | counter | limiter | |
 | `mg_crawler_verify_total` | counter | method, result | |

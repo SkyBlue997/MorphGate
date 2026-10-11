@@ -403,8 +403,10 @@ func TestAuditForbiddenIsManual(t *testing.T) {
 		}
 	}
 	if !strings.Contains(r.detail("ai_bot_policy"), `"Bot Management Read"`) ||
+		!strings.Contains(r.detail("remove_visitor_ip_headers"), `"Bot Management Read"`) ||
 		!strings.Contains(r.detail("origin_protection"), "Cloudflare Tunnel Read") {
-		t.Errorf("permission hints: %s / %s", r.detail("ai_bot_policy"), r.detail("origin_protection"))
+		t.Errorf("permission hints: %s / %s / %s", r.detail("ai_bot_policy"),
+			r.detail("remove_visitor_ip_headers"), r.detail("origin_protection"))
 	}
 	if r.status("cache_bypass_mg") != StatusPass || r.code != cli.ExitOK || r.rep.Errors != 0 {
 		t.Errorf("readable checks or exit wrong: %s exit %d errors %d", r.status("cache_bypass_mg"), r.code, r.rep.Errors)
