@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -129,8 +130,12 @@ func (r *runner) bundleSign(args []string) int {
 		return cli.ExitFailed
 	}
 	var sb morphgatev1.SiteBundle
-	if err := proto.Unmarshal(data, &sb); err != nil || sb.SchemaVersion != bundle.SchemaVersion || !sitecfg.SitePattern.MatchString(sb.SiteId) {
-		r.errf(cmd, "%s is not a schema_version %d SiteBundle (%v)", *in, bundle.SchemaVersion, err)
+	if err := proto.Unmarshal(data, &sb); err != nil || !sitecfg.SitePattern.MatchString(sb.SiteId) {
+		r.errf(cmd, "%s is not a SiteBundle (%v)", *in, err)
+		return cli.ExitFailed
+	}
+	if err := bundle.CheckSchema(&sb); err != nil {
+		r.errf(cmd, "%s: %v", *in, err)
 		return cli.ExitFailed
 	}
 	if !r.preflightAudit(cmd) {
@@ -252,6 +257,10 @@ func (r *runner) bundleVerify(args []string) int {
 		fmt.Fprintf(w, "never challenge %s\n", strings.Join(sum.NeverChallenge, ","))
 	}
 	fmt.Fprintf(w, "hosts %s  listeners %s  token kids %s\n", strings.Join(sum.Hosts, ","), strings.Join(sum.AllowedListeners, ","), strings.Join(sum.TokenKeyIDs, ","))
+	fmt.Fprintf(w, "schema_version %d\n", sum.SchemaVersion)
+	if sum.Phase2 != nil {
+		printPhase2(w, sum.Phase2)
+	}
 	for _, e := range sum.Environments {
 		fmt.Fprintf(w, "env %-10s hosts %s  routes %d  rules %d  rate limits %d\n", e.Name, strings.Join(e.Hosts, ","), e.Routes, e.Rules, e.RateLimits)
 	}
@@ -357,4 +366,44 @@ func (r *runner) auditVerify(args []string) int {
 	}
 	fmt.Fprintf(r.env.Stdout, "ok: %s: %d record(s), last hash %s\n", path, count, last)
 	return cli.ExitOK
+}
+
+// printPhase2 prints the Phase 2 part of `mgctl bundle verify` (spec §16):
+// the interactive configuration, the providers (public fields only), the
+// proof-required and min_level routes and the help and privacy paths.
+func printPhase2(w io.Writer, p *bundle.Phase2Summary) {
+	ix := p.Interactive
+	fmt.Fprintf(w, "interactive enabled %v  pow_bits %d/%d/%d/%d x %d  a11y_bits %d  escalate_after %d  scoring %s",
+		ix.Enabled, ix.PowBits[0], ix.PowBits[1], ix.PowBits[2], ix.PowBits[3], ix.PowK, ix.A11yBits, ix.EscalateAfter, ix.ScoringMode)
+	if ix.ScoringMode == "enforce" {
+		fmt.Fprintf(w, " (t_pass %g, t_block %g)", ix.TPass, ix.TBlock)
+	}
+	fmt.Fprintf(w, "  min_pow_ms %d  a11y_min_ms %d\n", ix.MinPowMS, ix.A11yMinMS)
+	for _, pr := range p.Providers {
+		routes := "all routes"
+		if len(pr.Routes) > 0 {
+			routes = "routes " + strings.Join(pr.Routes, ",")
+		}
+		deny := "none"
+		if len(pr.DeniedCountries) > 0 {
+			deny = strings.Join(pr.DeniedCountries, ",")
+		}
+		fmt.Fprintf(w, "provider %s enabled %v  sitekey %s  hostnames %s  %s  selection %s  mode %s  timeout_ms %d  fallback %s  deny_countries %s\n",
+			pr.ID, pr.Enabled, pr.Sitekey, strings.Join(pr.Hostnames, ","), routes, pr.Selection, pr.Mode, pr.TimeoutMS, pr.Fallback, deny)
+	}
+	if len(p.ProofRequired) > 0 {
+		fmt.Fprintf(w, "proof required %s\n", strings.Join(p.ProofRequired, ","))
+	}
+	if len(p.MinLevels) > 0 {
+		routes := slices.Sorted(maps.Keys(p.MinLevels))
+		for i, k := range routes {
+			routes[i] = k + "=" + p.MinLevels[k]
+		}
+		fmt.Fprintf(w, "min_level %s\n", strings.Join(routes, ","))
+	}
+	fmt.Fprintf(w, "help_path %s  privacy_path %s  default_lang %s  refresh %v  telemetry_behavior %v\n",
+		p.HelpPath, p.PrivacyPath, p.DefaultLang, p.Refresh, p.TelemetryBehavior)
+	if ix.ScoringMode == "enforce" {
+		fmt.Fprintf(w, "reminder: %s\n", bundle.ScoringEnforceReminder)
+	}
 }

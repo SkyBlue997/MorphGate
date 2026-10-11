@@ -59,19 +59,29 @@ func TestMinimalSiteDefaults(t *testing.T) {
 	want := &Site{
 		Version: 1, ID: "shop", Profile: "direct_tls", Hosts: []string{"shop.example.test"},
 		AllowedListeners: []string{"public-tls"}, MonitorOnly: true,
-		Token:     Token{ActiveKID: "shop-t-20260927"},
-		Clearance: Clearance{TTLInvisibleS: 1800, TTLPowS: 1800, SessionMaxS: 86400, CTPShadow: true},
+		Token: Token{ActiveKID: "shop-t-20260927"},
+		Clearance: Clearance{TTLInvisibleS: 1800, TTLPowS: 1800, SessionMaxS: 86400, CTPShadow: true,
+			// Phase 2 defaults (spec §10.2); refresh_max_pow_s = 2 x ttl_pow_s.
+			TTLInteractiveS: 1800, TTLInteractiveA11yS: 900, TTLInteractiveExtS: 1800,
+			RefreshMaxInteractiveS: 14400, RefreshMaxExtS: 7200, RefreshMaxPowS: 3600},
 		Challenge: Challenge{TTLS: 120, PowBits: PowBits{14, 16, 18, 20}, FallbackRet: "/", MaxFailures: 5,
-			FailureWindowS: 600, Submit: Rate{30, 60, 10}, Issue: Issue{60, 600, 3600}},
+			FailureWindowS: 600, Submit: Rate{30, 60, 10}, Issue: Issue{60, 600, 3600},
+			DefaultLang: "zh-CN", HelpPath: "/", PrivacyPath: "/",
+			Interactive: Interactive{PowBits: PowBits{14, 16, 18, 19}, PowK: 8, A11yBits: 17, EscalateAfter: 2,
+				ScoringMode: "shadow", A11yMinMS: 2000, Issue: Rate{30, 600, 20}, Renew: Rate{30, 600, 10},
+				A11yIssue: A11yIssue{6, 120, 3600}}},
 		Scoring: Scoring{ThetaC: 0.4, Kappa: 0, Z0: map[string]float64{"low": -2.197, "medium": -1.735, "high": -1.386, "critical": -1.099},
 			FamilyModes: map[string]string{"edge_tls": "shadow"}, Weights: map[string]float64{}, HMin: -4.0, RulesetVersion: "v1"},
 		Crawlers:      Crawlers{DefaultAction: "allow", Purposes: map[string]string{}},
-		Events:        Events{AllowSampleRate: 0.1, AccessLog: true, Stream: true},
+		Events:        Events{AllowSampleRate: 0.1, AccessLog: true, Stream: true, ScannerBaitsBuiltin: true},
 		OriginHeaders: OriginHeaders{Scores: true, Reasons: false, Session: true},
 		Environments: []Environment{{
 			Name: "production", Hosts: []string{"shop.example.test"},
-			Routes: []Route{{Name: "default", Paths: []string{"/**"}, Channel: "web", Sensitivity: "low", Implicit: true}},
+			Routes: []Route{{Name: "default", Paths: []string{"/**"}, Channel: "web", Sensitivity: "low", Implicit: true, Proof: "off"}},
 		}},
+	}
+	if s.SchemaVersion() != 1 || len(s.Phase2Keys) != 0 {
+		t.Errorf("minimal site: schema_version %d, Phase 2 keys %v", s.SchemaVersion(), s.Phase2Keys)
 	}
 	s.File, s.Dir, s.Raw = "", "", nil
 	if !reflect.DeepEqual(s, want) {
@@ -206,7 +216,7 @@ func TestValidationRules(t *testing.T) {
 		{"signal weight underflows float32", fullYAML, "weight: 1.5", "weight: 1e-50", "must be greater than 0"},
 		{"signal weight high", fullYAML, "weight: 1.5", "weight: 2.5", "must be between 0 and 2"},
 		{"signal without weight", fullYAML, "{action: signal, weight: 1.5}", "{action: signal}", "weight: required"},
-		{"interactive limiter", fullYAML, "type: pow}", "type: interactive}", `"interactive" is not one of invisible, pow`},
+		{"unknown limiter challenge type", fullYAML, "type: pow}", "type: captcha}", `"captcha" is not one of invisible, pow, interactive`},
 		{"type on block", fullYAML, "{action: challenge, type: pow}", "{action: block, type: pow}", `unknown key "type"`},
 		{"bad on_exceed", fullYAML, "{action: signal, weight: 1.5}", "{action: tarpit}", `"tarpit" is not one of signal, challenge, rate_limit, block`},
 		{"retry after too long", fullYAML, "retry_after_s: 60}", "retry_after_s: 86401}", "retry_after_s: must be between 0 and 86400"},
@@ -535,11 +545,12 @@ func (x *xorshift) next() uint64 {
 // §2.4 item 3: ≥ 10,000 deterministic random variations of a valid site
 // return diagnostics, never panic.
 func TestParserNeverPanics(t *testing.T) {
-	seed := []byte(read(t, fullYAML))
+	// The Phase 1 full site and the Phase 2 golden site (§2.4 item 9).
+	seeds := [][]byte{[]byte(read(t, fullYAML)), []byte(read(t, "../../testdata/sites/golden/site-phase2.yaml"))}
 	tokens := [][]byte{[]byte("&a "), []byte("*a"), []byte("{"), []byte("["), []byte(": "), []byte("\n  - "), []byte("!!binary "), []byte("~"), []byte("0x1f"), []byte("<<: "), []byte("\t")}
 	x := xorshift(0x2545f4914f6cdd1d)
-	for i := 0; i < 10_000; i++ {
-		b := bytes.Clone(seed)
+	for i := 0; i < 20_000; i++ {
+		b := bytes.Clone(seeds[i%2])
 		for range 1 + x.next()%3 {
 			if len(b) == 0 {
 				break

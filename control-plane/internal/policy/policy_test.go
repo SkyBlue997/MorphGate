@@ -244,9 +244,10 @@ func TestSemanticWarnings(t *testing.T) {
 	}
 	requireDiag(t, diags, `warning: rule "old": expires_at: rule expired at 2020-01-01T00:00:00Z`)
 	requireDiag(t, diags, `warning: rule "zero": rollout: rollout 0 means the rule never applies`)
-	requireDiag(t, diags, `test.yaml:4:63: warning: rule "phase2": params.type: interactive challenges arrive in Phase 2; the Phase 1 Edge runs this challenge as pow (D-08)`)
-	if len(diags) != 3 {
-		t.Errorf("want 3 warnings, got %v", diagStrings(diags))
+	// Phase 2: whether interactive runs as pow depends on the site's
+	// challenge.interactive.enabled, so only the bundle builder warns (D-08).
+	if len(diags) != 2 {
+		t.Errorf("want 2 warnings, got %v", diagStrings(diags))
 	}
 }
 
@@ -316,20 +317,21 @@ func TestMissingFieldWarnings(t *testing.T) {
 		requireDiag(t, diags, `rule "ja4": expr: tls.ja4.value is always MISSING under the direct_tls profile (JA4 is a Phase 1 spike only)`)
 	})
 
-	// Spec §4.4: identity.proof (Phase 2) and identity.agent (Phase 3) are
-	// always MISSING under both Phase 1 profiles.
+	// Phase 1 spec §4.4: identity.agent (Phase 3) is always MISSING under
+	// both profiles. Phase 2 spec §4.2: identity.proof no longer is (it is
+	// MISSING on exempt navigations only), so it gets no warning.
 	t.Run("phase 2 and 3 identities", func(t *testing.T) {
 		const later = `policies:
   - {id: proof, phase: bot, expr: 'route.name == "login" && !identity.proof.valid', action: challenge}
+  - {id: proof-present, phase: bot, expr: 'identity.proof.present && !identity.proof.replayed', action: challenge}
   - {id: agent, phase: identity, expr: 'identity.agent.id != ""', action: allow}
   - {id: agent-guarded, phase: identity, expr: 'has(identity.agent) && identity.agent.grant_id != ""', action: allow}
 `
 		for _, profile := range CheckedProfiles {
 			_, diags := checkSource(t, Options{}, "profile: "+profile+"\n"+later)
-			if got := rulesWithDiags(diags, missing); !slices.Equal(got, []string{"agent", "proof"}) {
+			if got := rulesWithDiags(diags, missing); !slices.Equal(got, []string{"agent"}) {
 				t.Errorf("%s: warned rules = %v\n  %s", profile, got, strings.Join(diagStrings(diags), "\n  "))
 			}
-			requireDiag(t, diags, `rule "proof": expr: identity.proof.valid is always MISSING under the `+profile+` profile (proof of possession arrives in Phase 2)`)
 			requireDiag(t, diags, `rule "agent": expr: identity.agent.id is always MISSING under the `+profile+` profile (agent identities arrive in Phase 3); comparisons on it evaluate to unknown, guard them with has(identity.agent)`)
 		}
 	})

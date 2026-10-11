@@ -127,13 +127,11 @@ func (c *Compiler) Check(rules []*Rule) ([]*CheckedRule, Diagnostics) {
 
 func (c *Compiler) checkSemantics(r *Rule, diags *Diagnostics) {
 	if r.Action == "challenge" {
-		t, ok := r.Params["type"]
-		switch {
-		case ok && !slices.Contains(ChallengeTypes, t):
+		// Whether an interactive challenge runs as interactive depends on the
+		// site (challenge.interactive.enabled, Phase 2 spec §5.1): the bundle
+		// builder warns when it runs as pow (D-08).
+		if t, ok := r.Params["type"]; ok && !slices.Contains(ChallengeTypes, t) {
 			diags.errorf(r.File, r.posOf("params"), r.ID, "params.type", "%q is not one of %s", t, strings.Join(ChallengeTypes, ", "))
-		case t == "interactive":
-			// D-08: Phase 1 has no interactive challenge.
-			diags.warnf(r.File, r.posOf("params"), r.ID, "params.type", "interactive challenges arrive in Phase 2; the Phase 1 Edge runs this challenge as pow (D-08)")
 		}
 	}
 	if r.ExpiresAt != nil && !r.ExpiresAt.After(c.opts.Now()) {
@@ -186,6 +184,12 @@ func (c *Compiler) compileExpr(r *Rule, diags *Diagnostics) *CheckedRule {
 	}
 	c.checkAvailability(r, refs, diags)
 	checkCorroboration(r, ast.NativeRep().Expr(), refs, diags)
+	nerr = len(diags.Errors())
+	checkNavigation(r, refs, diags)
+	checkProofBlock(r, refs, diags)
+	if len(diags.Errors()) > nerr {
+		return nil
+	}
 	fields := longestPaths(append(slices.Clone(refs.reads), refs.tests...))
 	return &CheckedRule{Rule: r, AST: ast, Cost: cost, Fields: fields, Lists: refs.lists, IR: ir, ExprIR: exprIR}
 }

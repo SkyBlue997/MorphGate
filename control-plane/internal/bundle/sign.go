@@ -52,7 +52,8 @@ func Sign(bundle []byte, key *keys.OwnerKey) (*morphgatev1.SignedBundle, error) 
 }
 
 // Verify checks the signature against the trusted owner keys (by key id) and
-// decodes the SiteBundle, which must have schema_version 1 and a valid site id.
+// decodes the SiteBundle, which must pass CheckSchema (schema_version 1 or 2,
+// Phase 2 spec §3.2) and have a valid site id.
 func Verify(signed *morphgatev1.SignedBundle, trusted []*keys.OwnerPublicKey) (*morphgatev1.SiteBundle, error) {
 	if signed == nil {
 		return nil, errors.New("no signed bundle")
@@ -78,8 +79,8 @@ func Verify(signed *morphgatev1.SignedBundle, trusted []*keys.OwnerPublicKey) (*
 	if err := proto.Unmarshal(signed.Bundle, &sb); err != nil {
 		return nil, fmt.Errorf("signed bytes are not a SiteBundle: %w", err)
 	}
-	if sb.SchemaVersion != SchemaVersion {
-		return nil, fmt.Errorf("schema_version %d, want %d", sb.SchemaVersion, SchemaVersion)
+	if err := CheckSchema(&sb); err != nil {
+		return nil, fmt.Errorf("invalid bundle: %w", err)
 	}
 	if !sitecfg.SitePattern.MatchString(sb.SiteId) {
 		return nil, fmt.Errorf("site_id %q is not a valid site id", sb.SiteId)
@@ -121,6 +122,7 @@ func VerifyFile(data []byte, trusted []*keys.OwnerPublicKey) (*morphgatev1.Signe
 type Summary struct {
 	Site             string            `json:"site"`
 	Version          uint64            `json:"version"`
+	SchemaVersion    uint32            `json:"schema_version"`
 	CreatedAt        string            `json:"created_at"`
 	NotBefore        string            `json:"not_before,omitempty"`
 	KeyID            string            `json:"key_id,omitempty"`
@@ -138,6 +140,7 @@ type Summary struct {
 	Environments     []EnvSummary      `json:"environments"`
 	Artifacts        []ArtifactSummary `json:"artifacts"`
 	Lists            int               `json:"lists"`
+	Phase2           *Phase2Summary    `json:"phase2,omitempty"` // schema_version 2 only
 }
 
 // EnvSummary is one environment in a Summary.
@@ -161,7 +164,7 @@ type ArtifactSummary struct {
 func Summarize(sb *morphgatev1.SiteBundle, bundleBytes []byte, signed *morphgatev1.SignedBundle, file []byte) Summary {
 	sum := sha256.Sum256(bundleBytes)
 	s := Summary{
-		Site: sb.SiteId, Version: sb.Version,
+		Site: sb.SiteId, Version: sb.Version, SchemaVersion: sb.SchemaVersion,
 		CreatedAt:        time.UnixMilli(sb.CreatedAtMs).UTC().Format(time.RFC3339),
 		BundleSHA256:     hex.EncodeToString(sum[:]),
 		SourceDigest:     sb.SourceDigest,
@@ -211,6 +214,9 @@ func Summarize(sb *morphgatev1.SiteBundle, bundleBytes []byte, signed *morphgate
 	}
 	for _, a := range sb.Artifacts {
 		s.Artifacts = append(s.Artifacts, ArtifactSummary{Name: a.Name, SHA256: a.Sha256, Size: a.Size, Version: a.Version})
+	}
+	if sb.SchemaVersion == SchemaVersion2 {
+		s.Phase2 = summarizePhase2(sb)
 	}
 	return s
 }

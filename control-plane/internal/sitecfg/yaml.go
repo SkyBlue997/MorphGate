@@ -47,6 +47,9 @@ func HasErrors(ds []Diagnostic) bool {
 type parser struct {
 	file  string
 	diags []Diagnostic
+	// phase2Keys are the dotted paths of the Phase 2 keys and values seen
+	// (Site.Phase2Keys).
+	phase2Keys []string
 }
 
 func (p *parser) add(sev string, n *yaml.Node, format string, args ...any) {

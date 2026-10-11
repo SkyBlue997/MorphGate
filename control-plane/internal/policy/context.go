@@ -89,6 +89,11 @@ type HTTP struct {
 	// position, so interleaved repeats cannot be reconstructed: detectors and
 	// policies must not depend on the position of a repeated header.
 	HeaderOrder []string `cel:"header_order" json:"header_order"`
+	// Navigation is the navigation-request test (Phase 1 spec §9.9):
+	// Sec-Fetch-Mode: navigate, or no Sec-Fetch-Mode and an Accept that
+	// contains text/html (Phase 2 spec §4.1). The client controls it, so it
+	// is never a security boundary: allow rules may not depend on it.
+	Navigation bool `cel:"navigation" json:"navigation"`
 }
 
 // EdgeTLS is `edge_tls`: weak TLS signals forwarded by Cloudflare as
@@ -114,11 +119,18 @@ type Identity struct {
 type Token struct {
 	Level string `cel:"level" json:"level"` // "" | invisible | pow | interactive | interactive_a11y | interactive_ext:{provider}
 	Age   int64  `cel:"age" json:"age"`     // seconds since issuance; 0 when there is no token
+	Bound bool   `cel:"bound" json:"bound"` // the clearance carries cnf.jkt (Phase 2 spec §4.1)
+	// LevelAge is now - lat in seconds (v1 tokens: now - iat), Phase 2 spec §4.1.
+	LevelAge int64 `cel:"level_age" json:"level_age"`
 }
 
-// Proof is the proof-of-possession result for the request.
+// Proof is the proof-of-possession result for the request (Phase 2 spec
+// §4.1, D-40). Under schema_version 1 bundles and on exempt navigations the
+// whole struct is MISSING (§4.2).
 type Proof struct {
-	Valid bool `cel:"valid" json:"valid"`
+	Present  bool `cel:"present" json:"present"`   // an MG-Proof header was present
+	Valid    bool `cel:"valid" json:"valid"`       // the proof passed every check and matches the clearance's cnf.jkt
+	Replayed bool `cel:"replayed" json:"replayed"` // the jti was used before, or the key exceeded its jti quota
 }
 
 // Agent identifies an authorised AI agent and its grant.

@@ -70,7 +70,7 @@ func (p *parser) parseEnvironments(n *yaml.Node, s *Site) []Environment {
 		}
 		routesNode := o.get("routes")
 		if routesNode != nil {
-			env.Routes = p.parseRoutes(routesNode, o.sub("routes"), env.Hosts)
+			env.Routes = p.parseRoutes(routesNode, o.sub("routes"), env.Hosts, s)
 		}
 		// At most 64 declared routes; the implicit default route the builder
 		// appends is not counted (ruling I-24: 65 in the bundle at most,
@@ -105,10 +105,10 @@ func (p *parser) appendDefaultRoute(n *yaml.Node, path string, routes []Route) [
 		p.errorf(n, "%s.routes: the name \"default\" is reserved for the catch-all route (paths: [\"/**\"], no hosts or methods)", path)
 		return routes
 	}
-	return append(routes, Route{Name: "default", Paths: []string{CatchAllPattern}, Channel: "web", Sensitivity: "low", Implicit: true})
+	return append(routes, Route{Name: "default", Paths: []string{CatchAllPattern}, Channel: "web", Sensitivity: "low", Implicit: true, Proof: "off"})
 }
 
-func (p *parser) parseRoutes(n *yaml.Node, path string, envHosts []string) []Route {
+func (p *parser) parseRoutes(n *yaml.Node, path string, envHosts []string, s *Site) []Route {
 	items, ok := p.seq(n, path)
 	if !ok {
 		return nil
@@ -121,7 +121,7 @@ func (p *parser) parseRoutes(n *yaml.Node, path string, envHosts []string) []Rou
 		if o == nil {
 			continue
 		}
-		r := Route{Channel: "web"}
+		r := Route{Channel: "web", Proof: "off"}
 		if v := o.require("name"); v != nil {
 			if name, ok := p.str(v, o.sub("name")); ok {
 				switch {
@@ -188,6 +188,7 @@ func (p *parser) parseRoutes(n *yaml.Node, path string, envHosts []string) []Rou
 				p.errorf(v, "%s: contradicts require_clearance", o.sub("never_challenge"))
 			}
 		}
+		p.parseRoutePhase2(o, &r, s)
 		o.finish()
 		out = append(out, r)
 	}
@@ -343,6 +344,10 @@ func (p *parser) parseRateLimits(n *yaml.Node, path string, routes []Route, s *S
 					p.warnf(it, "%s: on_exceed challenge also covers never_challenge route %q, where it is only recorded", lp, r.Name)
 				}
 			}
+		}
+		if l.OnExceed.Action == "challenge" && l.OnExceed.Type == "interactive" {
+			p.phase2Keys = append(p.phase2Keys, lp+".on_exceed.type")
+			p.checkInteractiveLimiter(it, lp, l, routes, s)
 		}
 		if l.Rate.Rate != 0 && l.Rate.Burst != 0 && !GCRAValid(l.Rate) {
 			p.errorf(it, "%s: %d per %d s with burst %d is not a valid GCRA limiter (interval must be >= 1 us and interval x burst <= 7 days)", lp, l.Rate.Rate, l.Rate.PeriodS, l.Rate.Burst)
