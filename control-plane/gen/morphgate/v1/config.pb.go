@@ -193,6 +193,7 @@ type Route struct {
 	RequireClearance bool             `protobuf:"varint,10,opt,name=require_clearance,json=requireClearance,proto3" json:"require_clearance,omitempty"` // CHALLENGE unless a valid clearance token is presented
 	RedactPath       bool             `protobuf:"varint,11,opt,name=redact_path,json=redactPath,proto3" json:"redact_path,omitempty"`                   // events and access records log "/<route name>" instead of the path (tokenized URLs)
 	Mode             RouteMode        `protobuf:"varint,12,opt,name=mode,proto3,enum=morphgate.v1.RouteMode" json:"mode,omitempty"`                     // monitor / enforce override of SiteBundle.monitor_only (spec I-36)
+	NeverChallenge   bool             `protobuf:"varint,13,opt,name=never_challenge,json=neverChallenge,proto3" json:"never_challenge,omitempty"`       // CHALLENGE is recorded and forwarded; BLOCK / RATE_LIMIT apply (spec I-37)
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -309,6 +310,13 @@ func (x *Route) GetMode() RouteMode {
 		return x.Mode
 	}
 	return RouteMode_ROUTE_MODE_INHERIT
+}
+
+func (x *Route) GetNeverChallenge() bool {
+	if x != nil {
+		return x.NeverChallenge
+	}
+	return false
 }
 
 type CompiledRule struct {
@@ -1821,7 +1829,7 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\x12secret_header_refs\x18\x05 \x03(\tR\x10secretHeaderRefs\x12.\n" +
 	"\x13trusted_proxy_cidrs\x18\x06 \x03(\tR\x11trustedProxyCidrs\x124\n" +
 	"\x16proxy_protocol_version\x18\a \x01(\rR\x14proxyProtocolVersion\x12#\n" +
-	"\rexpected_mask\x18\b \x01(\rR\fexpectedMask\"\x9d\x03\n" +
+	"\rexpected_mask\x18\b \x01(\rR\fexpectedMask\"\xc6\x03\n" +
 	"\x05Route\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -1837,7 +1845,8 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	" \x01(\bR\x10requireClearance\x12\x1f\n" +
 	"\vredact_path\x18\v \x01(\bR\n" +
 	"redactPath\x12+\n" +
-	"\x04mode\x18\f \x01(\x0e2\x17.morphgate.v1.RouteModeR\x04mode\"\xcb\x03\n" +
+	"\x04mode\x18\f \x01(\x0e2\x17.morphgate.v1.RouteModeR\x04mode\x12'\n" +
+	"\x0fnever_challenge\x18\r \x01(\bR\x0eneverChallenge\"\xcb\x03\n" +
 	"\fCompiledRule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05phase\x18\x02 \x01(\tR\x05phase\x12\x1a\n" +

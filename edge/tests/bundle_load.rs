@@ -170,6 +170,23 @@ fn runtime_conversion_rejects_what_the_edge_cannot_run() {
     let e = convert(&b, &none).unwrap_err();
     assert!(e.contains("mode 7 is unknown"), "{e}");
 
+    // never_challenge (I-37): converted on a low or medium route, refused
+    // on a high one or with require_clearance.
+    let mut b = blog_bundle(1);
+    let r = &mut b.environments[0].routes[0];
+    r.never_challenge = true;
+    r.require_clearance = false;
+    r.sensitivity = mg_proto::v1::RouteSensitivity::Medium as i32;
+    let rt = convert(&b, &none).unwrap();
+    assert!(rt.environments[0].routes[0].never_challenge);
+    b.environments[0].routes[0].sensitivity = mg_proto::v1::RouteSensitivity::High as i32;
+    let e = convert(&b, &none).unwrap_err();
+    assert!(e.contains("never_challenge"), "{e}");
+    b.environments[0].routes[0].sensitivity = mg_proto::v1::RouteSensitivity::Low as i32;
+    b.environments[0].routes[0].require_clearance = true;
+    let e = convert(&b, &none).unwrap_err();
+    assert!(e.contains("never_challenge"), "{e}");
+
     // A token kid that the site's key file does not have.
     let mut b = blog_bundle(1);
     b.token_key_ids = vec!["blog-t-20991231".into()];

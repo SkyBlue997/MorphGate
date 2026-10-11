@@ -261,6 +261,7 @@ func (b *builder) environment(env sitecfg.Environment) *morphgatev1.Environment 
 			RequireClearance: r.RequireClearance,
 			RedactPath:       r.RedactPath,
 			Mode:             routeMode(r.Mode),
+			NeverChallenge:   r.NeverChallenge,
 		})
 	}
 	for _, l := range env.RateLimits {

@@ -92,6 +92,9 @@ func TestFullSiteValues(t *testing.T) {
 	if !login.RequireClearance || !login.FailClosed || reset.RequireClearance || reset.FailClosed || !reset.RedactPath {
 		t.Errorf("require_clearance / fail_closed default to sensitivity == critical: login %+v reset %+v", login, reset)
 	}
+	if login.NeverChallenge || reset.NeverChallenge || !prod.Routes[2].NeverChallenge {
+		t.Errorf("never_challenge: login %v reset %v api %v", login.NeverChallenge, reset.NeverChallenge, prod.Routes[2].NeverChallenge)
+	}
 	if login.Mode != "" || reset.Mode != "enforce" || prod.Routes[2].Mode != "monitor" {
 		t.Errorf("route modes: login %q reset %q api %q", login.Mode, reset.Mode, prod.Routes[2].Mode)
 	}
@@ -177,6 +180,11 @@ func TestValidationRules(t *testing.T) {
 		{"bad sensitivity", fullYAML, "sensitivity: high", "sensitivity: severe", `"severe" is not one of low, medium, high, critical`},
 		{"bad route mode", fullYAML, "mode: enforce", "mode: dry_run", `"dry_run" is not one of monitor, enforce`},
 		{"route mode not a string", fullYAML, "mode: monitor", "mode: [monitor]", "mode: must be"},
+		{"never_challenge on a high route", fullYAML, "        redact_path: true\n", "        redact_path: true\n        never_challenge: true\n", "never_challenge: not allowed on a high route"},
+		{"never_challenge on a critical route", fullYAML, "        sensitivity: critical\n", "        sensitivity: critical\n        never_challenge: true\n", "never_challenge: not allowed on a critical route"},
+		{"never_challenge with require_clearance", fullYAML, "        never_challenge: true\n", "        never_challenge: true\n        require_clearance: true\n", "never_challenge: contradicts require_clearance"},
+		{"never_challenge not a bool", fullYAML, "never_challenge: true", "never_challenge: yes", "never_challenge: must be true or false"},
+		{"challenge limiter on never_challenge route", fullYAML, "        routes: [reset]\n", "        routes: [api]\n", `on_exceed challenge on never_challenge route "api"`},
 		{"bad channel", fullYAML, "channel: api", "channel: grpc", `"grpc" is not one of web, api, mobile`},
 		// Rate limiters.
 		{"bad limiter id", fullYAML, "id: api-per-prefix", "id: Api", `"Api" does not match`},
@@ -392,6 +400,13 @@ func TestDiagnosticPositionsAndWarnings(t *testing.T) {
 	_, diags = Parse("site.yaml", []byte(y))
 	if HasErrors(diags) || len(diags) != 2 {
 		t.Errorf("want two warnings, got %v", diags)
+	}
+	// A challenge limiter for every route also covers a never_challenge
+	// route: a warning (I-37).
+	y = strings.Replace(read(t, fullYAML), "        routes: [reset]\n", "", 1)
+	_, diags = Parse("site.yaml", []byte(y))
+	if HasErrors(diags) || len(diags) != 1 || !strings.Contains(diags[0].String(), `covers never_challenge route "api"`) {
+		t.Errorf("want one never_challenge warning, got %v", diags)
 	}
 }
 

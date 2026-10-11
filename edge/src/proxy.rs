@@ -714,7 +714,7 @@ impl EdgeProxy {
                     .and_then(|d| d.ssl_digest.as_ref())
                     .map(|s| s.version.as_ref());
                 let http_version = http_version_str(session.req_header().version);
-                let facts = self.facts(
+                let mut facts = self.facts(
                     ctx,
                     ssl_version,
                     http_version,
@@ -727,6 +727,7 @@ impl EdgeProxy {
                     &raw,
                     &removed,
                 );
+                facts.never_challenge = rm.never_challenge;
                 let services = Services {
                     state: &self.shared.state,
                     k_pseudo: &self.shared.k_pseudo,
@@ -866,6 +867,7 @@ impl EdgeProxy {
             site_id,
             route,
             monitor,
+            never_challenge: false,
             profile: self.listener.profile,
             auth_method: ctx.auth_method,
             cf: ctx.cf.as_ref(),

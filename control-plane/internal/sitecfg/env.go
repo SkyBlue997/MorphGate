@@ -178,6 +178,16 @@ func (p *parser) parseRoutes(n *yaml.Node, path string, envHosts []string) []Rou
 		if v := o.get("mode"); v != nil {
 			r.Mode, _ = p.enum(v, o.sub("mode"), RouteModes)
 		}
+		if v := o.get("never_challenge"); v != nil {
+			r.NeverChallenge, _ = p.boolean(v, o.sub("never_challenge"))
+			switch {
+			case !r.NeverChallenge:
+			case r.Sensitivity == "high" || r.Sensitivity == "critical":
+				p.errorf(v, "%s: not allowed on a %s route (low or medium only)", o.sub("never_challenge"), r.Sensitivity)
+			case r.RequireClearance:
+				p.errorf(v, "%s: contradicts require_clearance", o.sub("never_challenge"))
+			}
+		}
 		o.finish()
 		out = append(out, r)
 	}
@@ -323,6 +333,17 @@ func (p *parser) parseRateLimits(n *yaml.Node, path string, routes []Route, s *S
 			l.Mode, _ = p.enum(v, o.sub("mode"), LimiterModes)
 		}
 		o.finish()
+		if l.OnExceed.Action == "challenge" {
+			for _, r := range routes {
+				switch {
+				case !r.NeverChallenge:
+				case slices.Contains(l.Routes, r.Name):
+					p.errorf(it, "%s: on_exceed challenge on never_challenge route %q; use rate_limit or block", lp, r.Name)
+				case len(l.Routes) == 0:
+					p.warnf(it, "%s: on_exceed challenge also covers never_challenge route %q, where it is only recorded", lp, r.Name)
+				}
+			}
+		}
 		if l.Rate.Rate != 0 && l.Rate.Burst != 0 && !GCRAValid(l.Rate) {
 			p.errorf(it, "%s: %d per %d s with burst %d is not a valid GCRA limiter (interval must be >= 1 us and interval x burst <= 7 days)", lp, l.Rate.Rate, l.Rate.PeriodS, l.Rate.Burst)
 		}

@@ -164,6 +164,9 @@ func (r *runner) bundleSign(args []string) int {
 	if len(sum.RouteModes) > 0 {
 		diff["route_modes"] = sum.RouteModes
 	}
+	if len(sum.NeverChallenge) > 0 {
+		diff["never_challenge"] = sum.NeverChallenge
+	}
 	if !r.record(cmd, cli.AuditEvent{
 		Action: "bundle.sign", ResourceType: "bundle", ResourceID: fmt.Sprintf("%s@%d", sb.SiteId, sb.Version), Site: sb.SiteId,
 		Diff: diff,
@@ -244,6 +247,9 @@ func (r *runner) bundleVerify(args []string) int {
 			routes[i] = k + "=" + sum.RouteModes[k]
 		}
 		fmt.Fprintf(w, "route modes %s\n", strings.Join(routes, ","))
+	}
+	if len(sum.NeverChallenge) > 0 {
+		fmt.Fprintf(w, "never challenge %s\n", strings.Join(sum.NeverChallenge, ","))
 	}
 	fmt.Fprintf(w, "hosts %s  listeners %s  token kids %s\n", strings.Join(sum.Hosts, ","), strings.Join(sum.AllowedListeners, ","), strings.Join(sum.TokenKeyIDs, ","))
 	for _, e := range sum.Environments {

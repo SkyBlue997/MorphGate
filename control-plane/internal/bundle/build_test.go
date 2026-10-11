@@ -144,7 +144,8 @@ func TestBuildFullSite(t *testing.T) {
 		reset.Mode != morphgatev1.RouteMode_ROUTE_MODE_ENFORCE {
 		t.Errorf("reset route %v", reset)
 	}
-	if api := prod.Routes[2]; api.Channel != morphgatev1.Channel_CHANNEL_API || api.Mode != morphgatev1.RouteMode_ROUTE_MODE_MONITOR {
+	if api := prod.Routes[2]; api.Channel != morphgatev1.Channel_CHANNEL_API || api.Mode != morphgatev1.RouteMode_ROUTE_MODE_MONITOR ||
+		!api.NeverChallenge || prod.Routes[0].NeverChallenge {
 		t.Errorf("api route %v", api)
 	}
 	if login, def := prod.Routes[0], prod.Routes[3]; login.Mode != morphgatev1.RouteMode_ROUTE_MODE_INHERIT ||
