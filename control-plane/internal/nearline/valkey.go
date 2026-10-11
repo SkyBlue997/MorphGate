@@ -39,9 +39,11 @@ type ConnOptions struct {
 	DialTimeout time.Duration
 }
 
-// clientOption builds the valkey-go options. The handshake must stay inside
-// the ACL of spec §13.6: no client-side caching (CLIENT TRACKING), no
-// cluster probe, CLIENT SETINFO and SETNAME are allowed.
+// clientOption builds the valkey-go options (ruling I-46): ForceSingleClient
+// (no cluster probe), DisableCache (no CLIENT TRACKING) and
+// DisableClientSetInfo, so a connection sends HELLO (with AUTH and SETNAME)
+// and keep-alive PINGs only, plus SELECT for a database other than 0: all
+// inside the ACL of spec §13.6.
 func (o ConnOptions) clientOption() valkey.ClientOption {
 	timeout := o.DialTimeout
 	if timeout <= 0 {
@@ -55,6 +57,7 @@ func (o ConnOptions) clientOption() valkey.ClientOption {
 		SelectDB:          o.Addr.DB,
 		DisableCache:      true,
 		ForceSingleClient: true,
+		ClientSetInfo:     valkey.DisableClientSetInfo,
 		Dialer:            net.Dialer{Timeout: timeout},
 		ConnWriteTimeout:  10 * time.Second,
 	}

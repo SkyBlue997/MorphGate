@@ -79,6 +79,24 @@ func TestACLUserRunsEveryOperation(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 
 	s := fx.store(o, "w-1")
+	// Ruling I-46: the handshake names the client (HELLO ... SETNAME) and
+	// sends no CLIENT SETINFO.
+	list, err := fx.do("CLIENT", "LIST").ToString()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for line := range strings.SplitSeq(list, "\n") {
+		if strings.Contains(line, " user="+user+" ") {
+			found = true
+			if !strings.Contains(line, " name="+ClientName+" ") || !strings.Contains(line, " lib-name= ") {
+				t.Errorf("worker connection: %s", line)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no connection of the ACL user in CLIENT LIST")
+	}
 	m := NewMetrics(cfg)
 	w := NewWorker(cfg, s, m, nil, nil, nil)
 	if err := w.Start(fx.ctx); err != nil { // SCRIPT LOAD, XGROUP CREATE, XAUTOCLAIM, XINFO CONSUMERS, XGROUP DELCONSUMER, XACK
