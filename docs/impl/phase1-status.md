@@ -14,6 +14,7 @@
 | Stage 2 | WP-CLEANUP（I-20..I-27）、WP-E1a 骨架、E1b 决策接线、E1c Challenge 端点、E1d 事件与指标；最终安全审查与本机端到端 | 完成，逐个对抗验证 | `12f52ba` |
 | 审查后修复 | I-29 额外删除客户端 IP / URL 改写 / 方法覆盖类请求头；I-30 重放未校验时签发的凭证（`ruc`）不被 fail_closed 路由接受；I-31 延迟指标按 `kind` 拆分；I-32 无 `env` 时不写 telemetry；测试端口竞争修复 | 完成 | `3dbb48e` |
 | Stage 3 | WP-L1（Lab 验收场景、`mglab events`、`scripts/lab-e2e.sh`、`make lab-e2e`、CI `lab-e2e` 作业）、WP-J1（`direct_tls` JA4 预研，ADR-0002 勘误）、WP-D1（设计文档勘误，含 I-8..I-32 的同步）；集成：裁决 I-33..I-35（接受阶段 2 的执行层细化、补齐正文未列的字段与接口、接受两项已知限制），`edge.toml.example` 的 AOP `client_ca` 注释改为所有者自有 CA 并加 `ja4_spike` 说明，07 / 01 / 04 / 09 / 10 / ADR-0005 与 JA4 结论对齐 | 完成 | 见本次提交 |
+| Phase 1 之后 | 裁决 I-36：路由级 `mode: monitor \| enforce`（`Route.mode`；Go 构建器、`mgctl bundle verify` 与审计、Edge 执行层；多路径视图取最严；站点 monitor 且有 enforce 路由时超限请求按 enforce 拒绝） | 完成，待 PR 合并 | 见分支 `claude/bot-guard-takeover-zcsbs5` |
 
 ## 2. 当前代码状态
 
