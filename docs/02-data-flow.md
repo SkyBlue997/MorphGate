@@ -4,6 +4,8 @@
 
 本文描述各阶段的目标设计；标有"Phase 1"的内容是已落地的实现（2026-09-28 勘误），字节级契约以 [Phase 1 实现规格](impl/phase1-spec.md) 为准。
 
+标有"Phase 2"的内容是 Phase 2 已落地的做法（2026-10-12 勘误），契约以 [Phase 2 实现规格](impl/phase2-spec.md) 为准（D-xx 见其 [§0.3](impl/phase2-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](impl/phase2-spec.md#集成者裁决优先于正文)），进度见 [phase2-status](impl/phase2-status.md)。
+
 ## 1. 三条链路
 
 | 链路 | 时效 | 输入 | 输出 | 载体 | 约束 |
@@ -164,6 +166,8 @@ profile 预期提供而实际缺失的上游注入头（如认证通过的请求
 - 数据面唯一的出站调用：交互式 Challenge 选用外部 Provider（如 Turnstile siteverify）时，在 `POST /__mg/c` 内、消费 nonce 之后带截止时间调用。普通请求路径没有外部调用。
 - 日志写出永不阻塞请求；缓冲满时按优先级丢弃（先丢放行流量的采样事件），丢弃数计入 `mg_event_dropped_total`。Phase 1（[规格 §9.11](impl/phase1-spec.md#911-事件wp-c4-实现wp-e1d-接线)，I-25）：请求路径把记录放进三个有界队列（P0 免于采样的决定事件与 feedback、P1 访问记录、P2 参与采样的放行决定与遥测；免于采样的条件见 §9），满时丢新记录（`sink="buffer"`）；刷写后 `vl-main`、`vl-short`、文件与 `mg:ev` 各自有独立积压与刷写任务，积压满时先丢低优先级类别，计入该输出的 `sink` 标签。关闭或平滑升级时，队列在 Pingora 的关闭信号处关闭（之后完成的请求的事件计为 `buffer` 丢弃），剩余记录至多 2 s 尽力写出：文件写全部类别，VictoriaLogs 与 `mg:ev` 只写 P0。
 
+- **Phase 2**（[规格 §1.4](impl/phase2-spec.md#14-edge-请求处理顺序phase-2)、[§14.3](impl/phase2-spec.md#143-往返每请求至多-2-次同-02-1)）：`MG-Proof` 在头部清洗之前从原始请求头读取，属于 `mg-` 头族，从不转发。普通请求仍只有一次往返：verdict `MGET` + `EVALSHA mg_gcra` + `EVALSHA mg_jti`（只在证明通过 [04 §6.1](04-challenge-and-tokens.md#61-请求级持有证明参考-rfc-9449-dpop) 的全部检查之后）。`edge.toml` 的 `force_monitor` 让站点整站按 monitor 处理（D-60，[ADR-0011](adr/0011-local-emergency-monitor-switch.md)）。
+
 ### 2.4 路由匹配与输入上限（Phase 1）
 
 **结论**：路由是 `require_clearance` 与 `critical` 的安全边界，源站框架又常把多种写法交给同一个处理器，所以同一请求按多个路径视图匹配、取最敏感的路由（D-25）；策略输入有硬上限，保证每条规则的静态步数上界成立（D-26，[ADR-0006](adr/0006-policy-cel-ir.md)）。完整规则见 [规格 §9.4](impl/phase1-spec.md#94-站点环境与路由) 与 [§9.3.1](impl/phase1-spec.md#931-协议输入上限d-26)。
@@ -215,9 +219,19 @@ profile 预期提供而实际缺失的上游注入头（如认证通过的请求
 - SDK 对 `/__mg/*` 或受保护 fetch 收到 `cf-mitigated: challenge` 时视为"上游挑战"：顶层重载 + 遥测上报，不计为 MorphGate 失败，计入 `mg_double_challenge_total`（[08](08-upstream-and-cloudflare.md) §2.8）。
 - Free 区唯一的一条 Cloudflare 限速规则可在边缘挡 `POST /__mg/` 洪泛；使用它时 `/__mg/` 的 Skip 规则不得跳过 `http_ratelimit`（[08](08-upstream-and-cloudflare.md) §2.7）。精确限额由 Edge 负责。
 
+**Phase 2 的端点**（[规格 §11.1](impl/phase2-spec.md#111-端点改-phase-1-规格-101)）：`POST /__mg/c/renew`、`POST /__mg/r`、`POST /__mg/t` 已实现（`schema_version = 1` 时仍返回 404，D-66）；新增稳定别名 `GET /__mg/s/mg.js`（当前构建，`public, max-age=300` + `ETag`，D-39）；`/__mg/v` 可带 `min=interactive`（D-58）。`/__mg/c/renew`、`/__mg/r`、`/__mg/t` 的全部应答为 JSON，不做导航判定。`/__mg/r` 刷新前重新决策（[04 §5](04-challenge-and-tokens.md#5-短期访问凭证)），但拒绝时返回 `mg_refresh_denied`，不返回 Challenge。
+
 **遥测流**：SDK 在端上把原始事件摘要成统计特征 → `POST /__mg/t` → Edge 校验签名、大小、频率 → 附加服务端上下文（客户端 IP、`upstream.profile`、`tls.ja4` 或 `edge_tls` 摘要、会话）→ `XADD mg:ev`（`kind=telemetry`）并写 `vl-short` → 近线会话聚合。交互式 Challenge 遥测（≤ 2 KB）随 `POST /__mg/c` 提交，同样以 `kind=telemetry` 写 `vl-short`（字段见 [09](09-interactive-challenge.md) §10）。Phase 1 没有 `/__mg/t`：只有携带 `env` 的 `POST /__mg/c` 写一条 `kind=telemetry`（I-32），`env` / `auto` 按 SDK schema 解析后只保留已知字段、带长度上限重新序列化，不含 `ua.userAgent`；解析失败则不写。
 
+**Phase 2 的遥测**（D-48、D-62，[规格 §9.4](impl/phase2-spec.md#94-post-mgt遥测d-48)、[§15.2](impl/phase2-spec.md#152-kindtelemetryvl-short改-phase-1-规格-135d-62)）：
+- `POST /__mg/t` 接受 `upstream_challenge`、`cache_hit`、`behavior`、`sw_intercept`、`key_unavailable` 五种报告，每个请求至多 8 条。有 `MG-Proof` 且通过校验时 `signed = true`；没有或无效时报告照样接受，记 `signed = false`。告警指标（`mg_double_challenge_total`、`mg_endpoint_cache_hit_reports_total`）只计签名的报告，同一会话同一种报告 10 分钟至多计一次。
+- 行为摘要缺省关闭：站点在 SDK 标签上写 `data-mg-telemetry="behavior"` 开启采集，Edge 按配置包 `events.telemetry_behavior` 决定是否接收。
+- 每条报告写一行 `kind=telemetry`（`vl-short`，`source = "sdk"`），进入独立的有界队列 `queue_telemetry`（缺省 2048），满时只丢遥测，决定事件与 `mg:ev` 不受影响。遥测**不写** `mg:ev`，也不影响任何决定。
+- 交互遥测随 `POST /__mg/c` 的 `t` 提交（`source = "challenge"`，在 `env`、`auto`、`ix` 任一出现时写出）；`/__mg/r` 的 `t` 只在开启行为摘要时记录（`source = "refresh"`）。三种来源共用 edge-core 中唯一的一份解析与重新序列化实现，`edge/src/submission.rs` 中的重复实现已删除。
+
 **Challenge 结果流**：`POST /__mg/c` 在任何外部 Provider 调用之前以 `SET mg:n:{site}:{nonce} NX` 消费 nonce；外部 Provider token 的哈希写入 `mg:rp:*`。结果以 `ChallengeResult`（§7）写入 `mg:ev`（`kind=feedback`）与 `vl-main`，只带内部 reason code，并更新 `mg_challenge_total{provider}`、`mg_provider_verify_total`。Phase 1：nonce 由 Lua 脚本 `mg_nonce_issue` 消费，同一次调用里计签发配额（`mg.clr.issue.ipp` / `mg.clr.issue.asn`），只在 nonce 首次使用且全部配额允许时写入（D-37）；没有外部 Provider，`mg_challenge_total` 的 `provider` 恒为 `none`。
+
+Phase 2：`mg_nonce_issue` v2 在一次调用中处理 nonce、Turnstile token 重放键与签发配额（含 `mg.a11y.issue`），之后才调用 siteverify。`kind=feedback` 增加 `renew_no`、`bound`、`ix`（交互评分摘要）与 `provider`（外部 Provider 的结果）；续期只在计失败或已绑定 C 换了前缀（`renew_rebind`）时写 `kind=feedback`。`mg_challenge_total` 的 `provider` 取 `none` / `self_hold` / `pow_a11y` / `turnstile`，`result` 新增 `renewed` 与 `reissued`。
 
 ## 4. 近线：会话与实体分析
 
@@ -274,6 +288,16 @@ Edge (background task, batched every <= 1 s, never on the request path)
 - 交互式 Challenge 的收割防护监控（解题时间分布、按前缀 / ASN 的凭证签发数）在这里汇总，签发上限本身由 Edge 内联执行（[09](09-interactive-challenge.md)）。
 - 会话级序列特征只统计回源请求：Cloudflare 缓存命中的静态资源不会到达 Edge（[03](03-risk-scoring.md)）。
 - 设备 × 账号 × IP 的图关联推迟到 Phase 4。
+
+**Phase 2 的近线**（D-38、D-53、D-54，[规格 §13](impl/phase2-spec.md#13-近线-worker-mg-nearlinewp-n1mgev-v2-的写入归-wp-c5--e2b)，I-46、I-53）：
+- **进程**：Go 命令 `mg-nearline`（`control-plane/cmd/mg-nearline`，包 `internal/nearline`，systemd 单元 `deploy/systemd/mg-nearline.service`）。它是消费组 `nl` 的唯一消费者：`XREADGROUP` 每批 512 条，每 60 s `XAUTOCLAIM` 认领空闲超过 60 s 的条目，写完 verdict 后才 `XACK`，语义为至少一次。Valkey 客户端为 `valkey-go`。
+- **输入**：只在 Valkey 模式且配置包 `events.stream = true` 时有。`mg:ev` v2 在 v1 字段之后追加方法、路径哈希 `ph`（`K_pseudo` 的 HMAC，`redact_path` 路由用路由名）、源站响应的内容类型类别、扫描诱饵标记、跨站标记 `xs`、有效凭证标记 `tk`、证明结果 `pf`、UA 家族与地址族；反馈条目追加 Provider、`ipk`、新凭证的 `sub` 与 `lvl`。不写 IP 明文、`client_conn_key`、`jkt` 或路径原文。
+- **窗口**：放在 worker 内存中（每类键至多 200,000 个，满时丢弃新键），Edge 不写上图的 `mg:w:*`。worker 重启后窗口从零开始。
+- **检测器 v1**：`scanner`（诱饵路径或高 404 / 403 / 405 比例）、`shared_token`（同一会话的凭证配着另一把密钥的证明，来自 ≥ 2 个前缀）、`challenge_abuse`（前缀上的大量失败与低通过率）、`high_rate`（连续 5 分钟每分钟 ≥ 600 个页面 / JSON 请求，共享出口除外）；IPv6 另按 /48 计数，阈值 4 倍。浏览器发出的跨站请求（`xs = 1`）与带有效凭证的请求不计入扫描器与高速率：第三方网页可以让访客的浏览器发出诱饵请求。
+- **verdict**：只抬高风险，标签为 `nl_*`，从不带矩阵会直接阻断的 `scanner` 标签（按单个 IP 直接阻断会误伤 CGNAT 与办公网的邻居）。经 Lua 脚本 `mg_verdict_put` 写入，从不覆盖所有者手写的 verdict，其他检测器的 verdict 只在新风险更高时覆盖。每个检测器缺省 shadow：只记日志与指标，不写 Valkey；可选地写 `kind=verdict` 到 `vl-main`。不产生 `asn` 类 verdict。
+- **不用** `mg:pub:inv`（Edge 的 verdict 缓存只有 2 s）与 `mg:w:*`。`shared_token` 的会话 verdict 起软吊销作用，吊销集仍在 Phase 3。
+- **验收比例**：worker 另导出 7 天的 `mg_nl_interactive_visitor_share` 与 `mg_nl_interactive_abandon_share`（分母少于 2,000 时不导出），作为"人类被要求交互式 Challenge 的比例"的主证据。
+- **本地模式**（`[valkey] mode = "local"`）：没有 `mg:ev`，近线既没有输入也没有效果；单机推荐本机 Valkey（D-38，[01 §8](01-architecture.md#8-部署与高可用)）。
 
 ## 5. 离线
 
@@ -523,6 +547,13 @@ message EntityVerdict {
 
 Phase 1 只读写 `mg:v:*`、`mg:rl:*`、`mg:n:*` 与 `mg:ev`（持有证明 jti 与 Provider token 在 Phase 2，吊销与通知在 Phase 3）。Edge 的 ACL 用户按键选择器授权：`%R~mg:v:*`、`~mg:rl:*`、`~mg:n:*`、`%W~mg:ev`，命令只有 `GET`、`SET`、`MGET`、`EVALSHA`、`SCRIPT LOAD`、`PING`、`XADD`、`TIME` 等，不能写 `mg:v:*`、访问 `mg:rev:*`、`PUBLISH` 或 `SCRIPT FLUSH`；选择器对 `EVALSHA` 传入的键同样生效，已在 Valkey 9.1.2 上实测（`edge/tests/valkey_acl.rs`，完整命令见 [规格 §17](impl/phase1-spec.md#17-所有者运维手册代码之外)）。
 
+**Phase 2 的键**（[规格 §14](impl/phase2-spec.md#14-状态层wp-c5)，I-52、I-55）：
+- 持有证明 `jti`：`mg:jti:{site}:{kj}:{jti}`，`kj = kh("mg-jti-v1", "jkt", jkt)`，TTL 40 s；按密钥的计数键 `mg:jc:{site}:{kj}`（60 s，至多 600 条）。上表 `{jkt}` 明文的写法作废：`jkt` 只以 `K_pseudo` 的 HMAC 出现在键中。Web Bot Auth 的 nonce 仍在 Phase 3。
+- Provider token 重放：`mg:rp:{site}:turnstile:{H(token)}`，TTL 300 s，由 `mg_nonce_issue` v2 与 nonce 一起写入。
+- Challenge nonce：交互式 C 的 nonce 保留约 70 分钟，续期也写入。
+- verdict 由近线 worker 经 `mg_verdict_put` 写入，它有独立的 ACL 用户 `mg-nearline`：只能读写本站点的 `mg:v:<site>:*` 与读 `mg:ev`，不能用 pub/sub。
+- Edge 的 ACL 增加键模式 `~mg:jti:* ~mg:jc:* ~mg:rp:*`，命令不变，仍不能写 `mg:v:*`、读 `mg:rev:*`、`PUBLISH`。
+
 **`mg:ev` 条目**（Phase 1，每个有决定事件的请求一条，决定事件被采样掉时照样写，[规格 §13.6](impl/phase1-spec.md#136-mgev-条目)）：`v kind(decision) site ts rid sess route action dry class score ipk pfk asn status`；`POST /__mg/c` 另写 `v kind(feedback) site ts rid route outcome type pfk asn`。`ipk` / `pfk` 与 verdict 键的 `ip` / `prefix` 段相同（IP 未知时为空）；条目从不含客户端 IP 明文与 `client_conn_key`。
 
 | VictoriaLogs `kind` | 来源 | 实例 |
@@ -543,6 +574,13 @@ Phase 1 只读写 `mg:v:*`、`mg:rl:*`、`mg:n:*` 与 `mg:ev`（持有证明 jti
 | `access` | 已知站点的每个请求，`events.access_log` 时 | 不采样；`path` 不含查询串、≤ 1024 字节；只有 `ip_prefix` 与 ASN、国家，没有完整 IP；`/__mg/*` 记 `route = "__mg"`，协议拒绝记 `"__protocol"`，监听器、站点状态与外部 Worker 的拒绝记 `"__site"`；未知 Host 的 404 不写 |
 | `telemetry` | 只在 `POST /__mg/c` 携带 `env` 时（I-32） | 写 `vl-short`；`env` / `auto` 按 SDK schema 重新序列化 |
 | `verdict`、`audit` | 不写 | 分别在 Phase 2、Phase 3；Phase 1 的 `mgctl` 审计日志只在工作站本地 |
+
+**Phase 2 的事件**（[规格 §15](impl/phase2-spec.md#15-事件与指标)）：
+- 新的种类：`kind=refresh`（`vl-main`，每次 `/__mg/r` 一条，带拒绝原因）与 `kind=verdict`（`vl-main`，由近线写出，只有伪名键）。
+- `kind=access` 增加 `sess`（有效凭证的 `sub`）与 `ct`（内容类型类别）。
+- 决定事件增加 `ctx.http.navigation`、`ctx.identity.proof.{present, valid, replayed}`、`ctx.identity.token.{bound, level_age}`、交互式挑战的 `decision.provider_id`，以及顶层字段 `forced_monitor`、`proof_required`。
+- `kind=feedback` 见 §3；`kind=telemetry` 的三种来源见 §3。
+- 新的策略字段：`http.navigation`、`identity.proof.present`、`identity.token.bound`、`identity.token.level_age`（[06 §2](06-policy-console-observability.md#2-策略语言)）。
 
 ## 8. Edge 与源站的约定
 
@@ -569,6 +607,8 @@ Phase 1 只读写 `mg:v:*`、`mg:rl:*`、`mg:n:*` 与 `mg:ev`（持有证明 jti
 
 - 源站只接受来自 Edge 的流量：同机时源站只监听回环或 unix socket；不同机时用私网 ACL 或 Edge → 源站 mTLS。同机或同一容器网络里还有别的进程能连到源站时，启用 `MG-Origin-Auth`（I-38），由源站中间件校验。
 
+- **Phase 2**（D-61）：`schema_version = 2` 时，Edge 转发给源站前从每个 `Cookie` 头中删除名称精确等于 `__Host-mg_clr`、`__Host-mg_st`、`__Host-mg_a11y` 的 cookie 对，其余 cookie 的字节与顺序不变，删除后为空的头整体去掉：凭证不应出现在源站日志中，源站也不需要它。`schema_version = 1` 时源站仍收到这三个 Cookie。`MG-Proof` 属于 `mg-` 头族，从不转发。
+
 **源站契约补充**（D-34、I-29）
 
 | 源站必须 | 原因 |
@@ -584,6 +624,8 @@ Phase 1 只读写 `mg:v:*`、`mg:rl:*`、`mg:n:*` 与 `mg:ev`（持有证明 jti
 - 凭证 Cookie `__Host-mg_clr`（及 Pro 及以上可选的 `__Host-mg_cfp`，[08](08-upstream-and-cloudflare.md) §2.9）只在 `/__mg/c`、`/__mg/r` 的响应上设置，不附加到源站响应：Cloudflare 的"Eligible for cache + 覆盖 Edge TTL"组合会剥离 `Set-Cookie` 并缓存响应。
 - Edge 生成的 Challenge / 阻断 / 限速响应：403 / 429（不用 200）+ `Cache-Control: no-store, private`；阻断页与失败页只带 `request_id`，不含检测细节。Phase 1：Edge 自己生成的所有响应（`/__mg/s/*` 除外）都带 `no-store, private` 与 `X-Content-Type-Options: nosniff`（Pingora 的 HTTP/1 解析器在过滤器之前自己应答的 400 不带 `nosniff`，见 [phase1-status](impl/phase1-status.md#4-已知的低优先级遗留)），HTML 另加 `X-Robots-Tag: noindex`、`Referrer-Policy: same-origin`、`X-Frame-Options: DENY` 与 CSP；在请求体读完之前应答时关闭连接，不替攻击者读完大请求体；不含 `MG-*` 头（JSON Challenge 的 `MG-Challenge` 除外）。
 - 需要注入 SDK 时用 lol_html 3.x 流式改写 HTML，先处理源站压缩；注入的标签带 CSP nonce 与 `data-cfasync="false"`（避免 Rocket Loader 改写）。只在选用 Turnstile 的页面追加其 CSP（[09](09-interactive-challenge.md)）。
+
+- **Phase 2**（D-39）：不做 Edge 侧 HTML 注入，上一条作废。站点在自己的模板中、自身脚本之前加入 `<script data-cfasync="false" src="/__mg/s/mg.js" defer></script>`；站点的 CSP 允许同源脚本与 `worker-src 'self'`（或经 `script-src` 回退），否则就地求解退回主线程；站点的 Service Worker 不处理 `/__mg/` 下的任何请求。`__Host-mg_st` 与 `__Host-mg_a11y` 同样只在 `/__mg/c`、`/__mg/r` 的响应上设置。
 
 ## 9. 采样与保留
 
@@ -603,6 +645,12 @@ Phase 1 只读写 `mg:v:*`、`mg:rl:*`、`mg:n:*` 与 `mg:ev`（持有证明 jti
 - 保留期按实例设置，不按站点区分。VictoriaLogs 的保留期由启动参数（`-retentionPeriod`）或磁盘上限设置，未见按字段或按流分别设置的说明（需确认），因此拆成 `vl-main`（30 天）与 `vl-short`（7 天）两个实例；两者都是单二进制，开销很小。Phase 4 引入 ClickHouse 后可改用表级 TTL。
 - 默认不落原始请求体，只保存特征与哈希。IP 明文只存在于 30 天的 DecisionEvent 明细中。visitor location 头只保留国家、地区、时区；`x-mg-cf-tls-random` 原值不写入任何存储，其哈希只作 `mg:w:*` 的短期计数键。路由设了 `redact_path` 时，决定事件与访问记录的路径写成 `/<路由名>`、查询键清空（D-31，[06 §7](06-policy-console-observability.md#7-隐私与合规)）。
 - **合规提示**：受保护网站作为网络运营者，网络日志留存应不少于 6 个月。控制面定时任务每日把前一天的 `kind=access` 记录导出为压缩 JSON 行写入对象存储，生命周期 ≥ 180 天；从 VictoriaLogs 导出的方式与性能需实测，不可行时改为 EventSink 直接写归档文件（Phase 1 只写 `kind=access`，归档任务尚未实现）。若源站自身的访问日志已满足留存要求，可关闭归档。归档是否需要 IP 明文等口径需法务确认（见 [06](06-policy-console-observability.md#7-隐私与合规)）。
+
+- **Phase 2**（D-62，[规格 §9.7](impl/phase2-spec.md#97-i-35-复审与采样d-62)）：
+  - `kind=telemetry` 的三种来源（`challenge`、`sdk`、`refresh`）都写 `vl-short`，保留 7 天；`kind=refresh` 与 `kind=verdict` 写 `vl-main`。
+  - 带 `ruc` 凭证的请求，决定事件不受 `allow_sample_rate` 采样影响，总是写出。
+  - I-35 复审：选中路由之前就应答的请求，路径 ≤ 8 KiB 且站点有路由表时同样按 `redact_path` 改写，超长路径只记 `/…` 与 `path_len`；只有 bootstrap 与 `lkg_invalid`（没有路由表）时仍记原始路径。
+  - 关闭时事件刷写最多再等 `shutdown_drain_ms`（缺省按升级宽限时间计算）。
 
 ## 参考
 

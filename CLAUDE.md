@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-MorphGate is a **defensive** bot-management platform. Its single owner runs it only in front of their own few websites: no tenants, no SaaS, no hosting it for others. Rust data plane (Pingora Edge + a pure Decision Core) and Go control plane; Cloudflare in front (Cloudflare → Tunnel → Edge on 127.0.0.1 → origin). Design docs are in Chinese; code, comments and commit messages are in English.
+MorphGate is a **defensive** bot-management platform. Its single owner runs it only in front of their own few websites: no tenants, no SaaS, no hosting it for others. Rust data plane (Pingora Edge + a pure Decision Core) and Go control plane (`mgctl`, near-line worker); Cloudflare in front (Cloudflare → Tunnel → Edge on 127.0.0.1 → origin). Design docs are in Chinese; code, comments and commit messages are in English.
 
 ## Scope boundary (non-negotiable)
 
@@ -14,22 +14,23 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | Path | Contents |
 |---|---|
 | `Cargo.toml` | Rust workspace (edition 2024, MSRV 1.88): `core`, `challenge`, `intel`, `edge-core`, `edge`, `proto/rust` (`fuzz/` is a separate workspace) |
-| `core/` | `mg-core`: pure Decision Core. No I/O, threads, tokio or wall clock (time is passed in); must build for `wasm32-unknown-unknown` |
+| `core/` | `mg-core`: pure Decision Core, including the built-in interactive providers, provider selection, interaction assessment and refresh check (Phase 2, `src/providers.rs`). No I/O, threads, tokio or wall clock (time is passed in); must build for `wasm32-unknown-unknown` |
 | `edge/` | `mg-edge`: Pingora (`=0.9.0`, BoringSSL) binary. All Pingora-specific code stays here. Dev config in `edge/config/edge.dev.toml` |
-| `challenge/` | `mg-challenge` (Phase 1): sealed challenges, epoch keys, SHA-256 PoW, PASETO v4.local clearance tokens. No I/O; time and RNG are injected |
+| `challenge/` | `mg-challenge`: sealed challenges (Phase 2: interactive `C`, renewals), epoch keys, SHA-256 PoW v1 / v2, PASETO v4.local clearance tokens v1 / v2; Phase 2: session-key JWK and ES256 verification (`aws-lc-rs`, verify only), submission and renewal signatures, `MG-Proof`, Turnstile `cData`. No I/O; time and RNG are injected |
 | `intel/` | `mg-intel` (Phase 1): IP prefix sets, GeoLite2 mmdb lookups, crawler registry + verification (DNS behind a trait), Cloudflare IP ranges |
-| `edge-core/` | `mg-edge-core` (Phase 1): Edge components without Pingora (upstream trust and request limits, signed bundle client, Valkey state with local fallback, event sinks); `testkit` feature for shared test helpers. Async code runs only inside Pingora background services |
+| `edge-core/` | `mg-edge-core` (Phase 1): Edge components without Pingora (upstream trust and request limits, signed bundle client, Valkey state with local fallback, event sinks; Phase 2: `jti` and provider-token replay, `mg:ev` v2, the single telemetry decoder, `outbound` with the Turnstile siteverify client, the Edge's only outbound HTTP); `testkit` feature for shared test helpers (including the loopback mock siteverify). Async code runs only inside Pingora background services |
 | `proto/morphgate/v1/` | Shared protobuf contract. Rust: `proto/rust` (`mg-proto`, protox in build.rs). Go: generated into `control-plane/gen` and committed |
-| `control-plane/` | Go module: `cmd/mgctl`, `cmd/mg-control`, `internal/...` |
+| `control-plane/` | Go module: `cmd/mgctl`, `cmd/mg-control` (Phase 3), `cmd/mg-nearline` (Phase 2 near-line worker: consumes `mg:ev`, writes verdicts through `mg_verdict_put`), `internal/...` |
 | `lab/` | Go module: Validation Lab (`internal/guard` allowlist, `internal/replay`, `internal/events` for the acceptance checks, `cmd/mglab`; `testdata/scenarios` and `testdata/e2e` for `make lab-e2e`; `Dockerfile` for the isolated compose network) |
-| `sdk/web/` | TypeScript Web SDK assets (`@ermiaodada/morphgate-web-sdk`, pnpm, esbuild, vitest); npm packing checks the seven-file archive and an offline consumer installation |
+| `sdk/web/` | TypeScript Web SDK assets (`@ermiaodada/morphgate-web-sdk`, pnpm, esbuild, vitest; v1 is 0.3.0 with manifest v2, published by `.github/workflows/publish-sdk.yml` with npm provenance); npm packing checks the seven-file archive and an offline consumer installation |
 | `adapters/cloudflare/` | Transform Rule, Cache Rule, WAF Skip, Snippet and Worker templates for the owner's zone; its README is the owner's setup checklist |
 | `adapters/origin/` | Reference `MG-Origin-Auth` check (Node, `node:crypto` only) that the owner's origin copies to verify Edge → origin requests (spec I-38) |
 | `deploy/intel/` | Owner-maintained crawler registry source (`crawler-registry.yaml`), input to `mgctl crawler sync` |
 | `deploy/compose/` | Dev environment: Valkey, PostgreSQL, VictoriaMetrics, VictoriaLogs (`vl-main` 30d, `vl-short` 7d), mock origin; optional profiles `grafana`, `tunnel` (cloudflared) and `lab` (Validation Lab on an internal network) |
-| `deploy/systemd/` | `mg-edge.service` (Pingora graceful upgrade via `systemctl reload`), `edge.toml.example` and `journald@morphgate.conf` (the Edge's own journald namespace, 14-day retention), kept in sync by `edge/tests/shipped_configs.rs` |
+| `deploy/systemd/` | `mg-edge.service` (Pingora graceful upgrade via `systemctl reload`), `mg-nearline.service`, `edge.toml.example` and `journald@morphgate.conf` (the Edge's own journald namespace, 14-day retention), kept in sync by `edge/tests/shipped_configs.rs` |
+| `deploy/vmalert/` | `mg-phase2.rules.yml`: the Phase 2 alert rules (spec §19 step 8), checked against the served metrics by `edge/tests/alerts.rs` |
 | `fuzz/` | cargo-fuzz targets for the parsers that read untrusted input (own workspace; its lock file is `Cargo.lock` plus the fuzzing crates, checked by `make fuzz-lock-check`; nightly only, not in `make check`); `seeds/` is committed, `corpus/` and `artifacts/` are not |
-| `scripts/` | `gen-proto.sh`, `check_doc_links.py`, `check-fuzz-lock.sh`, `edge-smoke.sh`, `lab-e2e.sh`, `lab-egress-check.sh` |
+| `scripts/` | `gen-proto.sh`, `check_doc_links.py`, `check-fuzz-lock.sh`, `edge-smoke.sh`, `lab-e2e.sh`, `lab-egress-check.sh`, `mg-daily-check.sh` (the alert conditions from two `/metrics` snapshots, for hosts without VictoriaMetrics) |
 | `testdata/` | Cross-component fixtures: `phase1/kat.json` (crypto / PoW / key known-answer vectors), `phase1/keys/` and `phase1/artifacts/` (canonical valid and invalid key-file and artifact samples), `phase2/kat.json` and `phase2/samples/` (Phase 2 vectors and samples, generated by `phase2/gen/kat.mjs`), `policy-ir/` (Go ↔ Rust policy IR conformance and the `fields.json` field table); `core/testdata/gcra-cases.json` is shared by Rust and the Valkey Lua script |
 
 ## Commands
@@ -54,8 +55,9 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 
 - [README.md](README.md) indexes the design docs `docs/01`–`docs/10` and the ADRs in [docs/adr/](docs/adr/README.md). The threat model is [docs/10](docs/10-threat-model.md); the phase plan is [docs/07](docs/07-roadmap.md). Phase 0 is the skeleton; features start in Phase 1.
 - The Phase 1 implementation spec is [docs/impl/phase1-spec.md](docs/impl/phase1-spec.md): work packages, file ownership and every cross-component contract; its rulings table (I-1 onwards) overrides its body. Change a contract there first, then in code. Progress is in [docs/impl/phase1-status.md](docs/impl/phase1-status.md).
-- The Phase 2 implementation spec is [docs/impl/phase2-spec.md](docs/impl/phase2-spec.md) (decisions from D-38, rulings from I-43, same rules). It restates every Phase 1 contract it changes; Phase 1 contracts it does not restate stay in force. Its shared vectors and samples are in [testdata/phase2/](testdata/phase2/README.md).
-- The design docs carry dated Phase 1 errata ("Phase 1" paragraphs and status tables in docs/01–10, "勘误" sections in the ADRs) that summarize what was built and link to the spec; where a design doc and the spec disagree about Phase 1, the spec wins.
+- The Phase 2 implementation spec is [docs/impl/phase2-spec.md](docs/impl/phase2-spec.md) (decisions from D-38, rulings from I-43, same rules). It restates every Phase 1 contract it changes; Phase 1 contracts it does not restate stay in force. Its shared vectors and samples are in [testdata/phase2/](testdata/phase2/README.md). Progress is in [docs/impl/phase2-status.md](docs/impl/phase2-status.md).
+- The design docs carry dated errata for Phase 1 (2026-09-28) and Phase 2 (2026-10-12): "Phase 1" / "Phase 2" paragraphs and status tables in docs/01–10, "勘误" sections in the ADRs. They summarize what was built and link to the spec; where a design doc and a phase's spec disagree about that phase, the spec wins.
+- Owner-facing documents: the [privacy notice template](docs/privacy-notice-template.md) (update the site's notice before any new client signal goes live) and [ADR-0011](docs/adr/0011-local-emergency-monitor-switch.md) (the local `force_monitor` switch, the only relaxation outside a signed bundle).
 - Other docs link to heading anchors, so keep heading text stable or fix every link (`make docs-check` catches breakage).
 
 ## Conventions

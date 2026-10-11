@@ -4,6 +4,8 @@
 
 标有"Phase 1"的内容是已落地的实现（2026-09-28 勘误）；字段模式、IR 语义、指标标签与文件格式的逐项契约见 [Phase 1 实现规格](impl/phase1-spec.md)（§4、§5、§12、§13）。
 
+标有"Phase 2"的内容是 Phase 2 已落地的做法（2026-10-12 勘误），契约见 [Phase 2 实现规格](impl/phase2-spec.md)（§4 策略字段、§10 配置、§15 事件与指标、§19 运维手册），进度见 [phase2-status](impl/phase2-status.md)。
+
 ## 1. 策略模型
 
 **层级继承**：全局默认 → 站点 → 环境 → 路由，下层覆盖上层。全局或站点级可标记 `locked` 规则（例如"测试环境默认拒绝自动化"），下层不可覆盖；修改 `locked` 规则属于敏感操作（§4）。
@@ -58,6 +60,13 @@
 
 - `identity.crawler.cf_vbot` 来自 `x-mg-cf-vbot`，只作佐证：编译器对"仅凭它放行或阻断"的规则报警告（见 [05 §3.4](05-ai-agent-policy.md#34-cloudflare-verified-bot-标记佐证)）。
 - HTTP/2 帧级指纹在个人版中无限期推迟，不提供 `http.h2_fp`。
+
+- **Phase 2 的字段**（[规格 §4](impl/phase2-spec.md#4-策略字段与-missing-语义wp-r4-实现wp-g4-同步编译器)，D-40、D-64、D-66）：
+  - 新增 `http.navigation`（`Sec-Fetch-Mode: navigate`，或没有该头而 `Accept` 含 `text/html`）。它由客户端的请求头决定，不是安全边界：动作为 `allow` 的规则以它为条件时构建器报错，其他动作只给警告。
+  - 新增 `identity.proof.present`、`identity.proof.replayed`，`identity.proof.valid` 不再恒为 MISSING：`schema_version = 2` 时，在可豁免的导航之外、且路由要求证明或有规则读取它时按校验结果取值，否则为 MISSING。条件含 `identity.proof.present && !identity.proof.valid` 而动作为 `block` 时构建器提示：密钥被清除的普通访客也会命中，这类条件只应用于 `challenge`。
+  - 新增 `identity.token.bound`（凭证带 `cnf.jkt`）与 `identity.token.level_age`（`now − lat`，秒）；`identity.token.level` 增加交互级取值。
+  - 路由新增 `proof: off | required` 与 `min_level: invisible | pow | interactive`；二者都不得与 `never_challenge` 用在同一条路由上。限速器的 `on_exceed: challenge` 可以指定 `interactive`。
+  - `schema_version = 1` 的配置包下，`identity.proof.*` 仍恒为 MISSING，与 Phase 1 相同。
 - Phase 1 的字段是固定模式（Go 编译器的 `Input` 与 Rust 的 `Activation` 完全一致），逐字段的来源、零值与 MISSING 条件见 [规格 §4.1](impl/phase1-spec.md#41-字段表)。`req.headers` 是清洗后的客户端头：名称小写，重复头以 `", "` 连接，不含 `cookie`、`authorization`、`proxy-authorization` 与已删除的上游头族；`http.header_order` 是不重复的头名、按首次出现顺序（交错的重复头顺序无法还原，规则不应依赖它）。
 - **阶段性 MISSING**（D-07）：Phase 1 中 `identity.proof.*`、`identity.agent.*` 恒为 MISSING（能力在 Phase 2 / 3；若按 ABSENT 的零值处理，`!identity.proof.valid` 之类的规则会永远命中、造成挑战循环），`tls.ja4` 恒为 MISSING（`cloudflare` 因 profile，`direct_tls` 因 JA4 只是预研：`ja4_spike` 监听器上的值只写入决定事件）。
 
@@ -140,6 +149,8 @@ policies:
 ```
 
 Phase 1 下这组示例的行为：`login-require-proof` 读取恒为 MISSING 的 `identity.proof.valid`，结果为"未知"，从不命中，只记 `missing_input`（这正是 D-07 不把它当作 ABSENT 的原因）；`login-high-risk` 的 `interactive` 按 `pow` 执行，编译器给出警告（D-08）；`test-env-default-deny` 用 `!has(net.ip)` 显式处理客户端 IP 未知。
+
+Phase 2：配置包为 `schema_version = 2` 时 `identity.proof.valid` 可用，`login-require-proof` 按设计生效；可豁免的导航（GET / HEAD 页面跳转）上它仍为 MISSING，所以不会造成挑战循环。要求证明更直接的做法是给路由设 `proof: required`（[04 §6.1](04-challenge-and-tokens.md#61-请求级持有证明参考-rfc-9449-dpop)）。
 
 ## 3. 发布流程
 
@@ -286,6 +297,12 @@ Draft
 
 **控制面指标**：`mg_cf_audit_failed_checks`（zone、check）、`mg_cf_ips_sync_age_seconds`、`mg_turnstile_secret_rotation_pending`、`mg_audit_anchor_last_success_timestamp`、`mg_aop_cert_expiry_seconds`、Valkey Stream `mg:ev`（组 `nl`）积压（`XPENDING` / 长度）、事件到 verdict 延迟。模型相关指标（分数分布 PSI、特征漂移、shadow 分歧率）在 Phase 4 引入。Phase 1 没有控制面服务：`mgctl` 以 node_exporter textfile 格式（`--metrics-textfile`）写出 `mg_cf_audit_failed_checks{zone, check}`、`mg_cf_audit_last_run_timestamp_seconds{zone}`、`mg_cf_ips_sync_timestamp_seconds`（告警用 `time() - mg_cf_ips_sync_timestamp_seconds` 得到 `mg_cf_ips_sync_age_seconds`）与 `mg_bundle_published_version{site}`（`bundle publish` 写出，用于配置新鲜度告警）。
 
+**Phase 2 的指标**（[规格 §15.5](impl/phase2-spec.md#155-指标phase-1-规格-137-之外新增或改变的)、[§13.7](impl/phase2-spec.md#137-指标)；标签都是有界值）：
+- 交互式与 Provider：`mg_challenge_total` 的 `provider` 取 `none` / `self_hold` / `pow_a11y` / `turnstile`，`result` 新增 `renewed`、`reissued`；`mg_challenge_renew_total{result}`、`mg_interactive_score{provider, mode}`（直方图）、`mg_interactive_available{site}`、`mg_provider_verify_total{provider, outcome, reason}`、`mg_provider_verify_latency_seconds{provider}`、`mg_provider_state{site, provider, state}`、`mg_outbound_override{target}`。
+- 证明、刷新与遥测：`mg_proof_verify_total{result}`、`mg_token_refresh_total{result}`、`mg_telemetry_reports_total{kind, result}`、`mg_double_challenge_total{site, route}` 与 `mg_endpoint_cache_hit_reports_total{site}`（两者只计签名的报告）、`mg_sw_intercept_reports_total{site}`。
+- 其他：`mg_navigations_total{site}`（人类摩擦的分母）、`mg_token_ruc_total{site}`、`mg_site_forced_monitor{site}`；`mg_state_local_overflow_total` 的 `table` 新增 `jti`、`rp`；`mg_event_dropped_total` 的 `class` 新增 `telemetry`；`mg_protocol_rejected_total` 的 `reason` 新增 `bad_target`（无法解析的请求目标不再计为 `bad_method`）。
+- 近线 worker（`metrics_listen`，缺省 `127.0.0.1:9902`）：`mg_nl_entries_total`、`mg_nl_parse_errors_total`、`mg_nl_verdicts_total{site, detector, mode}`、`mg_nl_lag_seconds`、`mg_nl_backlog`、`mg_nl_pending`、`mg_nl_window_dropped_total`、`mg_nl_errors_total`、`mg_nl_last_batch_timestamp_seconds`、`mg_nl_interactive_visitor_share{site}`、`mg_nl_interactive_abandon_share{site}`。
+
 **SLO（初始值）**
 
 | 项目 | 目标 |
@@ -320,6 +337,23 @@ Draft
 | Cloudflare 配置漂移 | `mg_cf_audit_failed_checks` > 0，或 IP 段同步 > 48 小时未成功（定值） | 中 |
 | AOP 证书将过期 | `mg_aop_cert_expiry_seconds` 剩余 < 30 天（定值；Phase 1 没有该指标，由 `mgctl cf audit` 第 3 项警告） | 中 |
 
+**Phase 2 的告警**（[规格 §19](impl/phase2-spec.md#19-所有者运维手册代码之外) 第 8 步，I-56、I-57）：两种形式任选其一：
+- 有 VictoriaMetrics 时，用 vmagent 抓取 `/metrics`、vmalert 加载 `deploy/vmalert/mg-phase2.rules.yml`；
+- 没有时，每日运行 `scripts/mg-daily-check.sh`：它保存上一次的 `/metrics` 快照与 `MainPID`（进程变了只报告、不比较），打印增量与比例，并核对 `cf audit` 第 18 项。
+
+条件：
+- `mg_provider_verify_total` 中 `unavailable` / `misconfigured` 的比例 > 5%（1 小时），以及 Turnstile 被禁用（`MgTurnstileDisabled`）；
+- `mg_double_challenge_total` 1 小时增加 > 10；
+- `mg_nl_backlog > 10000` 持续 10 分钟，或 `mg_nl_lag_seconds > 600`；
+- `mg_site_forced_monitor == 1` 持续超过 1 小时；
+- `mg_endpoint_cache_hit_reports_total`、`mg_sw_intercept_reports_total`、`mg_token_ruc_total`、`mg_state_local_overflow_total` 任一增加；
+- `mg_challenge_renew_total{result="unavailable"}` 增加；
+- 启用了交互式的站点 `mg_interactive_available == 0`（规则文件无法得知哪些站点启用了交互式，由所有者用 `site=~` 或 `--interactive-sites` 列出）；
+- `proof: required` 路由上 `mg_proof_verify_total` 中非 `valid` 的比例 > 5%；
+- `ic.too_fast`、`ic.hold_short`、`ic.no_trusted_input` 占交互式提交的比例 > 5%（SDK 或界面回归）；
+- Valkey `used_memory / maxmemory > 0.8`（假定 exporter 的指标名，脚本用 `valkey-cli INFO memory`）；
+- 人为摩擦超过验收阈值（[09 §15](09-interactive-challenge.md#15-验收标准)）。
+
 ## 6. 审计
 
 - **范围**：控制面与 `mgctl` 的所有写操作（策略、名单、Agent、授权、工单、密钥、账号与凭证、设置、Cloudflare 写操作）、敏感操作的确认与延迟、登录与重新认证、API Token 使用、数据导出、查看含个人信息明细的调查操作。
@@ -352,7 +386,25 @@ Draft
 | 遥测 | 只在 `POST /__mg/c` 携带 `env` 时写（I-32）；`env` / `auto` 按 SDK schema 只保留已知字段（字符串 ≤ 256 字节、数组 ≤ 16 项），不含 `ua.userAgent` |
 | IP | 决定事件 `ctx.net.ip` 为明文（`vl-main` 30 天）；访问记录只有 `ip_prefix`；`mg:ev` 只有 `K_pseudo` 的 HMAC（`ipk` / `pfk`）；指标标签从不含 IP |
 | Cookie | 事件只记 Cookie 名（至多 32 个，不含 Cloudflare 自己的 Cookie 与 `__Host-mg_clr`），从不记值 |
+
+**Phase 2 的数据最小化**（D-48、D-61、D-62，[规格 §9.4–§9.7](impl/phase2-spec.md#94-post-mgt遥测d-48)、[§12.8](impl/phase2-spec.md#128-行为摘要缺省关闭d-48)）：
+
+| 项 | 做法 |
+|---|---|
+| 会话公钥 | 公钥随每个 `MG-Proof` 发送；`jkt` 只以 `K_pseudo` 的 HMAC 出现在 Valkey 键中，不进事件与 `mg:ev`；没有有效凭证或密钥满 7 天即换新，避免成为跨会话的长期标识 |
+| 交互遥测 | 端上量化，`t` ≤ 2048 字节；没有原始坐标、轨迹、按键值与跨站标识；写 `vl-short`（7 天） |
+| 行为摘要 | 缺省关闭；站点在 SDK 标签与配置包两处都开启才采集与接收；只有分桶计数，不含按键内容、表单内容与页面文本 |
+| 刷新时的遥测 | 只在开启行为摘要时记录 |
+| Cookie | `http.cookie_names` 与事件同样排除 `__Host-mg_st` 与 `__Host-mg_a11y`：页面上的第三方脚本与策略都无从得知访客用过无障碍路径；`schema_version = 2` 时三个 MorphGate Cookie 在转发前删除，不进入源站日志 |
+| 路径 | 选中路由之前就应答的请求同样按 `redact_path` 改写（bootstrap 与 `lkg_invalid` 除外），超长路径只记长度；`mg:ev` 的路径只有 `K_pseudo` 的 HMAC，`redact_path` 路由用路由名 |
+| 近线 | worker 的日志与 `kind=verdict` 只有伪名键，没有 IP |
+| 日志 | D-31 的"永不写入"清单增加：`MG-Proof` 原文、会话公钥 JWK 与 `jkt` 明文、提交签名、Turnstile token 与 secret、`/__mg/t` 与交互遥测的内容 |
+
+新的客户端信号上线之前，先按 [隐私说明模板](privacy-notice-template.md) 更新站点的隐私说明（[规格 §19](impl/phase2-spec.md#19-所有者运维手册代码之外) 第 2 步）。
+
 - **Turnstile（启用时）**：按 Turnstile Privacy Addendum（2025-06-18 更新），访客 IP、TLS 指纹、User-Agent 以及 sitekey 与来源站点会发送给 Cloudflare；Cloudflare 在机器人检测上作为处理者，在用这些信号改进 Turnstile 时作为控制者；附录未写明保留期限。启用的站点须在隐私政策中写明（Invisible 模式必须引用该附录，MorphGate 用 Managed 模式，仍建议引用）；按站点启用、永不对中国大陆访客提供，对非大陆访客的跨境评估需法务确认；可选的腾讯云 / 阿里云验证码同样需要披露（[09 §8](09-interactive-challenge.md#8-turnstile-适配)）。
+
+- **Phase 2**（D-70）：所有者决定大陆与国家未知的访客也可以选用 Turnstile（`deny_countries` 缺省为空），上一条的"永不对中国大陆访客提供"不再成立：被选中 Turnstile 的大陆访客，其 IP 同样经 siteverify 发给 Cloudflare，隐私说明须写明；大陆访客的跨境处理是否需要额外告知或同意，需法务确认。所有者可以写 `deny_countries: [CN]` 恢复排除。腾讯云 / 阿里云验证码不再规划。
 - **日志留存**：《网络安全法》要求网络日志留存不少于六个月，站点作为网络运营者适用。DecisionEvent 明细只热存 30 天；留存要求由最小访问记录（`kind=access`，假名化、不采样）每日归档到对象存储满足（导出方式见 [02 §9](02-data-flow.md#9-采样与保留)；归档是否保留 IP 明文需法务确认）。源站自身访问日志已满足要求时可关闭归档。
 - **默认保留期**
 
@@ -389,6 +441,14 @@ Draft
 | 解析器健壮性 | 对 ClientHello 解析（`direct_tls` JA4）、`x-mg-cf-*` 头解析、凭证解析、签名头解析、Challenge 提交解码做模糊测试（cargo-fuzz）。Phase 1：每个解析器（头、Cookie、C、提交体、配置包、工件、密钥文件、IR）都有固定种子、≥ 10,000 个输入的随机输入测试，断言返回错误而不 panic；cargo-fuzz 尚未接入 |
 | 安全测试 | 每个组件做 STRIDE 威胁建模；只在自有环境测试；可选安排经授权的第三方渗透测试 |
 
+Phase 2 对上表的修正：
+- **Turnstile secret**（D-51）：不在配置包中，也不用 `secret_ref`：`edge.toml` `[[sites]] turnstile_keys = "cred://<name>"` 指向 `mg-turnstile-keys` 文件（`[当前, 上一个]`，1–2 个值），以 systemd credential 交付；文件格式错误或 `site` 不符时 `--check-config` 失败。`mgctl turnstile secret import | rotate | drop-previous` 管理它，API token 只授予 Account → Turnstile → Edit。
+- **Valkey**：Edge 的 ACL 增加 `~mg:jti:* ~mg:jc:* ~mg:rp:*`；近线 worker 有独立的 ACL 用户 `mg-nearline`，只能读 `mg:ev`、读写本站点的 `mg:v:<site>:*`，口令以 `LoadCredentialEncrypted` 交付。`noeviction` 下打开 `events.stream` 之前先设 `maxmemory`（[01 §8](01-architecture.md#8-部署与高可用)）。
+- **出站**：siteverify 只允许精确的 URL；回环 mock 只在 `MG_EDGE_TEST_OUTBOUND=1` 时可用，否则启动与 `--check-config` 失败。
+- **解析器健壮性**：上表"cargo-fuzz 尚未接入"已过时：Phase 1 之后接入 cargo-fuzz，Phase 2 增加 `mg_proof`、`submission_v2`、`renew`、`ix_telemetry`、`refresh`、`telemetry`、`siteverify_response`、`turnstile_keys`，共 16 个目标（`fuzz/`，`make fuzz`，`.github/workflows/fuzz.yml` 每天运行）。
+- **供应链**（D-63）：Web SDK 的 npm 包改由 GitHub Actions 以 trusted publishing 带 provenance 发布（`.github/workflows/publish-sdk.yml`），CI 比对构建产物与 Edge 夹具；不对 SDK 目录做签名校验：Edge 主机上的 root 本来就能替换任何文件。
+- **仓库**：所有者开启 GitHub secret scanning 与 push protection（[规格 §19](impl/phase2-spec.md#19-所有者运维手册代码之外) 第 11 步）。
+
 **密钥清单**
 
 | 密钥 | 范围与位置 | 轮换 |
@@ -402,6 +462,8 @@ Draft
 | Valkey ACL 口令 | Edge 的 ACL 用户，按 Edge 主机以 systemd credential 交付（`[valkey] password`，URL 中从不含口令） | 按需 |
 | Turnstile secret | 按站点（每站点一个 widget） | 按需，轮换期间新旧并存 |
 | MessageMAC Cookie 密钥 `K_cf`（可选，Pro 及以上） | 按站点，独立于以上所有密钥；Edge 侧以 systemd credentials 交付，同时以字面量写在 Cloudflare 规则中（[08 §2.9](08-upstream-and-cloudflare.md#29-可选hmac-cookie-跳过pro-及以上)） | 按需，规则同时接受新旧 key |
+
+Phase 2：Turnstile secret 一行的文件为 `mg-turnstile-keys`（`mgctl turnstile secret rotate` 写出 `[新, 旧]`，部署并 reload 后 `drop-previous`；常规轮换显式传 `invalidate_immediately=false`，旧 secret 保留 2 小时）。另有近线 worker 的 Valkey ACL 口令（`mg-nearline-valkey`，按需轮换）。
 
 Phase 1 的密钥文件格式见 [规格 §12.6、§12.7](impl/phase1-spec.md#127-站点密钥与其他密钥)：Edge 读取的是明文 JSON 的 systemd credential（≤ 64 KiB，未知字段拒绝，`created_at` 为 RFC 3339）；所有者工作站上只有 age 加密的 `.json.age`，`mgctl keys export` 把明文经管道直接交给 Edge 主机上的 `systemd-creds encrypt`，任何磁盘上都不留明文。
 

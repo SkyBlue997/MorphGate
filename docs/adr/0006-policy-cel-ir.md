@@ -1,7 +1,7 @@
 # ADR-0006：策略语言采用 CEL 语法，控制面编译为 IR，数据面只求值 IR
 
 - 状态：已接受
-- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：MISSING 求值语义、签名密钥位置）；2026-09-28 Phase 1 勘误（决策 2、6、7、8 的落地方式，见文末"勘误"，依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-02、D-19、D-26 与裁决 I-8、I-9、I-19、I-20、I-21）
+- 日期：2026-09-27（同日按 v0.2.1 一致性裁决修订：MISSING 求值语义、签名密钥位置）；2026-09-28 Phase 1 勘误（决策 2、6、7、8 的落地方式，见文末"勘误"，依据 [Phase 1 实现规格](../impl/phase1-spec.md) D-02、D-19、D-26 与裁决 I-8、I-9、I-19、I-20、I-21）；2026-10-12 勘误：Phase 2 实现口径（依据 [Phase 2 实现规格](../impl/phase2-spec.md) D-40、D-64、D-66、I-48、I-51，见文末"勘误"）
 - 相关：[06 策略引擎、后台与审计](../06-policy-console-observability.md)、[ADR-0001](0001-tech-stack-rust-go.md)、[ADR-0003](0003-upstream-profile-cdn-first.md)、[ADR-0010](0010-single-owner-model.md)
 
 ## 背景
@@ -53,6 +53,19 @@
 | 7：一致性 | `testdata/policy-ir/cases.json`（手写，含 MISSING 上下文）与 Go 生成的 `cases.ir.json`（逐字节比较 IR 与 `max_steps`）；Go 参考求值器用 cel-go 部分求值实现 MISSING 语义，Rust 求值同一批用例，另断言实际步数不超过 `max_steps`。2026-09-28 共 316 个用例，其中 253 个编译出 IR、其余为编译失败用例 | 规格 §5.8 |
 | 规则顺序 | 阶段 `identity < protocol < rate_limit < bot < custom < default`；阶段内 `priority` 大者先，同优先级按 `id` 字节序；`disabled` 与已过期的规则不进配置包 | D-19 |
 | 分阶段的构造 | `tarpit` 动作与 Phase 2 的挑战类型由 `mgctl policy check` 照常接受，由 `mgctl bundle build` 与 Edge 加载时拒绝；`params.type: interactive` 在 Phase 1 按 `pow` 执行，编译器告警 | D-08、D-09、I-19 |
+
+## 勘误（2026-10-12，Phase 2 实现）
+
+结论（CEL 语法，控制面编译为受限 IR，数据面只求值 IR）不变。Phase 2 的变化（D-xx 见规格 [§0.3](../impl/phase2-spec.md#03-决定与偏离)，I-xx 见[集成者裁决](../impl/phase2-spec.md#集成者裁决优先于正文)）：
+
+| 项 | Phase 2 |
+|---|---|
+| 新字段（[规格 §4](../impl/phase2-spec.md#4-策略字段与-missing-语义wp-r4-实现wp-g4-同步编译器)） | `http.navigation`、`identity.proof.present`、`identity.proof.replayed`、`identity.token.bound`、`identity.token.level_age`；`identity.proof.valid` 不再恒为 MISSING（可豁免的导航上、以及不需要校验时仍为 MISSING）。字段路径、类型与大小上限列在 `testdata/policy-ir/fields.json`，Go 与 Rust 的测试都读取它 |
+| 编译器检查 | 动作为 `allow` 的规则以 `http.navigation` 为条件时报错：它由客户端控制，攻击者加一个请求头就能命中（D-40）；`identity.proof.present && !identity.proof.valid` 用于 `block` 时提示改用 `challenge` |
+| `schema_version`（D-66） | 读取 Phase 2 字段的启用规则让配置包写 `schema_version = 2`，只读 `identity.proof.valid` 的规则除外：保持 1 并警告该字段恒为 MISSING（I-51）；`schema_version = 1` 时 `identity.proof.*` 恒为 MISSING |
+| 按需校验 | Edge 加载配置包时用 `reads_field` 遍历 IR，只有路由要求证明或有规则读取 `identity.proof.*` 时才校验 `MG-Proof`（I-48），避免任何路由上的任意证明都触发椭圆曲线运算 |
+| 分阶段的构造 | `params.type: interactive` 与限速器的 `on_exceed: challenge` 指定 `interactive` 在交互式可用时照常执行，不可用时按 `pow`（D-08 改为条件生效）；`tarpit`、`step_up`、`attestation` 仍被拒绝（D-55） |
+| 路由 | 新增 `proof: required` 与 `min_level`（D-64）；二者都不得与 `never_challenge` 同用 |
 
 ## 参考
 

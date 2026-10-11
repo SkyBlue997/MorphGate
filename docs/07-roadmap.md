@@ -24,7 +24,7 @@ P0 (1-2w) --> P1 (4-6w) --> P2 (5-7w) --> P3 (5-7w)        main line: 15-22 week
 
 Phase 4 / 5 的单项可在 Phase 1 稳定后按需插入（例如某站点改用境内 CDN 时提前做对应 UpstreamProfile），不必等 Phase 3 结束。
 
-**当前进度**（2026-09-28）：Phase 0 完成；Phase 1 的实现阶段 1–3 已完成，接下来是所有者在真实 zone 上的运行步骤（见 [Phase 1 实现进度](#phase-1-实现进度)）。
+**当前进度**（2026-10-12）：Phase 0 完成；Phase 1 的实现阶段 1–3 已完成，所有者站点自 2026-09-28 起经 Cloudflare 以 monitor 模式运行，验收收尾由所有者进行（见 [Phase 1 实现进度](#phase-1-实现进度)）；Phase 2 的规格与实现阶段 1–2 已合入，阶段 3 进行中（见 [Phase 2 实现进度](#phase-2-实现进度)）。
 
 ## Phase 0：基础（1–2 周）
 
@@ -110,13 +110,13 @@ docs/                         design docs + adr/
 | 实现阶段 1 | 11 个并行工作包：`mg-core`、`mg-challenge`、`mg-intel`、`mg-edge-core`（4 个）、Go 策略编译器、`mgctl` 运维、Cloudflare 与情报同步、Web SDK 挑战页 | 完成 |
 | 实现阶段 2 | `mg-edge` 接线：骨架、决策、Challenge 端点、事件与指标；最终安全审查与本机端到端；审查后修复 I-29..I-32 | 完成 |
 | 实现阶段 3 | Validation Lab 验收场景与 `lab-e2e`、`direct_tls` 的 JA4 预研、设计文档勘误；集成裁决 I-33..I-35 | 完成 |
-| 所有者运行步骤 | 在真实 zone 上部署规则、monitor 周、浏览器回归、`cf audit` 全绿（[规格 §17](impl/phase1-spec.md#17-所有者运维手册代码之外)） | 未开始 |
+| 所有者运行步骤 | 在真实 zone 上部署规则、monitor 周、浏览器回归、`cf audit` 全绿（[规格 §17](impl/phase1-spec.md#17-所有者运维手册代码之外)） | 进行中：monitor 自 2026-09-28 起运行（2026-10-12 更新） |
 
 | 验收项 | 当前状态 |
 |---|---|
-| monitor 运行 ≥ 1 周 | 待所有者在真实 zone 上运行 |
+| monitor 运行 ≥ 1 周 | 运行中：自 2026-09-28 起（已超过 1 周），待核对该期间的指标 |
 | 附加延迟 p99 < 5 ms | 指标已提供（`kind="site"`），待生产数据 |
-| 冒充爬虫 100% 识别；非 JS 客户端拿不到凭证 | `make lab-e2e` 本机通过：已定结果的冒充请求 13/13 为 `impersonator` 且被阻断，6 个真爬虫请求已验证；4 次挑战提交无一成功，受保护路由 0 个请求到达源站。CI 的 `lab-e2e` 作业已加入，待首次远端运行 |
+| 冒充爬虫 100% 识别；非 JS 客户端拿不到凭证 | `make lab-e2e` 本机通过：已定结果的冒充请求 13/13 为 `impersonator` 且被阻断，6 个真爬虫请求已验证；4 次挑战提交无一成功，受保护路由 0 个请求到达源站。CI 的 `lab-e2e` 作业已通过 |
 | `mgctl cf audit` 全绿 | 工具已实现，待在真实 zone 上运行 |
 | 真人浏览回归 | 待所有者执行 |
 | JA4 预研结论 | 完成（[ADR-0002 勘误](adr/0002-edge-pingora-boringssl.md#勘误2026-09-28ja4-预研)）：链路可行、每握手约 0.5 µs、`ja4_spike` 缺省关闭；不以原始 JA4 做 `bind.tfp` 硬绑定 |
@@ -133,6 +133,14 @@ docs/                         design docs + adr/
 | Provider | trait `InteractiveChallengeProvider` 与 `self_hold` / `pow_a11y` 在 mg-core，`turnstile` 在 mg-edge（经注入的 `OutboundHttp`）；Turnstile 只用于非大陆访客，故障时回退自研、绝不 fail-open（[09 §7](09-interactive-challenge.md#7-provider-选择策略)）；`mgctl` 管理 Turnstile widget 与 secret 轮换；CI 用测试 sitekey / secret |
 | 近线 | Go worker 消费 Valkey Stream `mg:ev`（组 `nl`，`XADD MAXLEN ~`）：会话聚合、实体 verdict、扫描器识别、verdict 回灌 |
 
+**Phase 2 的实现口径**（2026-10-12 勘误，[Phase 2 实现规格](impl/phase2-spec.md) 的 D-xx，见其 [§0.3](impl/phase2-spec.md#03-决定与偏离)）：
+- **Web SDK v1**：不做 Edge 侧 HTML 注入，站点模板引用 `/__mg/s/mg.js`（D-39）；行为摘要缺省关闭（D-48）；不做页内覆盖层，交互式挑战跳转 `/__mg/v`（D-57）。
+- **绑定与防重放**：吊销集与 pub/sub 移到 Phase 3（D-54）；`MG-Nonce` 与 `step_up` 推迟（D-55）。Phase 2 中"服务端 nonce"只指 C 的一次性 nonce；`MG-Proof` 只有 `htm`、`htu`、`iat`、`jti`（D-40）。
+- **无障碍路径**：键盘与"无法按住？"合并为单次激活（D-65）；站点账号替代（passkey / 邮件链接）推迟（D-56）。
+- **Provider**：所有者决定大陆与国家未知的访客也可以选用 Turnstile，失败自动回退，`deny_countries` 缺省为空（D-70）；Turnstile 只用回环 mock siteverify 测试，CI 不用测试 sitekey / secret（D-52）。
+- **近线**：Go 命令 `mg-nearline`，窗口在 worker 内存中，verdict 只抬高风险（D-53）。
+- **人类证据**：交互级凭证保持 −0.4，交互评分只交付 shadow（D-68、D-49）。
+
 **验收**
 
 - 重放 / 拼接的 C 100% 拒绝。
@@ -141,6 +149,29 @@ docs/                         design docs + adr/
 - 按住模式人类中位完成时间 < 4 s；无障碍 PoW 中位 < 10 s。
 - 仅用键盘、以及使用读屏软件均能完成验证。
 - Turnstile 故障（api.js 加载失败、siteverify 超时或报错）时正确回退自研，且不放行。
+
+Phase 2 的验收口径（证据与责任人见 [规格 §20](impl/phase2-spec.md#20-验收映射)）："跨客户端提交 100% 拒绝"只对已绑定会话密钥的 C 声明；未绑定的 C 在 UA 家族不同、或 /24 与 ASN 都不同时拒绝，同一 ASN 内换 /24 只记软结果（D-41 的已知边界）。另加：`deny_countries` 中的国家从不得到 Turnstile，大陆访客的 Turnstile 失败时回退到内置验证且不计失败（D-70）；近线事件到 verdict 的 p95 < 10 s；附加延迟 p99 < 5 ms 仍成立（含证明校验）；升级二进制不改变线上行为（D-66）。
+
+### Phase 2 实现进度
+
+实现契约是 [Phase 2 实现规格](impl/phase2-spec.md)（含集成者裁决 I-43 起），逐 WP 的记录在 [phase2-status](impl/phase2-status.md)。截至 2026-10-12：
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| 规格 | 12 个工作包、决定 D-38..D-70、全部跨组件契约、三份独立评审；契约文件先行落地 | 完成（PR #19、#20） |
+| 实现阶段 1 | 7 个并行工作包：`mg-core` Provider 与交互评估（R4）、`mg-challenge` 原语（R5）、`mg-edge-core` 状态 / 事件 / 配置包（C5）与出站 HTTP（C6）、Go 站点 YAML 与 `mgctl turnstile`（G4）、近线 worker（N1）、Web SDK v1（W2） | 完成（PR #22–#30） |
+| 实现阶段 2 | `mg-edge` 依次接线：交互式与 SDK manifest v2 切换（E2a）、证明 / 刷新 / 遥测 / 观测（E2b）、Turnstile（E2c） | 完成（PR #32–#37） |
+| 实现阶段 3 | Validation Lab 的 Phase 2 场景与近线端到端（L2）；设计文档勘误、威胁模型 v1、ADR-0011、隐私说明模板（D2） | 进行中 |
+| 所有者运行步骤 | Phase 1 验收收尾、本机 Valkey、模板接入、分路由启用证明与交互式、辅助技术实测、隐私说明、可选 Turnstile（[规格 §19](impl/phase2-spec.md#19-所有者运维手册代码之外)） | 未开始 |
+
+| 验收项 | 当前状态 |
+|---|---|
+| 重放、拼接、篡改的 C 100% 拒绝；跨客户端提交（已绑定的 C）100% 拒绝；并发双提交只有一个进入签发 | `edge/tests` 回环用例通过（WP-E2a）；Lab 否定性场景随 WP-L2 |
+| Turnstile 绑定失败 100% 拒绝；故障时回退且不放行；三条路径在 CI 中覆盖 | mock siteverify 用例通过（WP-C6、WP-E2c）；SDK 回退测试通过（WP-W2） |
+| `deny_countries` 中的国家从不得到 Turnstile | 选择函数真值表与 Edge 测试通过；Lab 场景随 WP-L2 |
+| 人类交互式比例 < 0.1%；按住中位 < 4 s，`pow_a11y` 中位 < 10 s；键盘与读屏可完成 | 指标与事件已提供，待所有者的 shadow 数据与辅助技术实测 |
+| 近线事件到 verdict p95 < 10 s | 待 `lab-e2e`（WP-L2）与生产 `mg_nl_lag_seconds` |
+| 附加延迟 p99 < 5 ms（含证明校验）；升级二进制不改变线上行为 | `schema_version = 1` 的 Edge 测试通过；生产数据待所有者 |
 
 ## Phase 3：AI Agent 治理与控制面（5–7 周）
 
@@ -175,6 +206,8 @@ docs/                         design docs + adr/
 | 大陆验证码 Provider（可选、付费） | 大陆用户需要熟悉的滑块等交互 | `tencent` / `aliyun_v2`，接同一 Provider trait；不采纳厂商"服务故障时默认通过"的建议 | Provider 不可用或返回故障票据时不放行；回退自研正确 |
 | 图关联 | 近线 verdict 稳定且有调查需求 | 会话密钥 × 账号 × IP 前缀 × 指纹簇 | 在 Lab 回放数据上能关联出已知同源会话 |
 
+Phase 2（D-70）：大陆验证码 Provider 一行不再规划，移入下方"不再规划或推迟的项目"。
+
 ## Phase 5：Morph 与加固（持续）
 
 | 项 | 前提 / 说明 |
@@ -200,6 +233,9 @@ docs/                         design docs + adr/
 | API 防护（API Key、OpenAPI 正向模型） | Phase 2 | 按需、未排期 | 流量以浏览器为主 |
 | Mobile SDK、统一凭证、鸿蒙 SDK | Phase 4、5 | Phase 5，仅在需要时 | 移动端降为按需、后期 |
 | 多区域、等保测评准备、数据驻留 | Phase 5 | 删除 | 自用平台不需要作为服务通过等保测评；访客数据合规义务仍在（见 [06](06-policy-console-observability.md#7-隐私与合规)） |
+| 大陆验证码 Provider（`tencent` / `aliyun_v2`） | Phase 4 | 不再规划（2026-10-12，D-70） | 所有者不需要大陆专用的验证码服务；大陆访客用内置验证，或经所有者配置选用 Turnstile，失败自动回退 |
+| 吊销集与 pub/sub | Phase 2 | Phase 3（D-54） | Phase 2 验收不依赖它；近线的会话 verdict 起软吊销作用 |
+| `step_up`（`bh`、`MG-Nonce`）、站点账号替代路径 | Phase 2 | 推迟到需要时（D-55、D-56） | `bh` 要求 Edge 缓冲请求体；账号替代需要源站到 Edge 的签名断言 |
 
 ## 贯穿各阶段
 
@@ -230,6 +266,8 @@ docs/                         design docs + adr/
 | JA4+ 许可 | JA4+ 为 FoxIO License 1.1、patent pending；有收入站点是否属于非商业用途存在不确定性 | 默认只用 JA4（BSD-3）；JA4+ 放在默认关闭的 Cargo feature `ja4plus` 后，有收入站点启用前先咨询 FoxIO；永不作为托管服务提供给他人 |
 | 隐私合规 | 受保护网站的访客数据仍受 PIPL 等约束；启用 Turnstile 会把访客 IP、TLS 指纹、UA 发往 Cloudflare | 默认最小化；启用 Turnstile 的站点在隐私声明中说明；保留"日志留存 ≥ 6 个月"提示（见 [06](06-policy-console-observability.md#7-隐私与合规)） |
 
+Phase 2 对上表的修正（D-70）："Turnstile 在中国大陆不受支持"一行的缓解改为：大陆访客也可以被选中 Turnstile，客户端在不支持、加载失败或 5 s 未就绪时回退自研、不计失败，服务端在 siteverify 不可用时附新 C 并排除 Turnstile；所有者可以写 `deny_countries: [CN]` 恢复排除。"隐私合规"一行：启用 Turnstile 的站点在隐私说明中写明大陆访客的 IP 同样会发给 Cloudflare（[隐私说明模板](privacy-notice-template.md)）。
+
 ## 已决策
 
 | # | 决策 | 对路线的影响 |
@@ -239,6 +277,8 @@ docs/                         design docs + adr/
 | 3 | 部署在公有云 | 精简拓扑：Cloudflare → Tunnel → Edge（systemd）→ 源站，外加一台大脑 VM；不用 Kubernetes |
 | 4 | 交互式 Challenge **自研**，并接入 Cloudflare（前置 CDN + Turnstile 可选 Provider） | Phase 2 做自研按住验证、无障碍路径与 Provider trait；Turnstile 只用于非大陆访客且必须可回退 |
 | 5 | 平台**仅所有者自用**，只用于其几个网站 | 去掉多租户、SaaS、多人审批；工期按单人估算；成本是一级约束 |
+
+Phase 2：第 4 条中"Turnstile 只用于非大陆访客"由所有者决定 D-70（2026-10-12）改为：大陆与国家未知的访客也可以选用，失败时自动回退，所有者可按国家排除。
 
 ## 仍待确认
 
@@ -252,6 +292,8 @@ docs/                         design docs + adr/
 | Bot Fight Mode 当前是否开启 | Free 区需关闭，否则会在 `/__mg/*` 前插入不可控挑战 | Phase 1 monitor 上线前 |
 | 真实 zone 上的实测项：经 Tunnel 到达的 `CF-Connecting-IP`；访客自带的 `CF-Worker` 头是否被 Cloudflare 删除或覆盖；Cloudflare 是否把源站的 414 / 431 / 425 原样回传；`cf.tls_*` 字段在各套餐与 HTTP/3 下的可用性及 `ciphers_sha1` 的有效拼写；`bot_management` 接口在各套餐下的字段；挑战页经 Cloudflare 后的 `cf-cache-status` 是否为 `DYNAMIC` / `BYPASS` | 客户端 IP；`CF-Worker` 不被删除时访客只能让自己被 403；EDGE_TLS 缺失告警的噪声；`cf audit` 第 9、10、16 项的自动化程度；超长请求与早期数据的用户体验；缓存泄漏 | Phase 1 monitor 周内（[规格 §19](impl/phase1-spec.md#19-待实测与未决)；Valkey ACL 一项已在 9.1.2 上实测通过） |
 | 首次 `mgctl crawler sync` 前核对官方 IP 段 URL 与 UA 标识 | 源文件中的 URL 取自规格、未用工具重新抓取；失效的 URL 首次同步即失败 | 首次同步前 |
+
+Phase 2：站点账号替代路径推迟（D-56），"站点是否有登录"不再阻塞 Phase 2。Phase 2 新增的待实测项见 [规格 §21](impl/phase2-spec.md#21-待实测与未决)：Turnstile 的若干服务端行为、`cf-mitigated` 的频率、Safari 的密钥丢失率、禁用 JIT 环境下的 PoW 耗时、低端设备的哈希速率、评分阈值、内置浏览器的后台定时器、`mg:ev` v2 的实际大小，以及大陆访客选用 Turnstile 后的实际效果。
 
 ## 参考
 
