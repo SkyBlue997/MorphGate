@@ -329,3 +329,26 @@ fn version_names_the_commit() {
         "{commit:?}"
     );
 }
+
+/// mg-edge logs to its own journald namespace, whose shipped configuration
+/// caps retention at 14 days (spec §17 step 4) without changing the host's
+/// other journals.
+#[test]
+fn journald_namespace_caps_retention() {
+    let unit = std::fs::read_to_string(repo(UNIT)).unwrap();
+    let namespace = unit_values(&unit, "LogNamespace");
+    assert_eq!(namespace.len(), 1, "{UNIT} needs exactly one LogNamespace=");
+    let conf_path = format!("deploy/systemd/journald@{}.conf", namespace[0]);
+    let conf = std::fs::read_to_string(repo(&conf_path))
+        .unwrap_or_else(|e| panic!("{conf_path} must ship with the unit: {e}"));
+    assert!(conf.lines().any(|l| l.trim() == "[Journal]"), "{conf_path}");
+    assert_eq!(
+        unit_values(&conf, "MaxRetentionSec"),
+        ["14day"],
+        "{conf_path}"
+    );
+    assert!(
+        unit.contains(&format!("journalctl --namespace={}", namespace[0])),
+        "{UNIT} must say how to read the namespaced log"
+    );
+}

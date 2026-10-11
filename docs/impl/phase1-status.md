@@ -18,8 +18,9 @@
 | Phase 1 之后 | 裁决 I-37：路由级 `never_challenge`（`Route.never_challenge`；只允许 low / medium 且不 `require_clearance` 的路由；多路径视图取"与"；CHALLENGE 只记录，BLOCK / RATE_LIMIT 照常；Go 构建器、`mgctl bundle verify` 与审计、Edge 执行层） | 完成 | PR #6 |
 | Phase 1 之后 | 裁决 I-38：Edge → 源站认证头 `MG-Origin-Auth`（edge.toml `[[sites]] origin_keys`，`mg-origin-keys` 密钥文件；HMAC-SHA256 覆盖时间戳、方法、请求目标与 MG-* 头，60 秒时间窗；`mgctl keys gen-origin`；`adapters/origin` 源站参考校验；`kat.json` `origin_auth` 向量） | 完成 | PR #7 |
 | Phase 1 之后 | 裁决 I-39：fetch 被挑战后的验证入口 `GET /__mg/v?ret=`（按导航到 `ret` 决策；阻断、限速照常，其余一律 `pow` 挑战，`rule_id = edge.verify`；`ret` 解码后按 §6.4 校验，无效时用 `fallback_ret`；SDK `MorphGate.fetch()` / `verify()` / `verifyUrl()`，每个页面路径 60 秒只跳一次；Lab 无 JS 场景加一步） | 完成 | PR #8 |
-| Phase 1 之后 | 裁决 I-40：源站头 `MG-Client-IP-Prefix`（IPv4 `/32`、IPv6 所在 `/64`，未知时 `unknown`；列入 `MG-Origin-Auth` 签名，`kat.json` 增加 IPv6 向量） | 完成，待 PR 合并 | 见分支 `claude/bot-guard-takeover-zcsbs5` |
-| Phase 1 之后 | 构建提交号：`mg-edge --version` 输出 `0.1.0 (<12 位提交号>)`，启动日志与 `mg_edge_info{commit}` 相同（`edge/build.rs`；没有 Git 检出时为 `unknown`，可用 `MG_EDGE_COMMIT` 指定） | 完成，待 PR 合并 | 见分支 `claude/bot-guard-takeover-zcsbs5` |
+| Phase 1 之后 | 裁决 I-40：源站头 `MG-Client-IP-Prefix`（IPv4 `/32`、IPv6 所在 `/64`，未知时 `unknown`；列入 `MG-Origin-Auth` 签名，`kat.json` 增加 IPv6 向量） | 完成 | PR #9 |
+| Phase 1 之后 | 构建提交号：`mg-edge --version` 输出 `0.1.0 (<12 位提交号>)`，启动日志与 `mg_edge_info{commit}` 相同（`edge/build.rs`；没有 Git 检出时为 `unknown`，可用 `MG_EDGE_COMMIT` 指定） | 完成 | PR #9 |
+| Phase 1 之后 | 运维文档：单机形态（本机 Valkey + `local_replay_authoritative`，没有 VictoriaMetrics 时 `cf audit` 第 18 项用 `/metrics` 快照判定，01 §8）；mg-edge 日志写入独立的 journald 命名空间 `morphgate`，保留 14 天（`deploy/systemd/journald@morphgate.conf`） | 完成，待 PR 合并 | 见分支 `claude/bot-guard-takeover-zcsbs5` |
 
 ## 2. 当前代码状态
 

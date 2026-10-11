@@ -27,7 +27,7 @@ MorphGate is a **defensive** bot-management platform. Its single owner runs it o
 | `adapters/origin/` | Reference `MG-Origin-Auth` check (Node, `node:crypto` only) that the owner's origin copies to verify Edge → origin requests (spec I-38) |
 | `deploy/intel/` | Owner-maintained crawler registry source (`crawler-registry.yaml`), input to `mgctl crawler sync` |
 | `deploy/compose/` | Dev environment: Valkey, PostgreSQL, VictoriaMetrics, VictoriaLogs (`vl-main` 30d, `vl-short` 7d), mock origin; optional profiles `grafana`, `tunnel` (cloudflared) and `lab` (Validation Lab on an internal network) |
-| `deploy/systemd/` | `mg-edge.service` (Pingora graceful upgrade via `systemctl reload`) and `edge.toml.example`, kept in sync by `edge/tests/shipped_configs.rs` |
+| `deploy/systemd/` | `mg-edge.service` (Pingora graceful upgrade via `systemctl reload`), `edge.toml.example` and `journald@morphgate.conf` (the Edge's own journald namespace, 14-day retention), kept in sync by `edge/tests/shipped_configs.rs` |
 | `scripts/` | `gen-proto.sh`, `check_doc_links.py`, `edge-smoke.sh`, `lab-e2e.sh`, `lab-egress-check.sh` |
 | `testdata/` | Cross-component fixtures: `phase1/kat.json` (crypto / PoW / key known-answer vectors), `phase1/keys/` and `phase1/artifacts/` (canonical valid and invalid key-file and artifact samples), `policy-ir/` (Go ↔ Rust policy IR conformance); `core/testdata/gcra-cases.json` is shared by Rust and the Valkey Lua script |
 
