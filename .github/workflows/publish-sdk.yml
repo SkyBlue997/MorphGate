@@ -1,0 +1,88 @@
+name: Publish Web SDK
+
+# Publishes @ermiaodada/morphgate-web-sdk to npm with provenance
+# (docs/impl/phase2-spec.md §12.9, D-63). Manual only: run it from the
+# Actions tab on a `web-sdk-v<version>` tag (pick the tag as the ref), where
+# <version> equals sdk/web/package.json "version". npm trusted publishing
+# authenticates through GitHub's OIDC token, so there is no long-lived npm
+# token; the owner registers this repository and this workflow file as the
+# package's trusted publisher on npmjs.com once (spec §19 step 11).
+#
+# Before publishing, the job proves that what it publishes is what the Edge
+# is tested against: the fresh build must equal edge/tests/fixtures/sdk/
+# byte for byte. The package is then published with --ignore-scripts, so
+# the verified dist/ is exactly what goes out (prepack would rebuild it).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs (the comment names the
+# release the SHA was taken from); bump SHA and comment together, as in ci.yml.
+
+concurrency:
+  group: publish-sdk
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish Web SDK to npm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Require a web-sdk-v* tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" != "tag" ] || [ "${REF_NAME#web-sdk-v}" = "$REF_NAME" ]; then
+            echo "::error::run this workflow on a web-sdk-v<version> tag (got $REF_TYPE $REF_NAME)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+          registry-url: "https://registry.npmjs.org"
+
+      # pnpm version comes from sdk/web/package.json "packageManager".
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: sdk/web/package.json
+
+      - name: Tag matches the package version; npm supports trusted publishing
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(node -p 'require("./sdk/web/package.json").version')"
+          if [ "web-sdk-v$version" != "$REF_NAME" ]; then
+            echo "::error::tag $REF_NAME does not match sdk/web/package.json version $version"
+            exit 1
+          fi
+          npm_version="$(npm --version)"
+          # Trusted publishing needs npm >= 11.5.
+          if [ "$(printf '%s\n' "11.5.0" "$npm_version" | sort -V | head -n1)" != "11.5.0" ]; then
+            echo "::error::npm $npm_version is older than 11.5.0"
+            exit 1
+          fi
+
+      - name: make web-check
+        run: make web-check
+
+      - name: The build equals edge/tests/fixtures/sdk
+        run: |
+          diff -r sdk/web/dist/sdk edge/tests/fixtures/sdk \
+            || { echo "::error::sdk/web/dist/sdk differs from edge/tests/fixtures/sdk: publish only what the Edge is tested against"; exit 1; }
+
+      - name: npm publish (trusted publishing, provenance)
+        working-directory: sdk/web
+        run: npm publish --provenance --access public --ignore-scripts

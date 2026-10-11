@@ -3,16 +3,38 @@ import { DEFAULT_PATH_PREFIX, endpointPath, normalizePathPrefix, parseConfig } f
 
 describe("parseConfig (script data attributes)", () => {
   it("defaults to /__mg/ when no attributes are set", () => {
-    expect(parseConfig({})).toEqual({ pathPrefix: DEFAULT_PATH_PREFIX, site: null, debug: false });
+    expect(parseConfig({})).toEqual({
+      pathPrefix: DEFAULT_PATH_PREFIX,
+      site: null,
+      debug: false,
+      proof: true,
+      refresh: true,
+      behavior: false,
+    });
     expect(DEFAULT_PATH_PREFIX).toBe("/__mg/");
   });
 
   it("reads data-mg-path-prefix, data-mg-site and data-mg-debug", () => {
-    expect(parseConfig({ mgPathPrefix: "/x7k/", mgSite: "blog-prod", mgDebug: "true" })).toEqual({
+    expect(parseConfig({ mgPathPrefix: "/x7k/", mgSite: "blog-prod", mgDebug: "true" })).toMatchObject({
       pathPrefix: "/x7k/",
       site: "blog-prod",
       debug: true,
     });
+  });
+
+  it("reads data-mg-proof, data-mg-refresh and data-mg-telemetry (phase2-spec §12.1)", () => {
+    expect(parseConfig({ mgProof: "off", mgRefresh: "off", mgTelemetry: "behavior" })).toMatchObject({
+      proof: false,
+      refresh: false,
+      behavior: true,
+    });
+    expect(parseConfig({ mgProof: "auto", mgRefresh: "auto", mgTelemetry: "off" })).toMatchObject({
+      proof: true,
+      refresh: true,
+      behavior: false,
+    });
+    // Only the exact opt-in turns behaviour collection on.
+    expect(parseConfig({ mgTelemetry: "Behavior" }).behavior).toBe(false);
   });
 
   it("ignores invalid site ids", () => {
@@ -78,12 +100,19 @@ describe("bootstrap", () => {
     const challenge = JSON.stringify({ error: "mg_challenge", type: "invisible", challenge: "v1.abc", retry: true });
     const bodies = [challenge, '{"ok":1}'];
     const win = {
-      location: { pathname: "/posts/7", search: "?x=1", assign: (url: string) => void assigned.push(url) },
+      location: {
+        href: "https://example.test/posts/7?x=1",
+        origin: "https://example.test",
+        host: "example.test",
+        pathname: "/posts/7",
+        search: "?x=1",
+        assign: (url: string) => void assigned.push(url),
+      },
       sessionStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) },
       fetch: async () =>
         new Response(bodies.shift() ?? "", {
           status: bodies.length === 1 ? 403 : 200,
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", "mg-challenge": "invisible" },
         }),
     } as unknown as Window;
     const api = bootstrap(fakeDocument({}), win);

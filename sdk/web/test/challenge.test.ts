@@ -201,7 +201,7 @@ function harness(options: { page?: Partial<ChallengePage>; worker?: WorkerMode |
   };
   const mode = options.worker ?? "real";
   const deps: ChallengeDeps = {
-    page: { state: "challenge", c: C, type: "pow", bits: BITS, ret: RET, prefix: "/__mg/", ...options.page },
+    page: { state: "challenge", c: C, type: "pow", bits: BITS, ret: RET, prefix: "/__mg/", ix: null, ...options.page },
     view,
     scriptSrc: SCRIPT_SRC,
     createWorker:
@@ -343,7 +343,11 @@ describe("readChallengePage", () => {
       bits: 16,
       ret: RET,
       prefix: "/__mg/",
+      ix: null,
     });
+    // Template v2 pages carry data-mg-ix (empty on non-interactive pages, phase2-spec §12.3).
+    expect(readChallengePage(element({ ...VALID, "data-mg-ix": "" })).ix).toBe("");
+    expect(readChallengePage(element({ ...VALID, "data-mg-ix": '{"v":1}' })).ix).toBe('{"v":1}');
     expect(readChallengePage(element({ ...VALID, "data-mg-type": "invisible", "data-mg-state": "failed" }))).toMatchObject({
       state: "failed",
       type: "invisible",
@@ -360,7 +364,8 @@ describe("readChallengePage", () => {
     expect(page({ "data-mg-c": "a".repeat(1025) }).c).toBeNull();
     expect(page({ "data-mg-c": "a".repeat(1024) }).c).toBe("a".repeat(1024));
     expect(page({ "data-mg-c": "AAEC+/w=" }).c).toBeNull(); // standard base64, not base64url
-    expect(page({ "data-mg-type": "interactive" }).type).toBeNull();
+    expect(page({ "data-mg-type": "interactive" }).type).toBe("interactive");
+    expect(page({ "data-mg-type": "slider" }).type).toBeNull();
     for (const bits of ["33", "-1", "1.5", "", " 8", "0x10", "100"]) expect(page({ "data-mg-pow-bits": bits }).bits).toBeNull();
     expect(page({ "data-mg-pow-bits": "0" }).bits).toBe(0);
     expect(page({ "data-mg-pow-bits": "32" }).bits).toBe(32);
@@ -369,13 +374,13 @@ describe("readChallengePage", () => {
   });
 
   it("treats missing attributes and throwing getters as absent", () => {
-    expect(readChallengePage(element({}))).toEqual({ state: "failed", c: null, type: null, bits: null, ret: null, prefix: "/__mg/" });
+    expect(readChallengePage(element({}))).toEqual({ state: "failed", c: null, type: null, bits: null, ret: null, prefix: "/__mg/", ix: null });
     const hostile = {
       getAttribute(): never {
         throw new Error("boom");
       },
     };
-    expect(readChallengePage(hostile)).toEqual({ state: "failed", c: null, type: null, bits: null, ret: null, prefix: "/__mg/" });
+    expect(readChallengePage(hostile)).toEqual({ state: "failed", c: null, type: null, bits: null, ret: null, prefix: "/__mg/", ix: null });
   });
 
   it("never throws on 10,000 xorshift attribute sets (§2.4)", () => {

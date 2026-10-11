@@ -7,9 +7,12 @@
  * key through `cnf.jkt`, the RFC 7638 JWK thumbprint of the public key
  * (docs/04 §5, §6.1).
  *
- * Phase 0: key generation, public JWK export and thumbprints (real, tested).
- * Phase 2: IndexedDB persistence of the CryptoKeyPair, MG-Proof (compact JWS,
- * ES256) and submission signatures.
+ * This module holds the primitives: key generation, public JWK export and
+ * thumbprints. Storage is `keystore.ts` (docs/impl/phase2-spec.md §12.4),
+ * signatures `sig.ts` (§6.6) and MG-Proof `proof.ts` (§6.7). When the
+ * IndexedDB tier is unavailable the key is extractable and kept as a JWK in
+ * localStorage (D-45): an XSS could read it, but the clearance cookie is
+ * HttpOnly, and RFC 9449 accepts that XSS can sign online anyway.
  */
 
 /** Public JWK members the SDK and Edge work with. Extra members are ignored by thumbprints. */

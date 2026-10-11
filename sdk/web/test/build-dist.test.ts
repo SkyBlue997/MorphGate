@@ -5,9 +5,20 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SDK_FILE_PATTERN, buildDist, type SdkManifest } from "../scripts/build-dist.mjs";
+import {
+  DEFAULT_MANIFEST_VERSION,
+  SDK_FILE_PATTERN,
+  TEMPLATE_SOURCES,
+  buildDist,
+  esbuildOptions,
+  validateTemplate,
+  type SdkManifest,
+} from "../scripts/build-dist.mjs";
 
-const TEMPLATE = readFileSync(new URL("../templates/challenge.html", import.meta.url));
+/** The template of the default build (phase2-spec §2.1). */
+const TEMPLATE = readFileSync(new URL(`../templates/${TEMPLATE_SOURCES[DEFAULT_MANIFEST_VERSION]}`, import.meta.url));
+const TEMPLATE_V1 = readFileSync(new URL("../templates/challenge.html", import.meta.url));
+const TEMPLATE_V2 = readFileSync(new URL("../templates/challenge.v2.html", import.meta.url));
 const BUNDLE = new TextEncoder().encode('(()=>{"use strict";var mg=1})();\n');
 /** The Edge serves only names matching this under /__mg/s/ (§10.4). */
 const EDGE_FILE_NAME = /^[A-Za-z0-9._-]{1,64}$/;
@@ -30,7 +41,7 @@ describe("buildDist", () => {
     const build = sha256(BUNDLE).slice(0, 16);
 
     expect(manifest).toEqual({
-      v: 1,
+      v: DEFAULT_MANIFEST_VERSION,
       build,
       sdk: `mg.${build}.js`,
       files: { [`mg.${build}.js`]: sha256(BUNDLE) },
@@ -93,5 +104,46 @@ describe("buildDist", () => {
   it("refuses an empty bundle", () => {
     expect(() => buildDist({ bundle: new Uint8Array(0), template: TEMPLATE }, dir)).toThrow(/empty/);
     expect(readdirSync(dir)).toEqual([]);
+  });
+});
+
+describe("manifest and template versions (phase2-spec §2.1, §12.2)", () => {
+  it("stage 1 builds manifest v1 from templates/challenge.html", () => {
+    // WP-E2a switches this to 2 together with the Edge; until then the
+    // Phase 1 Edge must keep accepting the SDK directory.
+    expect(DEFAULT_MANIFEST_VERSION).toBe(1);
+    expect(TEMPLATE_SOURCES).toEqual({ 1: "challenge.html", 2: "challenge.v2.html" });
+  });
+
+  it("a v2 build writes manifest v2 and the v2 template as challenge.html; files never list mg.js", () => {
+    const manifest = buildDist({ bundle: BUNDLE, template: TEMPLATE_V2 }, dir, 2);
+    expect(manifest.v).toBe(2);
+    expect(Object.keys(manifest.files)).toEqual([manifest.sdk]);
+    expect(Object.keys(manifest.files)).not.toContain("mg.js");
+    expect(manifest.templates).toEqual({ "challenge.html": sha256(TEMPLATE_V2) });
+    expect(new Uint8Array(readFileSync(join(dir, "challenge.html")))).toEqual(new Uint8Array(TEMPLATE_V2));
+    expect(JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).v).toBe(2);
+  });
+
+  it("each build version accepts only its own template", () => {
+    expect(() => buildDist({ bundle: BUNDLE, template: TEMPLATE_V1 }, dir, 2)).toThrow(/template contract \(v2\)/);
+    expect(() => buildDist({ bundle: BUNDLE, template: TEMPLATE_V2 }, dir, 1)).toThrow(/template contract \(v1\)/);
+    expect(validateTemplate(TEMPLATE_V1, 1)).toEqual([]);
+    expect(validateTemplate(TEMPLATE_V2, 2)).toEqual([]);
+  });
+
+  it("the bundle learns the manifest version through MG_MANIFEST_VERSION", () => {
+    expect(esbuildOptions(1)).toMatchObject({
+      entryPoints: ["src/index.ts"],
+      bundle: true,
+      format: "iife",
+      minify: true,
+      target: "es2020",
+      legalComments: "none",
+      define: { MG_MANIFEST_VERSION: "1" },
+      outfile: "dist/mg.js",
+    });
+    expect(esbuildOptions(2).define).toEqual({ MG_MANIFEST_VERSION: "2" });
+    expect(esbuildOptions().define.MG_MANIFEST_VERSION).toBe(String(DEFAULT_MANIFEST_VERSION));
   });
 });

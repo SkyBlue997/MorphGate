@@ -1,6 +1,7 @@
 /**
  * Script-tag configuration: the `data-mg-*` attributes on the SDK's own
- * <script> element, and the first-party endpoint prefix.
+ * <script> element (docs/impl/phase2-spec.md §12.1), and the first-party
+ * endpoint prefix.
  *
  * Kept separate from the entry point so the challenge flow can share
  * `normalizePathPrefix` without an import cycle.
@@ -18,9 +19,15 @@ export interface MgConfig {
   site: string | null;
   /** data-mg-debug="true" logs snapshots to the console. */
   debug: boolean;
+  /** data-mg-proof: "auto" (default) attaches MG-Proof to same-origin `MorphGate.fetch` requests. */
+  proof: boolean;
+  /** data-mg-refresh: "auto" (default) refreshes a key-bound clearance before it expires. */
+  refresh: boolean;
+  /** data-mg-telemetry="behavior" turns on the behaviour summary (off by default, D-48). */
+  behavior: boolean;
 }
 
-/** Endpoints under the prefix (docs/02 §3, docs/04 §9; `v` is the verify entry, I-39). */
+/** Endpoints under the prefix (§11.1; `v` is the verify entry, I-39). */
 export type MgEndpoint = "c" | "c/renew" | "r" | "t" | "v";
 
 /**
@@ -48,6 +55,9 @@ export function parseConfig(dataset: Readonly<Record<string, string | undefined>
     pathPrefix: normalizePathPrefix(dataset["mgPathPrefix"]),
     site: site !== undefined && SITE_ID_PATTERN.test(site) ? site : null,
     debug: dataset["mgDebug"] === "true",
+    proof: dataset["mgProof"]?.trim() !== "off",
+    refresh: dataset["mgRefresh"]?.trim() !== "off",
+    behavior: dataset["mgTelemetry"]?.trim() === "behavior",
   };
 }
 

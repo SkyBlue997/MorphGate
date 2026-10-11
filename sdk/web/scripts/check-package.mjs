@@ -8,12 +8,13 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { SDK_FILE_PATTERN, validateTemplate } from "./build-dist.mjs";
+import { DEFAULT_MANIFEST_VERSION, SDK_FILE_PATTERN, validateTemplate } from "./build-dist.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const manifest = JSON.parse(readFileSync(join(root, "dist/sdk/manifest.json"), "utf8"));
-assert.equal(manifest.v, 1);
+assert.equal(manifest.v, DEFAULT_MANIFEST_VERSION);
+assert.ok(!Object.keys(manifest.files).includes("mg.js"), "the manifest must not list the mg.js alias (D-39)");
 assert.match(manifest.sdk, SDK_FILE_PATTERN);
 assert.equal(manifest.sdk, `mg.${manifest.build}.js`);
 assert.deepEqual(Object.keys(manifest.files), [manifest.sdk]);
@@ -54,7 +55,7 @@ try {
   for (const [name, hash] of Object.entries({ ...manifest.files, ...manifest.templates })) {
     assert.equal(createHash("sha256").update(readFileSync(join(installed, "dist/sdk", name))).digest("hex"), hash);
   }
-  assert.deepEqual(validateTemplate(readFileSync(join(installed, "dist/sdk/challenge.html"))), []);
+  assert.deepEqual(validateTemplate(readFileSync(join(installed, "dist/sdk/challenge.html")), DEFAULT_MANIFEST_VERSION), []);
   console.log(`npm package verified: ${pkg.name}@${pkg.version}; ${expectedFiles.length} files; offline install and asset hashes passed`);
 } finally {
   rmSync(temp, { recursive: true, force: true });

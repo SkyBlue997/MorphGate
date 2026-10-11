@@ -1,5 +1,11 @@
 /**
- * Challenge page client (docs/impl/phase1-spec.md §10.2, §10.3, §11.2, §11.3).
+ * Challenge page client (docs/impl/phase1-spec.md §10.2, §10.3, §11.2, §11.3;
+ * docs/impl/phase2-spec.md §12.1, §12.3, §7.5).
+ *
+ * Template v2 pages (`#mg-challenge` carries `data-mg-ix`) send v2
+ * submissions, signed with the session key; an interactive challenge there
+ * runs the control of `interactive.ts`. On template v1 pages, or without
+ * WebCrypto, the non-interactive flow sends the Phase 1 v1 submission.
  *
  * The Edge answers a navigation that needs a challenge with a 403 page
  * rendered from `templates/challenge.html`. Its `<main id="mg-challenge">`
@@ -44,6 +50,15 @@ import {
   type PowRequest,
 } from "./pow";
 import { bytesEqual, sha256, toHex } from "./sha256";
+import { langOf } from "./copy";
+import { InteractiveControl, parseIx, type ControlElement } from "./interactive";
+import { runPowV2, type Pow2Request } from "./powv2";
+import type { Runtime } from "./runtime";
+import type { TurnstileApi } from "./turnstile";
+import { SDK_VERSION } from "./version";
+import type { SessionKey } from "./keystore";
+import { signedSubmission } from "./submit";
+import { encodeSubmissionTelemetry } from "./telemetry";
 
 export const SUBMISSION_VERSION = 1;
 /** The Edge's body limit for POST /__mg/c (§10.3); measured on the urlencoded form body. */
@@ -66,6 +81,7 @@ const BUILD_FROM_SCRIPT_SRC = /\/mg\.([0-9a-f]{16})\.js(?:[?#]|$)/;
 
 export type ChallengeState = "challenge" | "failed";
 export type SubmitType = "invisible" | "pow";
+export type PageType = SubmitType | "interactive";
 
 /** The validated contents of `#mg-challenge`'s data attributes. */
 export interface ChallengePage {
@@ -73,8 +89,10 @@ export interface ChallengePage {
   state: ChallengeState;
   /** Sealed challenge; null when absent or malformed. */
   c: string | null;
-  type: SubmitType | null;
+  type: PageType | null;
   bits: number | null;
+  /** Template v2: the raw `data-mg-ix` (empty on non-interactive pages); null on template v1. */
+  ix: string | null;
   /** Return path; null when it fails the §6.4 checks. */
   ret: string | null;
   /** Endpoint prefix, normalised to a same-origin path ("/__mg/"). */
@@ -139,8 +157,9 @@ export function readChallengePage(root: AttributeReader): ChallengePage {
   return {
     state: read("data-mg-state") === "challenge" ? "challenge" : "failed",
     c: isSealedChallenge(c) ? c : null,
-    type: type === "invisible" || type === "pow" ? type : null,
+    type: type === "invisible" || type === "pow" || type === "interactive" ? type : null,
     bits: parseBits(read("data-mg-pow-bits")),
+    ix: read("data-mg-ix"),
     ret: ret !== null && isValidRet(ret) ? ret : null,
     prefix: normalizePathPrefix(read("data-mg-prefix")),
   };
@@ -206,6 +225,39 @@ export function encodeSubmission(input: SubmissionInput): string | null {
   for (const drop of [null, "env", "auto"] as const) {
     if (drop !== null) delete submission[drop];
     const json = JSON.stringify(submission);
+    if (formBodyBytes(json) <= MAX_SUBMIT_BODY_BYTES) return json;
+  }
+  return null;
+}
+
+/**
+ * The v2 submission of a non-interactive challenge on a template v2 page
+ * (phase2-spec §7.5): `env` and `auto` travel inside the `t` string, `jwk`
+ * and `sig` bind the clearance to the session key. Over the 8 KiB form
+ * limit (or the 2 KB `t` budget), `env` and then `auto` are dropped; null
+ * when even that does not fit.
+ */
+export async function encodeSubmissionV2(subtle: SubtleCrypto, key: SessionKey, input: SubmissionInput): Promise<string | null> {
+  const attempts: { env: EnvSummary | null; auto: AutomationSummary | null }[] = [
+    { env: input.env ?? null, auto: input.auto ?? null },
+    { env: null, auto: input.auto ?? null },
+    { env: null, auto: null },
+  ];
+  for (const { env, auto } of attempts) {
+    const t = encodeSubmissionTelemetry({ env, auto });
+    if (t === null) continue;
+    const body = await signedSubmission(subtle, key, {
+      type: input.type,
+      c: input.c,
+      p: "",
+      pp: "",
+      t,
+      counters: [input.counter],
+      ret: input.ret,
+      ts: input.ts,
+      build: input.build,
+    });
+    const json = JSON.stringify(body);
     if (formBodyBytes(json) <= MAX_SUBMIT_BODY_BYTES) return json;
   }
   return null;
@@ -302,7 +354,7 @@ export interface ChallengeView {
 /** A Worker running this SDK in its PoW mode. */
 export interface PowWorkerHandle {
   listen(onMessage: (data: unknown) => void, onError: () => void): void;
-  postMessage(request: PowRequest): void;
+  postMessage(message: PowRequest | Pow2Request): void;
   terminate(): void;
 }
 
@@ -331,7 +383,15 @@ export interface ChallengeDeps {
   webCryptoDigest: ((data: Uint8Array<ArrayBuffer>) => Promise<ArrayBuffer>) | null;
   timers: Timers;
   now: () => number;
+  /**
+   * The session key for a v2 submission (template v2 pages), or null when
+   * WebCrypto or a key is unavailable: the page then sends v1.
+   */
+  signer?: (() => Promise<{ subtle: SubtleCrypto; key: SessionKey } | null>) | null;
 }
+
+/** What a PoW search needs from the page. */
+export type SolveDeps = Pick<ChallengeDeps, "createWorker" | "scriptSrc" | "timers" | "now">;
 
 export type RetryReason = "no_challenge" | "auto_retry_used" | "self_test" | "timeout" | "error";
 
@@ -393,7 +453,7 @@ type SolveResult = number | "timeout" | "error";
  * fallback, `deadline` (ms, `deps.now()` clock) for both. Resolves, never
  * rejects; always stops the Worker and pending slices before resolving.
  */
-function solve(deps: ChallengeDeps, prefix: Uint8Array, bits: number, deadline: number): Promise<SolveResult> {
+export function solvePow(deps: SolveDeps, prefix: Uint8Array, bits: number, deadline: number): Promise<SolveResult> {
   let solver: PowSolver;
   try {
     solver = new PowSolver(prefix, bits);
@@ -523,21 +583,18 @@ export async function runChallenge(deps: ChallengeDeps): Promise<ChallengeOutcom
 
     if (!(await selfTest(deps.webCryptoDigest))) return giveUp(deps, "failed", "self_test");
 
-    const result = await solve(deps, powPrefix(c), bits, startedAt + CHALLENGE_TIMEOUT_MS);
+    if (type === "interactive") return giveUp(deps, "failed", "no_challenge");
+    const result = await solvePow(deps, powPrefix(c), bits, startedAt + CHALLENGE_TIMEOUT_MS);
     if (result === "timeout") return giveUp(deps, "timeout", "timeout");
     if (result === "error") return giveUp(deps, "failed", "error");
 
     const { env, auto } = deps.collect();
-    const json = encodeSubmission({
-      type,
-      c,
-      counter: result,
-      ret,
-      ts: deps.now(),
-      build: buildIdFromScriptSrc(deps.scriptSrc),
-      env,
-      auto,
-    });
+    const build = buildIdFromScriptSrc(deps.scriptSrc);
+    const signer = page.ix !== null && deps.signer ? await deps.signer() : null;
+    const json =
+      signer !== null
+        ? await encodeSubmissionV2(signer.subtle, signer.key, { type, c, counter: result, ret, ts: deps.now(), build, env, auto })
+        : encodeSubmission({ type, c, counter: result, ret, ts: deps.now(), build, env, auto });
     if (json === null) return giveUp(deps, "failed", "error");
     view.setStatus("returning");
     submitForm(deps.formDom, endpointPath({ pathPrefix: page.prefix }, "c"), json);
@@ -612,13 +669,128 @@ function browserFormDom(doc: Document): FormDom {
  * second SDK copy on the same page finds `data-mg-phase` already set.
  * Returns null when there is nothing to do.
  */
-export function startChallenge(doc: Document, scriptSrc: string | null): Promise<ChallengeOutcome> | null {
+/** The SDK `<script>`'s CSP nonce (Turnstile's api.js needs it, phase2-spec §8.3). */
+function scriptNonce(doc: Document): string | null {
+  try {
+    const script = doc.querySelector<HTMLScriptElement>("script[nonce][src]");
+    return script?.nonce || script?.getAttribute("nonce") || null;
+  } catch {
+    return null;
+  }
+}
+
+function browserTimers(): Timers {
+  return {
+    // Wrapped: calling a detached `setTimeout` with another `this` throws "Illegal invocation".
+    setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
+    clearTimeout: (handle) => globalThis.clearTimeout(handle as number),
+  };
+}
+
+/** The interactive control on a template v2 page (phase2-spec §12.6). */
+function startInteractive(doc: Document, root: Element, page: ChallengePage, rt: Runtime, scriptSrc: string | null): Promise<void> {
+  const ix = parseIx(page.ix ?? "");
+  const get = (id: string): HTMLElement => {
+    const element = doc.getElementById(id);
+    if (element === null) throw new Error(`challenge: #${id} missing`);
+    return element;
+  };
+  if (ix === null || page.c === null || page.ret === null) throw new Error("challenge: no interactive challenge");
+  const hold = get("mg-hold");
+  const timers = browserTimers();
+  const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  const yieldNow = typeof sched?.yield === "function" ? () => sched.yield!() : null;
+  const createWorker = browserWorkerFactory();
+  const control = new InteractiveControl({
+    dom: {
+      root: root as unknown as ControlElement,
+      ix: get("mg-ix") as unknown as ControlElement,
+      hold: hold as unknown as ControlElement,
+      holdLabel: (hold.querySelector(".mg-label") ?? hold) as unknown as ControlElement,
+      altSingle: get("mg-alt-single") as unknown as ControlElement,
+      altPow: get("mg-alt-pow") as unknown as ControlElement,
+      progress: get("mg-progress") as unknown as ControlElement,
+      turnstile: get("mg-turnstile") as unknown as ControlElement,
+      status: get("mg-status") as unknown as ControlElement,
+      retry: doc.getElementById("mg-retry") as unknown as ControlElement | null,
+      elementFromPoint: (x, y) => doc.elementFromPoint(x, y),
+      onWindow: (type, listener) => globalThis.addEventListener(type, listener),
+      onDocument: (type, listener) => doc.addEventListener(type, listener as unknown as EventListener, { passive: true }),
+      requestFrame: typeof requestAnimationFrame === "function" ? (callback) => requestAnimationFrame(callback) : null,
+    },
+    rt,
+    page: {
+      c: page.c,
+      ix,
+      ret: page.ret,
+      rid: root.getAttribute("data-mg-rid") ?? "",
+      lang: langOf(doc.documentElement.getAttribute("lang")),
+      build: buildIdFromScriptSrc(scriptSrc),
+    },
+    startPow: (prefix, bits, k, start, listener) =>
+      runPowV2(
+        {
+          createWorker,
+          workerUrl: scriptSrc,
+          rebuildUrl: `${page.prefix}s/mg.js?sv=${encodeURIComponent(SDK_VERSION)}`,
+          sv: SDK_VERSION,
+          timers,
+          now: () => Date.now(),
+          yieldNow,
+        },
+        prefix,
+        bits,
+        k,
+        start,
+        listener,
+      ),
+    turnstileHost: {
+      api: () => {
+        const api = (globalThis as { turnstile?: TurnstileApi }).turnstile;
+        return api && typeof api.render === "function" ? api : null;
+      },
+      loadScript: (src, nonce, onLoad, onError) => {
+        const script = doc.createElement("script");
+        if (nonce !== null) script.nonce = nonce;
+        script.async = true;
+        script.onload = onLoad;
+        script.onerror = onError;
+        script.src = src;
+        (doc.head ?? doc.body)?.appendChild(script);
+      },
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    },
+    nonce: scriptNonce(doc),
+    collect: () => ({ env: collectEnv(), auto: collectAutomation() }),
+    abortController: typeof AbortController === "function" ? () => new AbortController() : null,
+  });
+  return control.start();
+}
+
+/**
+ * Run the challenge flow if this is a challenge page. Idempotent: a second
+ * SDK copy on the same page finds `data-mg-phase` already set. Returns null
+ * when there is nothing to do. `rt` (the page runtime) signs v2
+ * submissions and runs the interactive control on template v2 pages.
+ */
+export function startChallenge(
+  doc: Document,
+  scriptSrc: string | null,
+  rt: Runtime | null = null,
+): Promise<ChallengeOutcome | void> | null {
   try {
     const root = doc.getElementById("mg-challenge");
     if (root === null || root.hasAttribute("data-mg-phase")) return null;
     root.setAttribute("data-mg-phase", "start");
+    const page = readChallengePage(root);
+    if (page.type === "interactive" && page.ix !== null && rt !== null) {
+      return startInteractive(doc, root, page, rt, scriptSrc).catch(() => {
+        giveUp({ page, view: domView(doc, root) } as ChallengeDeps, "failed", "error");
+      });
+    }
     return runChallenge({
-      page: readChallengePage(root),
+      page,
       view: domView(doc, root),
       scriptSrc,
       createWorker: browserWorkerFactory(),
@@ -626,12 +798,17 @@ export function startChallenge(doc: Document, scriptSrc: string | null): Promise
       storage: () => globalThis.sessionStorage,
       collect: () => ({ env: collectEnv(), auto: collectAutomation() }),
       webCryptoDigest: browserWebCryptoDigest(),
-      timers: {
-        // Wrapped: calling a detached `setTimeout` with another `this` throws "Illegal invocation".
-        setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
-        clearTimeout: (handle) => globalThis.clearTimeout(handle as number),
-      },
+      timers: browserTimers(),
       now: () => Date.now(),
+      signer:
+        rt === null
+          ? null
+          : async () => {
+              const subtle = rt.env.subtle;
+              if (subtle === null) return null;
+              const key = await rt.keys.ensure(rt.clearanceValid());
+              return key === null ? null : { subtle, key };
+            },
     });
   } catch {
     // Wiring failed before the flow could take over: at least offer the retry link.

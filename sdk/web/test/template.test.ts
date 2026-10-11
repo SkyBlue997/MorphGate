@@ -1,4 +1,5 @@
-// Challenge page template contract (docs/impl/phase1-spec.md §10.2, §11.2, §11.5).
+// Challenge page template v1 contract (docs/impl/phase1-spec.md §10.2, §11.2, §11.5). Only for
+// templates/challenge.html, which WP-E2a removes with the switch to manifest v2 (phase2-spec §2.1).
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { MAX_TEMPLATE_BYTES, TEMPLATE_PLACEHOLDERS, validateTemplate } from "../scripts/build-dist.mjs";
@@ -23,7 +24,7 @@ function render(template: string, values: Record<string, string>): string {
 
 describe("templates/challenge.html (§11.2)", () => {
   it("passes the build's validator", () => {
-    expect(validateTemplate(TEMPLATE_BYTES)).toEqual([]);
+    expect(validateTemplate(TEMPLATE_BYTES, 1)).toEqual([]);
   });
 
   it("is UTF-8 and at most 32 KiB", () => {
@@ -160,7 +161,7 @@ describe("validateTemplate rejects contract violations", () => {
     it(name, () => {
       const mutated = mutate(TEMPLATE);
       expect(mutated).not.toBe(TEMPLATE);
-      const errors = validateTemplate(mutated);
+      const errors = validateTemplate(mutated, 1);
       expect(errors.join("\n")).toMatch(message);
     });
   }
@@ -170,14 +171,14 @@ describe("validateTemplate rejects contract violations", () => {
       "<noscript>",
       "<p>{{request_id}}</p><noscript>",
     );
-    expect(validateTemplate(variant)).toEqual([]);
+    expect(validateTemplate(variant, 1)).toEqual([]);
   });
 
   it("invalid UTF-8", () => {
     const bytes = new Uint8Array(TEMPLATE_BYTES.byteLength + 1);
     bytes.set(TEMPLATE_BYTES);
     bytes[bytes.length - 1] = 0xff;
-    expect(validateTemplate(bytes)).toContain("not valid UTF-8");
+    expect(validateTemplate(bytes, 1)).toContain("not valid UTF-8");
   });
 
   it("never throws on 10,000 xorshift inputs (§2.4)", () => {
@@ -197,7 +198,7 @@ describe("validateTemplate rejects contract violations", () => {
           input = TEMPLATE.slice(0, at) + rng.string(8) + TEMPLATE.slice(at + rng.below(16));
         }
       }
-      expect(Array.isArray(validateTemplate(input))).toBe(true);
+      expect(Array.isArray(validateTemplate(input, 1))).toBe(true);
     }
   });
 });
