@@ -16,7 +16,9 @@
 //!    Pingora's own hop-by-hop handling nor the origin ever sees them.
 //! 3. [`OriginHeaders::apply`] sets `Host` to the normalized host, strips the
 //!    families once more (defense in depth) and writes `MG-Client-IP`,
-//!    `MG-Request-Id`, a single-valued `X-Forwarded-For`,
+//!    `MG-Client-IP-Prefix` (I-40: `<IPv4>/32` or the IPv6 `/64`, the key
+//!    the Edge itself rate-limits by), `MG-Request-Id`, a single-valued
+//!    `X-Forwarded-For`,
 //!    `X-Forwarded-Proto` and, for authenticated `cloudflare` requests,
 //!    `CF-IPCountry` / `Cf-Ray` / `CF-Visitor` / `CF-Connecting-IP`.
 //!
@@ -251,6 +253,11 @@ impl OriginHeaders<'_> {
         req.insert_header("Host", self.host)?;
         let ip = self.client_ip.map(|ip| ip.to_canonical().to_string());
         req.insert_header("MG-Client-IP", ip.as_deref().unwrap_or("unknown"))?;
+        let prefix = self.client_ip.map(client_ip_prefix);
+        req.insert_header(
+            "MG-Client-IP-Prefix",
+            prefix.as_deref().unwrap_or("unknown"),
+        )?;
         req.insert_header("MG-Request-Id", self.request_id)?;
         if let Some(ip) = &ip {
             req.insert_header("X-Forwarded-For", ip.as_str())?;
@@ -280,6 +287,17 @@ impl OriginHeaders<'_> {
             d.apply(req)?;
         }
         Ok(())
+    }
+}
+
+/// `MG-Client-IP-Prefix` (I-40): the Edge's `ip` entity in CIDR form,
+/// `<address>/32` for IPv4 (IPv4-mapped IPv6 included) and the `/64` for
+/// IPv6, so an origin that limits by it is not evaded by rotating IPv6
+/// privacy addresses.
+pub fn client_ip_prefix(ip: IpAddr) -> String {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => format!("{v4}/32"),
+        v6 => mg_core::Net::entity_of(v6),
     }
 }
 
@@ -388,6 +406,7 @@ mod tests {
         let h = &req.headers;
         assert_eq!(h["host"], "example.com");
         assert_eq!(h["mg-client-ip"], "198.51.100.7");
+        assert_eq!(h["mg-client-ip-prefix"], "198.51.100.7/32");
         assert_eq!(h["mg-request-id"], "0123456789abcdef0123456789abcdef");
         assert_eq!(h.get_all("x-forwarded-for").iter().count(), 1);
         assert_eq!(h["x-forwarded-for"], "198.51.100.7");
@@ -405,6 +424,18 @@ mod tests {
         }
         assert_eq!(h["accept"], "*/*");
         assert!(h.get("connection").is_none());
+    }
+
+    #[test]
+    fn client_ip_prefix_is_the_ip_entity() {
+        for (ip, want) in [
+            ("198.51.100.7", "198.51.100.7/32"),
+            ("::ffff:198.51.100.7", "198.51.100.7/32"),
+            ("2001:db8:abcd:12:a:b:c:d", "2001:db8:abcd:12::/64"),
+            ("2001:db8::1", "2001:db8::/64"),
+        ] {
+            assert_eq!(client_ip_prefix(ip.parse().unwrap()), want, "{ip}");
+        }
     }
 
     #[test]
@@ -426,6 +457,7 @@ mod tests {
         .unwrap();
         let h = &req.headers;
         assert_eq!(h["mg-client-ip"], "unknown");
+        assert_eq!(h["mg-client-ip-prefix"], "unknown");
         assert!(h.get("x-forwarded-for").is_none());
         assert!(h.get("cf-connecting-ip").is_none());
         assert_eq!(h["x-forwarded-proto"], "http");
@@ -458,10 +490,14 @@ mod tests {
         assert_eq!(values.len(), 1);
         let value = values[0].to_str().unwrap();
         let msg = origin_auth::message(1_791_700_000, "GET", b"/a?b=1", |name| {
-            [("mg-client-ip", "203.0.113.9"), ("mg-request-id", "r1")]
-                .into_iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, v)| v)
+            [
+                ("mg-client-ip", "203.0.113.9"),
+                ("mg-client-ip-prefix", "203.0.113.9/32"),
+                ("mg-request-id", "r1"),
+            ]
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, v)| v)
         });
         assert_eq!(
             origin_auth::verify(&[key], value, &msg, 1_791_700_000),

@@ -312,7 +312,7 @@
     "domain_prefix_hex": "6d672d62756e646c652d763100"
   },
   "origin_auth": {
-    "formula": "MG-Origin-Auth = 'v1;t=' t ';sig=' base64url_nopad(HMAC-SHA256(key, msg)); msg = 'mg-origin-auth-v1\\n' t '\\n' method '\\n' target '\\n' then '<name>:<value>\\n' for each present header of mg-client-ip, mg-request-id, mg-bot-score, mg-bot-class, mg-verified, mg-session, mg-tags, mg-reasons (in that order)",
+    "formula": "MG-Origin-Auth = 'v1;t=' t ';sig=' base64url_nopad(HMAC-SHA256(key, msg)); msg = 'mg-origin-auth-v1\\n' t '\\n' method '\\n' target '\\n' then '<name>:<value>\\n' for each present header of mg-client-ip, mg-client-ip-prefix, mg-request-id, mg-bot-score, mg-bot-class, mg-verified, mg-session, mg-tags, mg-reasons (in that order)",
     "key_file": "keys/origin-keys.json",
     "cases": [
       {
@@ -321,13 +321,14 @@
         "target": "/members/home?tab=1",
         "headers": {
           "mg-client-ip": "203.0.113.9",
+          "mg-client-ip-prefix": "203.0.113.9/32",
           "mg-request-id": "0123456789abcdef0123456789abcdef",
           "mg-bot-score": "12",
           "mg-bot-class": "human",
           "mg-session": "s-example"
         },
-        "message": "mg-origin-auth-v1\n1791720000\nGET\n/members/home?tab=1\nmg-client-ip:203.0.113.9\nmg-request-id:0123456789abcdef0123456789abcdef\nmg-bot-score:12\nmg-bot-class:human\nmg-session:s-example\n",
-        "header": "v1;t=1791720000;sig=pyXBkjzrp1RqFHZq2KtsBi-KTGiNTplwfCyWspLJbQU"
+        "message": "mg-origin-auth-v1\n1791720000\nGET\n/members/home?tab=1\nmg-client-ip:203.0.113.9\nmg-client-ip-prefix:203.0.113.9/32\nmg-request-id:0123456789abcdef0123456789abcdef\nmg-bot-score:12\nmg-bot-class:human\nmg-session:s-example\n",
+        "header": "v1;t=1791720000;sig=oksdpbtBJYLxDFbHrQSnJ6Wndudp8UUZt0Iwk-I4h3w"
       },
       {
         "t": 1791720030,
@@ -335,10 +336,28 @@
         "target": "/api/login",
         "headers": {
           "mg-client-ip": "unknown",
+          "mg-client-ip-prefix": "unknown",
           "mg-request-id": "fedcba9876543210fedcba9876543210"
         },
-        "message": "mg-origin-auth-v1\n1791720030\nPOST\n/api/login\nmg-client-ip:unknown\nmg-request-id:fedcba9876543210fedcba9876543210\n",
-        "header": "v1;t=1791720030;sig=ON2ZeKPniE3xJJEtyCxPrhG1zTuLu-lyfCvhQ6tTHf0"
+        "message": "mg-origin-auth-v1\n1791720030\nPOST\n/api/login\nmg-client-ip:unknown\nmg-client-ip-prefix:unknown\nmg-request-id:fedcba9876543210fedcba9876543210\n",
+        "header": "v1;t=1791720030;sig=sqCfITGJ78yHMky-GRM9JCcCK8iO4JdCGc8GfHBJ140"
+      },
+      {
+        "t": 1791720060,
+        "method": "GET",
+        "target": "/feed.xml",
+        "headers": {
+          "mg-client-ip": "2001:db8:abcd:12:a:b:c:d",
+          "mg-client-ip-prefix": "2001:db8:abcd:12::/64",
+          "mg-request-id": "00112233445566778899aabbccddeeff",
+          "mg-bot-score": "8",
+          "mg-bot-class": "verified_crawler",
+          "mg-verified": "crawler:example",
+          "mg-tags": "feed,crawler",
+          "mg-reasons": "net.datacenter"
+        },
+        "message": "mg-origin-auth-v1\n1791720060\nGET\n/feed.xml\nmg-client-ip:2001:db8:abcd:12:a:b:c:d\nmg-client-ip-prefix:2001:db8:abcd:12::/64\nmg-request-id:00112233445566778899aabbccddeeff\nmg-bot-score:8\nmg-bot-class:verified_crawler\nmg-verified:crawler:example\nmg-tags:feed,crawler\nmg-reasons:net.datacenter\n",
+        "header": "v1;t=1791720060;sig=Km3ShGQ2yH2YGrlmDs39UT-AtDToWu5NP88yYZ5iyEQ"
       }
     ]
   }

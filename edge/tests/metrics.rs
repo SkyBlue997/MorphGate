@@ -60,7 +60,7 @@ const FAMILIES: &[(&str, &[&str])] = &[
     ("mg_verdict_parse_errors_total", &[]),
     ("mg_rdns_lookups_total", &["result"]),
     ("mg_cf_ip_filter_active", &["listener"]),
-    ("mg_edge_info", &["version", "edge_id"]),
+    ("mg_edge_info", &["version", "commit", "edge_id"]),
     ("mg_edge_requests_total", &["route", "status"]),
     ("mg_edge_request_duration_seconds", &["route"]),
     ("mg_edge_request_errors_total", &["route"]),

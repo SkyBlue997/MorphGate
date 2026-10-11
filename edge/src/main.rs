@@ -20,7 +20,7 @@ use std::process::ExitCode;
 /// Signals: SIGTERM = graceful stop (server.grace_period_seconds),
 /// SIGINT = immediate stop, SIGQUIT = hand sockets to a new `--upgrade` process.
 #[derive(Debug, Parser)]
-#[command(name = "mg-edge", version, about)]
+#[command(name = "mg-edge", version = mg_edge::VERSION, about)]
 struct Cli {
     /// Path to the Edge TOML configuration (edge.toml v1).
     #[arg(short, long, value_name = "FILE")]
@@ -100,7 +100,7 @@ fn main() -> ExitCode {
     let c = &startup.cfg;
     log::info!(
         "mg-edge {} edge_id={} listeners={} sites={} metrics={}",
-        env!("CARGO_PKG_VERSION"),
+        mg_edge::VERSION,
         c.edge_id,
         c.listeners
             .iter()

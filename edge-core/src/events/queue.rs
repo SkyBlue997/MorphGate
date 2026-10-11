@@ -363,7 +363,9 @@ impl Flusher {
     /// * On shutdown the dispatcher moves whatever is still queued into the
     ///   backlogs and closes the queues (later `try_send` calls fail fast and
     ///   count `buffer`). Each output then abandons its in-flight batch
-    ///   (VictoriaLogs retries are cut short) and, within one shared
+    ///   (VictoriaLogs retries are cut short; an in-flight file write, which
+    ///   cannot be cancelled, gets [`FINAL_FLUSH_BUDGET`] to finish) and,
+    ///   within one shared
     ///   [`FINAL_FLUSH_BUDGET`], delivers its remaining P0 records (the
     ///   interrupted batch's P0 part first); the file, being local, writes
     ///   every class. What an output could not deliver is counted under its

@@ -55,7 +55,7 @@ target/install/mglab help
 
 The Edge's deployable SDK directory is **`sdk/web/dist/sdk/`**, containing a content-hashed JavaScript file, `manifest.json` and `challenge.html`. Keep all three together. `edge/tests/fixtures/sdk/` is a test fixture and must not be substituted for the built SDK in a deployment.
 
-This preview uses the existing component versions: `mg-edge --version` reports `0.1.0`, while the SDK reports `0.1.0-phase1`. The repository release is identified by the `v0.1.0-preview.1` tag.
+This preview uses the existing component versions: `mg-edge --version` reports `0.1.0` followed by the commit it was built from, such as `0.1.0 (710beea1c2d3)`, while the SDK reports `0.1.0-phase1`. The commit is `unknown` when the build has no Git checkout; set `MG_EDGE_COMMIT` when building from a source archive. The repository release is identified by the `v0.1.0-preview.1` tag.
 
 ## Install the browser assets from npm
 

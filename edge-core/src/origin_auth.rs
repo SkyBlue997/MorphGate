@@ -29,8 +29,9 @@ pub const HEADER: &str = "MG-Origin-Auth";
 
 /// The `MG-*` headers the signature covers, in signing order (lower case):
 /// every header the Edge writes for the origin (§9.9).
-pub const COVERED: [&str; 8] = [
+pub const COVERED: [&str; 9] = [
     "mg-client-ip",
+    "mg-client-ip-prefix",
     "mg-request-id",
     "mg-bot-score",
     "mg-bot-class",

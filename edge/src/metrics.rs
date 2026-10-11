@@ -191,7 +191,7 @@ impl EdgeMetrics {
             info: gauge!(
                 "mg_edge_info",
                 "Constant 1, labelled with build and configuration facts.",
-                &["version", "edge_id"]
+                &["version", "commit", "edge_id"]
             ),
             site_state: gauge!(
                 "mg_site_state",
@@ -464,7 +464,7 @@ impl EdgeMetrics {
     /// Publishes `mg_edge_info`.
     pub fn set_info(&self, edge_id: &str) {
         self.info
-            .with_label_values(&[env!("CARGO_PKG_VERSION"), edge_id])
+            .with_label_values(&[env!("CARGO_PKG_VERSION"), crate::COMMIT, edge_id])
             .set(1);
     }
 
@@ -617,7 +617,10 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("mg_edge_requests_total{route=\"healthz\",status=\"2xx\"}"));
         assert!(text.contains("mg_edge_request_errors_total{route=\"origin\"}"));
-        assert!(text.contains("mg_edge_info{edge_id=\"edge-1\""));
+        assert!(text.contains(&format!(
+            "mg_edge_info{{commit=\"{}\",edge_id=\"edge-1\"",
+            crate::COMMIT
+        )));
         assert!(text.contains("mg_site_state{site=\"blog\",state=\"active\"} 1"));
         assert!(text.contains("mg_site_state{site=\"blog\",state=\"bootstrap_open\"} 0"));
         assert!(text.contains(

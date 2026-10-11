@@ -31,7 +31,7 @@ fn upstream_families_are_stripped_including_underscore_spellings() {
     let spoofed = "CF_Connecting_IP: 10.9.9.9\r\nX_MG_CF_ASN: 1\r\nx-mg-cf-asn: 64500\r\n\
         X-Forwarded-For: 10.0.0.1\r\nX-Forwarded-Host: evil.example\r\nX_Forwarded_Proto: http\r\n\
         Forwarded: for=10.0.0.1\r\nTrue-Client-IP: 10.0.0.2\r\nX-Real-IP: 10.0.0.3\r\n\
-        mg-bot-score: 0\r\nMG_Bot_Class: human\r\nMG-Client-IP: 10.0.0.4\r\n\
+        mg-bot-score: 0\r\nMG_Bot_Class: human\r\nMG-Client-IP: 10.0.0.4\r\nMG-Client-IP-Prefix: 10.0.0.6/32\r\n\
         CloudFront-Viewer-Address: 10.0.0.5\r\nTLS-JA4: x\r\nx-mg-cf-t1: snippet\r\n\
         x-mg-cf-priority: u=1\r\nx-mg-upstream-key: guess\r\nX-Other: kept\r\n";
     let r = get(
@@ -55,6 +55,7 @@ fn upstream_families_are_stripped_including_underscore_spellings() {
             "x-forwarded-for",
             "x-forwarded-proto",
             "mg-client-ip",
+            "mg-client-ip-prefix",
             "mg-request-id",
             // The decision headers (WP-E1b), written by the Edge.
             "mg-bot-score",
@@ -72,6 +73,7 @@ fn upstream_families_are_stripped_including_underscore_spellings() {
     assert_eq!(seen.all("cf-connecting-ip"), ["198.51.100.7"]);
     assert_eq!(seen.all("x-forwarded-for"), ["198.51.100.7"]);
     assert_eq!(seen.all("mg-client-ip"), ["198.51.100.7"]);
+    assert_eq!(seen.all("mg-client-ip-prefix"), ["198.51.100.7/32"]);
     assert_eq!(seen.all("x-forwarded-proto"), ["https"]);
     // The client's MG-Bot-Score / MG_Bot_Class never survive: only the
     // Edge's decision headers arrive, once each.
@@ -95,6 +97,7 @@ fn upstream_families_are_stripped_including_underscore_spellings() {
     assert_eq!(r.status, 200);
     let seen = env.origin.last("/underscore").unwrap();
     assert_eq!(seen.header("mg-client-ip"), Some("unknown"));
+    assert_eq!(seen.header("mg-client-ip-prefix"), Some("unknown"));
     assert!(!seen.has("cf-connecting-ip") && !seen.has("x-forwarded-for"));
 }
 

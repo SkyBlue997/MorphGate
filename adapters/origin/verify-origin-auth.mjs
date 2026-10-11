@@ -20,6 +20,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 /** The MG-* headers the signature covers, in signing order. */
 export const COVERED = [
   "mg-client-ip",
+  "mg-client-ip-prefix",
   "mg-request-id",
   "mg-bot-score",
   "mg-bot-class",
