@@ -563,8 +563,9 @@ Phase 1 只读写 `mg:v:*`、`mg:rl:*`、`mg:n:*` 与 `mg:ev`（持有证明 jti
 | `X-Forwarded-Proto` | 认证通过时沿用上游的值，否则按 Edge 监听器自身的协议设置（Phase 1：`cloudflare` 取 `CF-Visitor` 的 scheme，`direct_tls` 为 `https`） |
 | `CF-Connecting-IP`、`CF-IPCountry`、`Cf-Ray` 等 | 上游认证通过时原样转发，兼容依赖它们的源站应用。Phase 1 只转发 `Cf-Ray`、`CF-Visitor`、`CF-IPCountry`（仅确认开启 location 头时）与客户端 IP 已知时的 `CF-Connecting-IP` |
 | 所有 `x-mg-*`（含 `x-mg-upstream-key`） | 删除，只供 Edge 使用 |
+| `MG-Origin-Auth` | Phase 1 之后（[规格 I-38](impl/phase1-spec.md#集成者裁决2026-09-28优先于正文)）：站点在 `edge.toml` 设了 `origin_keys` 时，Edge 对方法、请求目标和上面写入的 `MG-*` 头做 HMAC-SHA256 签名并带上时间戳；源站用同一密钥文件校验（参考实现 `adapters/origin/`），通过前不信任任何 `MG-*` 头 |
 
-- 源站只接受来自 Edge 的流量：同机时源站只监听回环或 unix socket；不同机时用私网 ACL 或 Edge → 源站 mTLS，可选对 `MG-*` 头做 HMAC 签名，由源站中间件校验。
+- 源站只接受来自 Edge 的流量：同机时源站只监听回环或 unix socket；不同机时用私网 ACL 或 Edge → 源站 mTLS。同机或同一容器网络里还有别的进程能连到源站时，启用 `MG-Origin-Auth`（I-38），由源站中间件校验。
 
 **源站契约补充**（D-34、I-29）
 

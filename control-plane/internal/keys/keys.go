@@ -6,7 +6,8 @@
 //     roots (seal.root.json);
 //   - the owner-level pseudonymisation key (pseudo.key.json) used to hash
 //     identifying parts of Valkey keys;
-//   - the upstream secret header values (upstream-keys.json).
+//   - the upstream secret header values (upstream-keys.json);
+//   - the Edge -> origin MG-Origin-Auth HMAC keys (origin-keys.json, I-38).
 //
 // Every plaintext file is canonical JSON (§12.0): Go encoding/json with
 // two-space indentation, no HTML escaping, keys in the order of the spec and
@@ -39,6 +40,7 @@ const (
 	KindSealRoot     = "mg-site-seal-root"
 	KindPseudoKey    = "mg-pseudo-key"
 	KindUpstreamKeys = "mg-upstream-keys"
+	KindOriginKeys   = "mg-origin-keys"
 )
 
 // Size and count limits of the key files (§12.7).
@@ -49,7 +51,8 @@ const (
 	MaxTokenKeys = 3
 	// MaxSealRoots is the number of sealing roots during a rotation (D-30).
 	MaxSealRoots = 2
-	// MaxUpstreamValues is the number of accepted upstream secret values.
+	// MaxUpstreamValues is the number of values in upstream-keys.json and
+	// origin-keys.json (new first).
 	MaxUpstreamValues = 2
 	// maxKeyFileSize bounds every key file mgctl reads (plaintext or age).
 	maxKeyFileSize = 64 << 10

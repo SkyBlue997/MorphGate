@@ -7,8 +7,9 @@
 //! * [`read_secret`] reads a key file of at most 64 KiB (I-14) into memory
 //!   that is zeroized on drop, and warns when a plain file (not a systemd
 //!   credential) is readable by group or others.
-//! * [`PseudoKey`] (`pseudo.key.json`) and [`UpstreamKeys`]
-//!   (`upstream-keys.json`) are the two §12.7 formats no other crate parses;
+//! * [`PseudoKey`] (`pseudo.key.json`), [`UpstreamKeys`]
+//!   (`upstream-keys.json`) and [`OriginKeys`] (`origin-keys.json`) are the
+//!   §12.7 formats no other crate parses;
 //!   `token.keys.json` and `seal.root.json` go to `mg-challenge`, owner public
 //!   keys to `mg_edge_core::bundle::OwnerKeys`.
 //!
@@ -215,47 +216,95 @@ impl UpstreamKeys {
     /// 43-character unpadded base64url strings of 32 random bytes, RFC 3339
     /// `created_at`.
     pub fn parse(json: &[u8]) -> Result<Self, String> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct File {
-            v: u32,
-            kind: String,
-            values: Vec<String>,
-            created_at: String,
-        }
-        let mut f: File = parse_object(json)?;
-        let result = (|| {
-            check_header(f.v, &f.kind, Self::KIND)?;
-            if !(1..=2).contains(&f.values.len()) {
-                return Err(format!(
-                    "values has {} entries, expected 1-2",
-                    f.values.len()
-                ));
-            }
-            for (i, v) in f.values.iter().enumerate() {
-                if v.len() != 43 || decode_key32(v).is_err() {
-                    return Err(format!(
-                        "values[{i}] is not 43 characters of unpadded base64url (32 bytes)"
-                    ));
-                }
-                if f.values[..i].contains(v) {
-                    return Err(format!("values[{i}] repeats an earlier value"));
-                }
-            }
-            check_rfc3339(&f.created_at)?;
-            Ok(())
-        })();
-        let values = f.values.iter().map(|v| v.as_bytes().to_vec()).collect();
-        for v in &mut f.values {
+        let mut values = parse_values(json, Self::KIND)?;
+        let out = values.iter().map(|v| v.as_bytes().to_vec()).collect();
+        for v in &mut values {
             v.zeroize();
         }
-        result.map(|()| Self { values })
+        Ok(Self { values: out })
     }
 
     /// The accepted header values (the base64url text, compared in constant
     /// time by `mg_edge_core::upstream::secret_header_ok`).
     pub fn values(&self) -> &[Vec<u8>] {
         &self.values
+    }
+}
+
+/// The `values` of a `mg-upstream-keys` / `mg-origin-keys` file (§12.7):
+/// `v == 1`, `kind`, 1–2 distinct 43-character unpadded base64url strings of
+/// 32 bytes, RFC 3339 `created_at`. The caller zeroizes the strings.
+fn parse_values(json: &[u8], kind: &str) -> Result<Vec<String>, String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct File {
+        v: u32,
+        kind: String,
+        values: Vec<String>,
+        created_at: String,
+    }
+    let mut f: File = parse_object(json)?;
+    let result = (|| {
+        check_header(f.v, &f.kind, kind)?;
+        if !(1..=2).contains(&f.values.len()) {
+            return Err(format!(
+                "values has {} entries, expected 1-2",
+                f.values.len()
+            ));
+        }
+        for (i, v) in f.values.iter().enumerate() {
+            if v.len() != 43 || decode_key32(v).is_err() {
+                return Err(format!(
+                    "values[{i}] is not 43 characters of unpadded base64url (32 bytes)"
+                ));
+            }
+            if f.values[..i].contains(v) {
+                return Err(format!("values[{i}] repeats an earlier value"));
+            }
+        }
+        check_rfc3339(&f.created_at)
+    })();
+    match result {
+        Ok(()) => Ok(std::mem::take(&mut f.values)),
+        Err(e) => {
+            for v in &mut f.values {
+                v.zeroize();
+            }
+            Err(e)
+        }
+    }
+}
+
+/// `origin-keys.json` (§12.7, I-38): the `MG-Origin-Auth` HMAC keys, newest
+/// first (1–2 during a rotation); `values[0]` signs. The origin keeps a copy
+/// and accepts every value.
+pub struct OriginKeys {
+    signing: Zeroizing<[u8; 32]>,
+}
+
+impl OriginKeys {
+    const KIND: &'static str = "mg-origin-keys";
+
+    /// Parses the §12.7 JSON (the `mg-upstream-keys` schema with kind
+    /// `mg-origin-keys`).
+    pub fn parse(json: &[u8]) -> Result<Self, String> {
+        let mut values = parse_values(json, Self::KIND)?;
+        let signing = decode_key32(&values[0]).map(Zeroizing::new);
+        for v in &mut values {
+            v.zeroize();
+        }
+        Ok(Self { signing: signing? })
+    }
+
+    /// The key of `values[0]`, which signs.
+    pub fn signing_key(&self) -> &[u8; 32] {
+        &self.signing
+    }
+}
+
+impl fmt::Debug for OriginKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OriginKeys").finish_non_exhaustive()
     }
 }
 
@@ -471,6 +520,28 @@ mod tests {
     }
 
     #[test]
+    fn origin_keys_sign_with_the_first_value() {
+        let k = OriginKeys::parse(&sample("origin-keys.json")).unwrap();
+        let first: Vec<u8> = (0xa0..0xc0).collect();
+        assert_eq!(k.signing_key().as_slice(), first.as_slice());
+        let r = OriginKeys::parse(&sample("origin-keys.rotated.json")).unwrap();
+        let newer: Vec<u8> = (0xc0..0xe0).collect();
+        assert_eq!(r.signing_key().as_slice(), newer.as_slice());
+        assert_eq!(format!("{r:?}"), "OriginKeys { .. }");
+        let e =
+            OriginKeys::parse(&sample("invalid/origin-keys.duplicate-values.json")).unwrap_err();
+        assert!(e.contains("repeats"), "{e}");
+        // An upstream key file is not an origin key file, and the reverse.
+        let e = OriginKeys::parse(&sample("upstream-keys.json")).unwrap_err();
+        assert!(e.contains("mg-origin-keys"), "{e}");
+        assert!(UpstreamKeys::parse(&sample("origin-keys.json")).is_err());
+        let good = String::from_utf8(sample("origin-keys.rotated.json")).unwrap();
+        let e = OriginKeys::parse(good.replace("\"v\": 1", "\"v\": 2").as_bytes()).unwrap_err();
+        assert!(e.contains("unsupported v"), "{e}");
+        assert!(!e.contains("oKGi"), "error leaks key material: {e}");
+    }
+
+    #[test]
     fn rejects_the_invalid_upstream_key_sample_and_variants() {
         let e =
             UpstreamKeys::parse(&sample("invalid/upstream-keys.three-values.json")).unwrap_err();
@@ -622,9 +693,10 @@ mod tests {
         let seeds = [
             sample("pseudo.key.json"),
             sample("upstream-keys.rotated.json"),
+            sample("origin-keys.rotated.json"),
         ];
         for i in 0..10_000 {
-            let mut input = seeds[i % 2].clone();
+            let mut input = seeds[i % 3].clone();
             let edits = (next() % 8) as usize;
             for _ in 0..edits {
                 if input.is_empty() {
@@ -641,6 +713,7 @@ mod tests {
             }
             let _ = PseudoKey::parse(&input);
             let _ = UpstreamKeys::parse(&input);
+            let _ = OriginKeys::parse(&input);
             let _ = is_rfc3339(&String::from_utf8_lossy(&input));
         }
     }

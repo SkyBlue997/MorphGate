@@ -4,7 +4,7 @@ Read-only contract files for [docs/impl/phase1-spec.md](../../docs/impl/phase1-s
 
 | Path | Used by |
 |---|---|
-| `kat.json` | Known-answer vectors: epoch keys and accepted epochs, aad, binding / return-path hashes, entity and limiter keys, `ip` entities, PoW, bundle signature domain |
+| `kat.json` | Known-answer vectors: epoch keys and accepted epochs, aad, binding / return-path hashes, entity and limiter keys, `ip` entities, PoW, bundle signature domain, `MG-Origin-Auth` (I-38; the Edge's signer in `edge-core/tests/origin_auth_kat.rs` and the origin's check in `adapters/origin`) |
 | `keys/*.json`, `keys/owner-test.pub` | Valid key files (§12.6, §12.7). Writers (WP-G2) must produce these bytes exactly from the inputs below; readers (WP-R2 `from_key_file`, WP-C2 owner keys, mg-edge credentials) must accept them |
 | `keys/invalid/*` | Readers must reject every file (the name says why; `token.keys.site-shop.json` is invalid when loaded for site `blog`) |
 | `artifacts/cloudflare-ips.json` | Valid §12.2 artifact. `mgctl cf ips sync` (WP-G3) must write these bytes for the matching API response and `fetched_at`; `mg_intel::parse_cloudflare_ips` (WP-R3) must accept it |
@@ -32,3 +32,5 @@ Time `2026-09-27T10:00:00Z` (date `20260927`) unless a file shows another `creat
 | `keys/pseudo.key.json` | key = bytes `0x00..0x1f` (the `entity_key.k_pseudo_hex` of `kat.json`) |
 | `keys/upstream-keys.json` | value = bytes `0x60..0x7f` |
 | `keys/upstream-keys.rotated.json` | `--rotate` on `upstream-keys.json` at `2026-09-28T10:00:00Z` with value = bytes `0x80..0x9f` |
+| `keys/origin-keys.json` | at `2026-10-11T10:00:00Z`, value = bytes `0xa0..0xbf` (the `origin_auth` key of `kat.json`) |
+| `keys/origin-keys.rotated.json` | `--rotate` on `origin-keys.json` at `2026-10-12T10:00:00Z` with value = bytes `0xc0..0xdf` |

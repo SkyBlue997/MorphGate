@@ -100,6 +100,8 @@ LoadCredentialEncrypted=mg-upstream-keys:/etc/credstore.encrypted/mg-upstream-ke
 LoadCredentialEncrypted=mg-blog-token-keys:/etc/credstore.encrypted/mg-blog-token-keys
 LoadCredentialEncrypted=mg-blog-seal-root:/etc/credstore.encrypted/mg-blog-seal-root
 LoadCredentialEncrypted=mg-pseudo-key:/etc/credstore.encrypted/mg-pseudo-key
+# With origin_keys (edge.toml, spec I-38):
+# LoadCredentialEncrypted=mg-blog-origin-keys:/etc/credstore.encrypted/mg-blog-origin-keys
 LoadCredentialEncrypted=mg-valkey-password:/etc/credstore.encrypted/mg-valkey-password
 UMask=0027
 LimitNOFILE=1048576

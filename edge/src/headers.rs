@@ -29,9 +29,14 @@
 //! `MG-Session`; for a TAG decision `MG-Tags: a,b`; with
 //! `origin_headers.reasons` `MG-Reasons` (the top reasons). Under monitor
 //! they reflect the recorded (would-be) decision.
+//!
+//! With `[[sites]] origin_keys` (I-38) [`sign_for_origin`] adds
+//! `MG-Origin-Auth` last, over the method, the target and the `MG-*` headers
+//! written above (`mg_edge_core::origin_auth`).
 
 use crate::decide::DecisionRecord;
 use mg_core::Action;
+use mg_edge_core::origin_auth;
 use mg_edge_core::upstream::is_upstream_family;
 use mg_proto::v1::OriginHeaderConfig;
 use pingora::http::{RequestHeader, ResponseHeader};
@@ -278,6 +283,22 @@ impl OriginHeaders<'_> {
     }
 }
 
+/// Adds `MG-Origin-Auth` (I-38) to a request [`OriginHeaders::apply`] has
+/// rewritten: signed with `key` at `now_s` over its method, `target` (the
+/// origin-form target it is sent with) and its covered `MG-*` headers.
+pub fn sign_for_origin(
+    req: &mut RequestHeader,
+    target: &[u8],
+    key: &[u8; 32],
+    now_s: u64,
+) -> pingora::Result<()> {
+    let msg = origin_auth::message(now_s, req.method.as_str(), target, |name| {
+        req.headers.get(name).and_then(|v| v.to_str().ok())
+    });
+    let value = origin_auth::sign(key, now_s, &msg);
+    req.insert_header(origin_auth::HEADER, value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,6 +430,43 @@ mod tests {
         assert!(h.get("cf-connecting-ip").is_none());
         assert_eq!(h["x-forwarded-proto"], "http");
         assert_eq!(h["connection"], "upgrade");
+    }
+
+    /// I-38: the signature covers what the origin receives, and a client's
+    /// own `MG-Origin-Auth` never reaches it.
+    #[test]
+    fn origin_auth_signs_the_rewritten_request() {
+        let mut req = request(&[
+            ("MG-Origin-Auth", "v1;t=1;sig=forged"),
+            ("MG-Client-IP", "198.51.100.1"),
+        ]);
+        OriginHeaders {
+            host: "example.com",
+            request_id: "r1",
+            client_ip: Some("203.0.113.9".parse().unwrap()),
+            https: true,
+            cloudflare: None,
+            websocket: false,
+            decision: None,
+        }
+        .apply(&mut req)
+        .unwrap();
+        assert!(req.headers.get("mg-origin-auth").is_none());
+        let key = [7; 32];
+        sign_for_origin(&mut req, b"/a?b=1", &key, 1_791_700_000).unwrap();
+        let values: Vec<_> = req.headers.get_all("mg-origin-auth").iter().collect();
+        assert_eq!(values.len(), 1);
+        let value = values[0].to_str().unwrap();
+        let msg = origin_auth::message(1_791_700_000, "GET", b"/a?b=1", |name| {
+            [("mg-client-ip", "203.0.113.9"), ("mg-request-id", "r1")]
+                .into_iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v)
+        });
+        assert_eq!(
+            origin_auth::verify(&[key], value, &msg, 1_791_700_000),
+            Ok(())
+        );
     }
 
     /// §2.4 item 5: `Debug` of what goes to the origin never shows the

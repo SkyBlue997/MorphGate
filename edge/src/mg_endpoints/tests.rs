@@ -113,6 +113,7 @@ fn keys() -> SiteKeys {
     SiteKeys {
         seal: SealKeys::from_key_file(&seal, "blog").unwrap(),
         token_file: read_secret(&CredResolver::with_dir(None), &token, &mut |_| {}).unwrap(),
+        origin: None,
     }
 }
 

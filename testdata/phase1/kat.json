@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "Shared known-answer vectors for Phase 1 (docs/impl/phase1-spec.md \u00a76, \u00a79.7, \u00a711). Read-only for every work package; regenerate only by changing the spec.",
+  "about": "Shared known-answer vectors for Phase 1 (docs/impl/phase1-spec.md \u00a76, \u00a79.7, \u00a711, I-38). Read-only for every work package; regenerate only by changing the spec.",
   "epoch_keys": {
     "formula": "HKDF-SHA256(salt = empty, ikm = K_seal_root, info = label || 0x00 || site_id || 0x00 || u64be(epoch_no), L = 32); label mg-seal-v1 (k_epoch) or mg-bind-v1 (k_bind_epoch); epoch_no = floor(unix_ms / 86400000)",
     "root_hex": "0101010101010101010101010101010101010101010101010101010101010101",
@@ -310,5 +310,36 @@
   "bundle_signature": {
     "formula": "Ed25519-Sign(owner_key, 'mg-bundle-v1' || 0x00 || SiteBundle bytes)",
     "domain_prefix_hex": "6d672d62756e646c652d763100"
+  },
+  "origin_auth": {
+    "formula": "MG-Origin-Auth = 'v1;t=' t ';sig=' base64url_nopad(HMAC-SHA256(key, msg)); msg = 'mg-origin-auth-v1\\n' t '\\n' method '\\n' target '\\n' then '<name>:<value>\\n' for each present header of mg-client-ip, mg-request-id, mg-bot-score, mg-bot-class, mg-verified, mg-session, mg-tags, mg-reasons (in that order)",
+    "key_file": "keys/origin-keys.json",
+    "cases": [
+      {
+        "t": 1791720000,
+        "method": "GET",
+        "target": "/members/home?tab=1",
+        "headers": {
+          "mg-client-ip": "203.0.113.9",
+          "mg-request-id": "0123456789abcdef0123456789abcdef",
+          "mg-bot-score": "12",
+          "mg-bot-class": "human",
+          "mg-session": "s-example"
+        },
+        "message": "mg-origin-auth-v1\n1791720000\nGET\n/members/home?tab=1\nmg-client-ip:203.0.113.9\nmg-request-id:0123456789abcdef0123456789abcdef\nmg-bot-score:12\nmg-bot-class:human\nmg-session:s-example\n",
+        "header": "v1;t=1791720000;sig=pyXBkjzrp1RqFHZq2KtsBi-KTGiNTplwfCyWspLJbQU"
+      },
+      {
+        "t": 1791720030,
+        "method": "POST",
+        "target": "/api/login",
+        "headers": {
+          "mg-client-ip": "unknown",
+          "mg-request-id": "fedcba9876543210fedcba9876543210"
+        },
+        "message": "mg-origin-auth-v1\n1791720030\nPOST\n/api/login\nmg-client-ip:unknown\nmg-request-id:fedcba9876543210fedcba9876543210\n",
+        "header": "v1;t=1791720030;sig=ON2ZeKPniE3xJJEtyCxPrhG1zTuLu-lyfCvhQ6tTHf0"
+      }
+    ]
   }
 }

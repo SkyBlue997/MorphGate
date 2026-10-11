@@ -395,6 +395,115 @@ fn secret_header_is_required_when_configured() {
     );
 }
 
+/// The HMAC keys of `origin-keys.rotated.json` (I-38): `values[0]` signs.
+fn origin_keys() -> Vec<[u8; 32]> {
+    use base64::Engine as _;
+    let file: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(common::repo(
+            "testdata/phase1/keys/origin-keys.rotated.json",
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    file["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(v.as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap()
+        })
+        .collect()
+}
+
+/// I-38: with `origin_keys` every forwarded request carries one
+/// `MG-Origin-Auth` that verifies over what the origin received, signed
+/// with `values[0]`; a client's own value never gets through; without
+/// `origin_keys` there is none; an unusable key file fails the check.
+#[test]
+fn origin_auth_header_signs_what_the_origin_receives() {
+    use mg_edge_core::origin_auth::{COVERED, VerifyError, message, timestamp, verify};
+    let env = TestEnv::new("originauth");
+    let _edge = active(
+        &env,
+        "origin_keys = \"cred://mg-blog-origin-keys\"\n",
+        |b| b.origin_headers.as_mut().unwrap().reasons = true,
+    );
+    let r = get(
+        env.listen,
+        "example.com",
+        "/signed/a?b=1&c=%2F",
+        &format!(
+            "{}MG-Origin-Auth: v1;t=1;sig=forged\r\nMG-Client-IP: 10.0.0.1\r\n",
+            cf("198.51.100.8")
+        ),
+    );
+    assert_eq!(r.status, 200, "{}", r.head);
+    let seen = env.origin.last("/signed/a").unwrap();
+    let values = seen.all("mg-origin-auth");
+    assert_eq!(values.len(), 1, "{:?}", seen.headers);
+    let value = values[0];
+    assert_ne!(value, "v1;t=1;sig=forged");
+    let (method, target) = {
+        let mut parts = seen.line.split(' ');
+        (parts.next().unwrap(), parts.next().unwrap())
+    };
+    assert_eq!(target, "/signed/a?b=1&c=%2F");
+    let t = timestamp(value).unwrap();
+    let msg = message(t, method, target.as_bytes(), |name| {
+        assert!(COVERED.contains(&name));
+        seen.header(name)
+    });
+    assert!(String::from_utf8_lossy(&msg).contains("mg-client-ip:198.51.100.8\n"));
+    assert!(String::from_utf8_lossy(&msg).contains("mg-reasons:"));
+    let keys = origin_keys();
+    assert_eq!(verify(&keys[..1], value, &msg, t), Ok(()));
+    assert_eq!(
+        verify(&keys[1..], value, &msg, t),
+        Err(VerifyError::BadSignature)
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(t.abs_diff(now) <= 5, "t={t} now={now}");
+
+    // Another request gets its own signature.
+    let r = get(env.listen, "example.com", "/signed/b", &cf("198.51.100.9"));
+    assert_eq!(r.status, 200);
+    let other = env.origin.last("/signed/b").unwrap();
+    assert_ne!(other.all("mg-origin-auth"), values);
+
+    // Without origin_keys: no header, even if the client sends one.
+    let plain = TestEnv::new("originauth-off");
+    let _edge2 = active(&plain, "", |_| {});
+    let r = get(
+        plain.listen,
+        "example.com",
+        "/plain",
+        &format!(
+            "{}MG-Origin-Auth: v1;t=1;sig=forged\r\n",
+            cf("198.51.100.8")
+        ),
+    );
+    assert_eq!(r.status, 200);
+    assert!(!plain.origin.last("/plain").unwrap().has("mg-origin-auth"));
+
+    // A key file of the wrong kind fails --check-config.
+    let bad = plain
+        .write_config(&plain.default_config("origin_keys = \"cred://mg-wrong-origin-keys\"\n"));
+    let out = plain.check(&bad);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("origin_keys") && stderr.contains("mg-origin-keys"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn edge_headers_survive_connection_listings_and_mg_headers_are_stripped_both_ways() {
     let env = TestEnv::new("mgheaders");

@@ -55,6 +55,7 @@ fn settings_and_keys(token_file: &str) -> (SiteSettings, SiteKeys) {
             &mut |_| {},
         )
         .unwrap(),
+        origin: None,
     };
     (settings, keys)
 }

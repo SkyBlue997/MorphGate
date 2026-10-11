@@ -1013,8 +1013,8 @@ impl EdgeProxy {
 }
 
 impl EdgeProxy {
-    /// `upstream_request_filter`: the origin-form target and the §9.9
-    /// origin headers.
+    /// `upstream_request_filter`: the origin-form target, the §9.9 origin
+    /// headers and, with `origin_keys`, `MG-Origin-Auth` (I-38).
     fn origin_request(&self, upstream_request: &mut RequestHeader, ctx: &EdgeCtx) -> Result<()> {
         upstream_request.set_raw_path(&ctx.target.origin_form)?;
         let https = match self.listener.profile {
@@ -1032,7 +1032,17 @@ impl EdgeProxy {
             websocket: ctx.websocket,
             decision: ctx.decision_headers.as_ref(),
         }
-        .apply(upstream_request)
+        .apply(upstream_request)?;
+        if let Some(keys) = ctx.site.as_ref().and_then(|s| s.keys.origin.as_ref()) {
+            let now_s = u64::try_from(unix_now_ms() / 1000).unwrap_or(0);
+            headers::sign_for_origin(
+                upstream_request,
+                &ctx.target.origin_form,
+                keys.signing_key(),
+                now_s,
+            )?;
+        }
+        Ok(())
     }
 
     /// `logging`: the §13.7 per-request metrics and the §9.11 events of a

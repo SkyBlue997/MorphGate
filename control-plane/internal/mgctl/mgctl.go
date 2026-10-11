@@ -44,6 +44,7 @@ Usage:
   mgctl keys gen --kid <kid> --out-dir <dir> [--insecure-test-key]
   mgctl keys gen-pseudo --out <file.json.age> [--insecure-test-key]
   mgctl keys gen-upstream --out <file.json.age> [--rotate] [--insecure-test-key]
+  mgctl keys gen-origin --out <file.json.age> [--rotate] [--insecure-test-key]
   mgctl keys export --in <file.json.age> [--out <file> | -]
   mgctl site keys gen --site <id> --out-dir <dir> [--date YYYYMMDD] [--insecure-test-key]
   mgctl site keys rotate-token --site <id> --file <token.keys.json.age> [--date YYYYMMDD]

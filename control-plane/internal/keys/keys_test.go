@@ -113,6 +113,21 @@ func TestGeneratorsReproduceSharedFixtures(t *testing.T) {
 	if v, _ := UpstreamPrimaryValue(upRotated); len(v) != 43 || v != "gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8" {
 		t.Errorf("values[0] = %q", v)
 	}
+
+	o0 := time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
+	origin, err := GenerateOriginKeys(nil, o0, stream(seq(0xa0, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBytes(t, "origin-keys.json", origin, fixture(t, "origin-keys.json"))
+	originRotated, err := GenerateOriginKeys(origin, o0.AddDate(0, 0, 1), stream(seq(0xc0, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBytes(t, "origin-keys.rotated.json", originRotated, fixture(t, "origin-keys.rotated.json"))
+	if _, err := GenerateOriginKeys(up, o0, stream(seq(0xc0, 32))); err == nil {
+		t.Error("an upstream key file was rotated as origin keys")
+	}
 }
 
 // §12.0: readers accept every valid fixture.
@@ -131,6 +146,8 @@ func TestParseValidFixtures(t *testing.T) {
 		"pseudo.key.json":            {Kind: KindPseudoKey, IDs: []string{"pseudo-20260927"}},
 		"upstream-keys.json":         {Kind: KindUpstreamKeys},
 		"upstream-keys.rotated.json": {Kind: KindUpstreamKeys},
+		"origin-keys.json":           {Kind: KindOriginKeys},
+		"origin-keys.rotated.json":   {Kind: KindOriginKeys},
 	} {
 		got, err := Inspect(fixture(t, name))
 		if err != nil {

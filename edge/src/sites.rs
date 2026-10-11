@@ -28,7 +28,7 @@ pub use convert::{
 pub use routing::{RouteMatch, select_env, select_route};
 
 use crate::config::{BootstrapMode, EdgeConfig, IntelConfig, LkgInvalidMode, SiteConfig};
-use crate::creds::Secret;
+use crate::creds::{OriginKeys, Secret};
 use crate::metrics::metrics;
 use arc_swap::ArcSwap;
 use mg_challenge::{SealKeys, Sealer};
@@ -220,6 +220,8 @@ pub struct SiteKeys {
     /// `token.keys.json` bytes; parsed against each bundle's
     /// `token_key_ids` ([`build_runtime`]).
     pub token_file: Secret,
+    /// `origin-keys.json` (I-38): signs `MG-Origin-Auth` when set.
+    pub origin: Option<OriginKeys>,
 }
 
 impl fmt::Debug for SiteKeys {
@@ -227,6 +229,7 @@ impl fmt::Debug for SiteKeys {
         f.debug_struct("SiteKeys")
             .field("seal", &self.seal)
             .field("token_file", &self.token_file)
+            .field("origin", &self.origin)
             .finish()
     }
 }

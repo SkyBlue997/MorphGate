@@ -66,11 +66,11 @@ func Inspect(data []byte) (*FileInfo, error) {
 			return nil, err
 		}
 		return &FileInfo{Kind: KindPseudoKey, IDs: []string{k.ID}}, nil
-	case KindUpstreamKeys:
-		if _, err := parseUpstreamKeys(data); err != nil {
+	case KindUpstreamKeys, KindOriginKeys:
+		if _, err := parseValueKeys(data, head.Kind); err != nil {
 			return nil, err
 		}
-		return &FileInfo{Kind: KindUpstreamKeys}, nil
+		return &FileInfo{Kind: head.Kind}, nil
 	case KindOwnerKey:
 		return nil, errors.New("owner signing keys are never exported in plaintext")
 	}

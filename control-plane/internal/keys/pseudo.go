@@ -78,9 +78,20 @@ func ParsePseudoKey(data []byte) (*PseudoKey, error) {
 // With a previous file (rotation) the new value goes first and the previous
 // values[0] is kept as the second accepted value.
 func GenerateUpstreamKeys(previous []byte, now time.Time, rnd io.Reader) ([]byte, error) {
+	return generateValueKeys(KindUpstreamKeys, previous, now, rnd)
+}
+
+// GenerateOriginKeys creates origin-keys.json (spec I-38), the MG-Origin-Auth
+// HMAC keys, like GenerateUpstreamKeys: values[0] signs on the Edge, the
+// origin accepts every value.
+func GenerateOriginKeys(previous []byte, now time.Time, rnd io.Reader) ([]byte, error) {
+	return generateValueKeys(KindOriginKeys, previous, now, rnd)
+}
+
+func generateValueKeys(kind string, previous []byte, now time.Time, rnd io.Reader) ([]byte, error) {
 	var keep []string
 	if previous != nil {
-		prev, err := parseUpstreamKeys(previous)
+		prev, err := parseValueKeys(previous, kind)
 		if err != nil {
 			return nil, err
 		}
@@ -92,28 +103,30 @@ func GenerateUpstreamKeys(previous []byte, now time.Time, rnd io.Reader) ([]byte
 	}
 	value := encodeKey(v)
 	if len(keep) > 0 && keep[0] == value {
-		return nil, fmt.Errorf("the new upstream value equals the current one")
+		return nil, fmt.Errorf("the new value equals the current one")
 	}
-	return canonicalJSON(upstreamKeysFile{V: 1, Kind: KindUpstreamKeys,
+	return canonicalJSON(upstreamKeysFile{V: 1, Kind: kind,
 		Values: append([]string{value}, keep...), CreatedAt: formatTime(now)})
 }
 
 // UpstreamPrimaryValue returns values[0] of upstream-keys.json: the static
 // value of the Cloudflare Tier 0 rule that sets x-mg-upstream-key.
 func UpstreamPrimaryValue(data []byte) (string, error) {
-	f, err := parseUpstreamKeys(data)
+	f, err := parseValueKeys(data, KindUpstreamKeys)
 	if err != nil {
 		return "", err
 	}
 	return f.Values[0], nil
 }
 
-func parseUpstreamKeys(data []byte) (*upstreamKeysFile, error) {
+// parseValueKeys parses the shared schema of upstream-keys.json and
+// origin-keys.json (§12.7): 1-2 distinct 32-byte values of kind `kind`.
+func parseValueKeys(data []byte, kind string) (*upstreamKeysFile, error) {
 	var f upstreamKeysFile
 	if err := strictDecode(data, &f); err != nil {
 		return nil, err
 	}
-	if err := checkHeader(f.V, f.Kind, KindUpstreamKeys); err != nil {
+	if err := checkHeader(f.V, f.Kind, kind); err != nil {
 		return nil, err
 	}
 	if len(f.Values) < 1 || len(f.Values) > MaxUpstreamValues {

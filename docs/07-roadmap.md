@@ -102,7 +102,7 @@ docs/                         design docs + adr/
 
 ### Phase 1 实现进度
 
-实现契约是 [Phase 1 实现规格](impl/phase1-spec.md)（含集成者裁决 I-1..I-37，逐项偏离见其 §0.3），逐阶段的记录在 [phase1-status](impl/phase1-status.md)。截至 2026-09-28：
+实现契约是 [Phase 1 实现规格](impl/phase1-spec.md)（含集成者裁决 I-1..I-38，逐项偏离见其 §0.3），逐阶段的记录在 [phase1-status](impl/phase1-status.md)。截至 2026-09-28：
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
