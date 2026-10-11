@@ -55,14 +55,14 @@ target/install/mglab help
 
 The Edge's deployable SDK directory is **`sdk/web/dist/sdk/`**, containing a content-hashed JavaScript file, `manifest.json` and `challenge.html`. Keep all three together. `edge/tests/fixtures/sdk/` is a test fixture and must not be substituted for the built SDK in a deployment.
 
-This preview uses the existing component versions: `mg-edge --version` reports `0.1.0` followed by the commit it was built from, such as `0.1.0 (710beea1c2d3)`, while the SDK reports `0.1.0-phase1`. The commit is `unknown` when the build has no Git checkout; set `MG_EDGE_COMMIT` when building from a source archive. The repository release is identified by the `v0.1.0-preview.1` tag.
+This preview uses the existing component versions: `mg-edge --version` reports `0.1.0` followed by the commit it was built from, such as `0.1.0 (710beea1c2d3)`, while the SDK of that release reports `0.1.0-phase1` (the SDK on `master` is newer, see below). The commit is `unknown` when the build has no Git checkout; set `MG_EDGE_COMMIT` when building from a source archive. The repository release is identified by the `v0.1.0-preview.1` tag.
 
 ## Install the browser assets from npm
 
-The matching SDK assets are distributed as `@ermiaodada/morphgate-web-sdk@0.1.0-phase1`, under the `preview` distribution tag. To obtain the built assets without a local TypeScript build, install the exact version in your deployment project:
+The SDK assets are distributed as `@ermiaodada/morphgate-web-sdk`. Use `0.2.0-preview.1` with an Edge built from `master` at commit `710beea` or later (it adds `MorphGate.fetch()` and the `/__mg/v` entry, spec I-39), and `0.1.0-phase1` with the `v0.1.0-preview.1` Edge. To obtain the built assets without a local TypeScript build, install the exact version in your deployment project:
 
 ```sh
-npm install --save-exact @ermiaodada/morphgate-web-sdk@0.1.0-phase1
+npm install --save-exact @ermiaodada/morphgate-web-sdk@0.2.0-preview.1
 ```
 
 Use the complete `node_modules/@ermiaodada/morphgate-web-sdk/dist/sdk/` directory as the SDK directory, and retain the package's `LICENSE` and `NOTICE` when copying it to the Edge host. The [package guide](../sdk/web/README.md) covers installation and `sdk.dir`. This package supplies browser assets for the Phase 1 Edge; it has no Node.js import entry point and does not include the Edge server or deployment credentials.

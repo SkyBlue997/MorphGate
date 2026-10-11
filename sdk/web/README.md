@@ -4,12 +4,12 @@ Browser challenge assets for MorphGate, a defensive bot-management and traffic-s
 
 ## Install and deploy the npm assets
 
-Version `0.1.0-phase1` is compatible with **MorphGate Edge from [v0.1.0-preview.1](https://github.com/SkyBlue997/MorphGate/releases/tag/v0.1.0-preview.1)** (`mg-edge --version` reports `0.1.0`). The Edge generates and verifies the sealed challenges. This package supplies the matching browser script and page template, consumed as a static asset directory; it has no Node.js import entry point.
+Version `0.2.0-preview.1` is compatible with **MorphGate Edge built from `master` at commit `710beea` or later** (`mg-edge --version` reports `0.1.0 (<commit>)`), which serves the `/__mg/v` entry that `MorphGate.fetch()` and `MorphGate.verify()` navigate to (spec I-39). With the Edge of [v0.1.0-preview.1](https://github.com/SkyBlue997/MorphGate/releases/tag/v0.1.0-preview.1), use `0.1.0-phase1`: the challenge page works with either version, but that Edge answers `/__mg/v` with 404. The Edge generates and verifies the sealed challenges. This package supplies the matching browser script and page template, consumed as a static asset directory; it has no Node.js import entry point.
 
 Install the pinned package in your deployment project:
 
 ```sh
-npm install --save-exact @ermiaodada/morphgate-web-sdk@0.1.0-phase1
+npm install --save-exact @ermiaodada/morphgate-web-sdk@0.2.0-preview.1
 ```
 
 The package contains `dist/sdk/manifest.json`, `dist/sdk/challenge.html`, a content-hashed `dist/sdk/mg.<hex16>.js`, license/notice files and package documentation. Source files, tests and development scripts remain in the [source repository](https://github.com/SkyBlue997/MorphGate/tree/master/sdk/web).
@@ -17,16 +17,16 @@ The package contains `dist/sdk/manifest.json`, `dist/sdk/challenge.html`, a cont
 Copy the complete `dist/sdk/` directory onto the Edge host. For example, on that host:
 
 ```sh
-sudo mkdir -p /opt/morphgate/web-sdk-0.1.0-phase1/sdk
-sudo cp -R node_modules/@ermiaodada/morphgate-web-sdk/dist/sdk/. /opt/morphgate/web-sdk-0.1.0-phase1/sdk/
-sudo cp node_modules/@ermiaodada/morphgate-web-sdk/LICENSE node_modules/@ermiaodada/morphgate-web-sdk/NOTICE /opt/morphgate/web-sdk-0.1.0-phase1/
+sudo mkdir -p /opt/morphgate/web-sdk-0.2.0-preview.1/sdk
+sudo cp -R node_modules/@ermiaodada/morphgate-web-sdk/dist/sdk/. /opt/morphgate/web-sdk-0.2.0-preview.1/sdk/
+sudo cp node_modules/@ermiaodada/morphgate-web-sdk/LICENSE node_modules/@ermiaodada/morphgate-web-sdk/NOTICE /opt/morphgate/web-sdk-0.2.0-preview.1/
 ```
 
 Set the corresponding directory in the Edge configuration:
 
 ```toml
 [sdk]
-dir = "/opt/morphgate/web-sdk-0.1.0-phase1/sdk"
+dir = "/opt/morphgate/web-sdk-0.2.0-preview.1/sdk"
 ```
 
 Keep the hashed script, template and manifest together without editing their contents or names. Edge validates the manifest hashes and template when loading the directory. Validate the complete server configuration, with its credentials available, before starting or reloading:
@@ -39,7 +39,7 @@ Edge serves the script under `/__mg/s/` on the protected site's own origin and r
 
 For fresh deployment keys, configuration and the checked systemd reload procedure, see the [getting-started guide](https://github.com/SkyBlue997/MorphGate/blob/master/docs/getting-started.md) and [example service](https://github.com/SkyBlue997/MorphGate/blob/master/deploy/systemd/mg-edge.service). Package installation and configuration validation do not establish live Cloudflare acceptance, browser compatibility or production readiness; those owner-operated checks remain required.
 
-## Challenged fetches (next release; Edge with spec I-39)
+## Challenged fetches (Edge with spec I-39)
 
 A fetch from a page can receive the Edge's JSON challenge (`403`, `{"error":"mg_challenge",...}`). A script cannot solve it in place in Phase 1. Instead, the page navigates to `/__mg/v?ret=<its own path>`. The Edge challenges there, and the solved challenge returns to the page with a clearance that the fetch's route accepts. To use this, include the hashed script from `dist/sdk/manifest.json` on the site's pages and send requests through the SDK:
 
@@ -57,105 +57,105 @@ A fetch from a page can receive the Edge's JSON challenge (`403`, `{"error":"mg_
 
 The sections below describe source-tree development. Build and test commands require a repository checkout; the npm asset package excludes their source and tooling.
 
-MorphGate 第一方 Web SDK。设计见 [04 §7](https://github.com/SkyBlue997/MorphGate/blob/master/docs/04-challenge-and-tokens.md#7-客户端信号采集web--mobile-sdk)；Phase 1 契约见 [实现规格 §10–§11](https://github.com/SkyBlue997/MorphGate/blob/master/docs/impl/phase1-spec.md#11-web-sdk-phase-1wp-w1)。
+This is MorphGate's first-party Web SDK. The design is in [docs/04 §7](https://github.com/SkyBlue997/MorphGate/blob/master/docs/04-challenge-and-tokens.md#7-客户端信号采集web--mobile-sdk) and the Phase 1 contract in [the implementation spec §10–§11](https://github.com/SkyBlue997/MorphGate/blob/master/docs/impl/phase1-spec.md#11-web-sdk-phase-1wp-w1) (both in Chinese).
 
-## 现状：Phase 1（`SDK_VERSION = "0.1.0-phase1"`）
+## Status: Phase 1 (`SDK_VERSION = "0.2.0-preview.1"`)
 
-Phase 1 的 SDK 有网络副作用的事只有两件：在 Edge 下发的挑战页上完成无感 Challenge（SHA-256 PoW）并以表单导航提交 `POST /__mg/c`；站点页面用 `MorphGate.fetch()` 时，fetch 收到 JSON Challenge 就把页面导航到 `/__mg/v?ret=`（I-39）。遥测上传、会话密钥、`MG-Proof`、就地解挑战在 Phase 2。
+The Phase 1 SDK has only two effects on the network. On the challenge page the Edge serves, it completes the invisible challenge (SHA-256 proof of work) and submits `POST /__mg/c` with a form navigation. On a site's pages that use `MorphGate.fetch()`, a fetch that receives a JSON challenge navigates the page to `/__mg/v?ret=` (I-39). Telemetry upload, session keys, `MG-Proof` and solving a challenge in place come in Phase 2.
 
-| 模块 | Phase 1 | 后续 |
+| Module | Phase 1 | Later |
 |---|---|---|
-| `index.ts` | 入口。文档中：从脚本标签 `data-mg-*` 读取配置，暴露只读的 `window.MorphGate`（`version`、`config`、`snapshot()`、`classifyResponse`、`fetch()`、`verify()`、`verifyUrl()`），页面有 `#mg-challenge` 时运行挑战流程。Worker 中（`self instanceof WorkerGlobalScope`）：只安装 PoW 消息处理器 | Phase 2：静默刷新、遥测 |
-| `config.ts` | `data-mg-*` 解析、路径前缀规范化（只接受同源绝对路径） | |
-| `challenge.ts` | 挑战页客户端：读取并校验 `#mg-challenge` 的数据属性、SHA-256 自检、Worker / 主线程 PoW、组装提交 JSON、隐藏表单提交、失败页的一次自动重试、状态文字与重试链接 | Phase 2：交互式 Challenge、Provider |
-| `pow.ts` | `sha256-hashcash-v1`：前缀、midstate 搜索、校验、Worker 消息协议 | |
-| `sha256.ts` | 纯 TypeScript SHA-256（压缩函数可从任意轮开始，供 midstate 复用） | |
-| `env.ts` | 环境摘要：UA / 低熵 Client Hints、语言、时区、屏幕与视口（量化）、核心数、触控、存储可用性。字符串截断不拆开代理对；含孤立代理项的值记为 `null`（`JSON.stringify` 会把它写成 `\udXXX`，Edge 的严格 JSON 解析会拒绝整个提交） | Phase 2：图形栈家族摘要（只取家族，不取渲染器字符串） |
-| `automation.ts` | 只读标准 `navigator.webdriver` | Phase 2：其他自动化特征 |
-| `behavior.ts` | 纯函数量化器：`logBucket`、`roundToStep`、`clamp`、`logHistogram` | Phase 2：指针 / 键盘 / 滚动 / 触控采集 |
-| `crypto.ts` | WebCrypto ECDSA P-256 会话密钥（`extractable: false`）、RFC 7638 JWK 指纹（`cnf.jkt`） | Phase 2：IndexedDB 持久化、`MG-Proof`（ES256 JWS） |
-| `verify.ts` | fetch 被挑战后的验证入口（I-39）：`verifyUrl`、`startVerify`（每个页面路径 60 秒只跳一次，没有 sessionStorage 时不跳）、`isMgChallenge`（读响应的副本） | Phase 2：就地解挑战 |
-| `transport.ts` | 识别 `cf-mitigated: challenge` → `upstream_challenge`；解析 MorphGate JSON（`mg_challenge` 等）；429 / 425 | Phase 2：fetch / XHR 包装、重试 |
-| `telemetry.ts` | 载荷类型、UTF-8 字节数、2 KB 预算检查与按序裁剪 | Phase 2：会话密钥签名、`POST /__mg/t` |
+| `index.ts` | Entry point. In a document: reads the configuration from the script tag's `data-mg-*` attributes, exposes a read-only `window.MorphGate` (`version`, `config`, `snapshot()`, `classifyResponse`, `fetch()`, `verify()`, `verifyUrl()`), and runs the challenge flow when the page has `#mg-challenge`. In a Worker (`self instanceof WorkerGlobalScope`): installs only the PoW message handler | Phase 2: silent refresh, telemetry |
+| `config.ts` | `data-mg-*` parsing and path-prefix normalization (same-origin absolute paths only) | |
+| `challenge.ts` | Challenge page client: reads and validates the `#mg-challenge` data attributes, SHA-256 self-test, Worker / main-thread PoW, submission JSON, hidden form submission, one automatic retry on the failure page, status text and retry link | Phase 2: interactive challenge, providers |
+| `pow.ts` | `sha256-hashcash-v1`: prefix, midstate search, verification, Worker message protocol | |
+| `sha256.ts` | Pure TypeScript SHA-256 (the compression function can start at any round, for midstate reuse) | |
+| `env.ts` | Environment summary: UA and low-entropy Client Hints, languages, time zone, screen and viewport (quantized), core count, touch, storage availability. Truncation never splits a surrogate pair; a value with a lone surrogate becomes `null` (`JSON.stringify` would write it as `\udXXX`, and the Edge's strict JSON parser rejects the whole submission) | Phase 2: graphics stack family summary (family only, never the renderer string) |
+| `automation.ts` | Reads only the standard `navigator.webdriver` | Phase 2: other automation signals |
+| `behavior.ts` | Pure quantizers: `logBucket`, `roundToStep`, `clamp`, `logHistogram` | Phase 2: pointer / keyboard / scroll / touch collection |
+| `crypto.ts` | WebCrypto ECDSA P-256 session key (`extractable: false`), RFC 7638 JWK thumbprint (`cnf.jkt`) | Phase 2: IndexedDB persistence, `MG-Proof` (ES256 JWS) |
+| `verify.ts` | The verification entry for challenged fetches (I-39): `verifyUrl`, `startVerify` (each page path navigates at most once per 60 s, and never without sessionStorage), `isMgChallenge` (reads a clone of the response) | Phase 2: solving in place |
+| `transport.ts` | Recognizes `cf-mitigated: challenge` as `upstream_challenge`; parses MorphGate JSON (`mg_challenge` and others); 429 / 425 | Phase 2: fetch / XHR wrappers, retries |
+| `telemetry.ts` | Payload types, UTF-8 byte counts, 2 KB budget check and ordered trimming | Phase 2: session-key signatures, `POST /__mg/t` |
 
-隐私：不采集画布 / WebGL / 音频渲染哈希、渲染器字符串、字体 / 插件列表、高熵 Client Hints。任何采集异常只让对应字段为 `null`，不影响页面。
+Privacy: no canvas, WebGL or audio rendering hashes, renderer strings, font or plugin lists, or high-entropy Client Hints are collected. A failure while collecting any value only makes that field `null` and never affects the page.
 
-## 构建产物（§11.1）
+## Build output (§11.1)
 
-`pnpm run build` = esbuild（IIFE、压缩、ES2020）→ `scripts/build-dist.mjs`：
+`pnpm run build` runs esbuild (IIFE, minified, ES2020), then `scripts/build-dist.mjs`:
 
-| 文件 | 说明 |
+| File | Contents |
 |---|---|
-| `dist/mg.js` | SDK 包；`size` 步骤要求 gzip ≤ 30,720 字节（当前约 7.3 KB） |
-| `dist/sdk/mg.<hex16>.js` | 与 `dist/mg.js` 字节相同；`hex16` = 内容 SHA-256 的前 16 个十六进制字符 |
-| `dist/sdk/challenge.html` | 挑战页模板（源文件 `templates/challenge.html`） |
+| `dist/mg.js` | The SDK bundle; the `size` step requires gzip ≤ 30,720 bytes (about 7.9 KB now) |
+| `dist/sdk/mg.<hex16>.js` | Byte-identical to `dist/mg.js`; `hex16` is the first 16 hex digits of its SHA-256 |
+| `dist/sdk/challenge.html` | The challenge page template (source `templates/challenge.html`) |
 | `dist/sdk/manifest.json` | `{"v":1,"build":"<hex16>","sdk":"mg.<hex16>.js","files":{"mg.<hex16>.js":"<sha256>"},"templates":{"challenge.html":"<sha256>"}}` |
 
-`dist/sdk/` 整个目录复制到 Edge 主机，`edge.toml` 的 `[sdk] dir` 指向它。Edge 只经 `/__mg/s/<name>` 提供 `files` 中的文件，`templates` 只由 Edge 读取；两者的哈希与模板规则 Edge 在加载时再校验一次。
+Copy the whole `dist/sdk/` directory to the Edge host and point `[sdk] dir` in `edge.toml` at it. The Edge serves only the `files` entries, under `/__mg/s/<name>`; it reads `templates` itself. It checks both hashes and the template rules again when it loads the directory.
 
-`build-dist.mjs` 导出纯函数 `buildDist({ bundle, template }, outDir) -> manifest`（输入在内存中，写入给定目录；删除目录中过期的 `mg.*.js`）与 `validateTemplate(template) -> string[]`；模板违反下述契约时构建失败。
+`build-dist.mjs` exports the pure function `buildDist({ bundle, template }, outDir) -> manifest` (inputs in memory, written to the given directory, stale `mg.*.js` files removed) and `validateTemplate(template) -> string[]`. The build fails when the template breaks the contract below.
 
-## 挑战页模板契约（§11.2）
+## Challenge page template contract (§11.2)
 
-- 占位符恰好是 `{{lang}}` `{{nonce}}` `{{sdk_src}}` `{{prefix}}` `{{c}}` `{{type}}` `{{pow_bits}}` `{{ret}}` `{{request_id}}` `{{state}}`，每个至少一次，没有其他 `{{…}}`。Edge 按 HTML 属性上下文转义（`&` `<` `>` `"` `'`）后做纯文本替换。
-- 结构：`<html lang="{{lang}}">`；`<main id="mg-challenge">` 带 `data-mg-state` / `-c` / `-type` / `-pow-bits` / `-ret` / `-rid` / `-prefix`；`<p id="mg-status" role="status" aria-live="polite">`；`<a id="mg-retry" href="{{ret}}" hidden>`；`<noscript>`；正文中的 `{{request_id}}`。
-- UTF-8、≤ 32 KiB、不引用外部资源（不含 `http:` / `https:`、`//` 开头的 URL、CSS `@import`）；每个 `<script>` / `<style>` 带 `nonce="{{nonce}}"`；没有内联事件处理器与 `style` 属性（nonce-only CSP 会拦截）；SDK 的 `<script>` 把 `data-cfasync="false"` 写在 `src` 之前（Rocket Loader）。
-- 占位符只能出现在带引号的属性值或普通文本中：不得出现在无引号属性值、属性名或标签名、`<script>` / `<style>` 内容与 HTML 注释中。Edge 的转义（`&` `<` `>` `"` `'`）只在这两种上下文里让取值失去标记含义；否则像 `ret = "/a/;alert(1)//"` 这样的值会变成脚本或标记。
-- 中英文文案都在页面中，CSS 按 `<html lang>` 只显示一种；`prefers-reduced-motion` 下不做动画；深色模式跟随系统。SDK 在 `#mg-challenge` 上设置 `data-mg-phase`（`start` / `work` / `retry`），模板据此显示进度指示。
+- The placeholders are exactly `{{lang}}` `{{nonce}}` `{{sdk_src}}` `{{prefix}}` `{{c}}` `{{type}}` `{{pow_bits}}` `{{ret}}` `{{request_id}}` `{{state}}`, each at least once, and no other `{{…}}`. The Edge escapes each value for an HTML attribute context (`&` `<` `>` `"` `'`) and substitutes it as plain text.
+- Structure: `<html lang="{{lang}}">`; `<main id="mg-challenge">` with `data-mg-state` / `-c` / `-type` / `-pow-bits` / `-ret` / `-rid` / `-prefix`; `<p id="mg-status" role="status" aria-live="polite">`; `<a id="mg-retry" href="{{ret}}" hidden>`; `<noscript>`; `{{request_id}}` in the body text.
+- UTF-8, ≤ 32 KiB, no external resources (no `http:` / `https:` or `//` URLs, no CSS `@import`). Every `<script>` and `<style>` carries `nonce="{{nonce}}"`. No inline event handlers or `style` attributes (a nonce-only CSP blocks them). The SDK `<script>` puts `data-cfasync="false"` before `src` (Rocket Loader).
+- Placeholders may appear only in quoted attribute values or in plain text: never in unquoted attribute values, attribute or tag names, `<script>` / `<style>` content or HTML comments. The Edge's escaping (`&` `<` `>` `"` `'`) neutralizes markup only in those two contexts; elsewhere a value such as `ret = "/a/;alert(1)//"` would become script or markup.
+- The page carries both the Chinese and the English text, and CSS shows one of them according to `<html lang>`. There is no animation under `prefers-reduced-motion`, and dark mode follows the system. The SDK sets `data-mg-phase` (`start` / `work` / `retry`) on `#mg-challenge`, which the template uses to show progress.
 
-## 挑战流程（§11.3）
+## Challenge flow (§11.3)
 
-1. 读取并校验数据属性：`c` 为 base64url（≤ 1024 字符），`type` 为 `invisible` / `pow`，`pow_bits` 为 0–32，`ret` 满足 §6.4 的客户端子集（以 `/` 开头、非 `//`、无 `\`、控制字符与 `#`、≤ 512 字节、路径不是 `/__mg` 也不在 `/__mg/` 之下；Edge 的校验为准）。客户端检查不得比 Edge 严格，否则 Edge 签发的挑战在页面上永远无法完成：保留路径的判断与 `mg_core::paths::is_reserved` 的原始路径规则一样区分大小写（`/__MG/c` 是普通源站路径）。不合格即显示重试链接。
-2. `state = failed`：有新 C 时每个 `ret` 至多自动重试一次（`sessionStorage` 键 `mg_retry:<ret>`，存取失败时不自动重试）；否则显示重试链接（`href = ret`）。
-3. 自检：纯 JS SHA-256 对已知答案、midstate 搜索路径对通用路径、WebCrypto（可用时）对纯 JS；不一致则不启动。
-4. PoW：`prefix = "mg-pow-v1" ‖ 0x00 ‖ SHA-256(C)`，以当前脚本 URL 启动 Worker。Worker 创建失败、报错、回复 `mg-pow-err` 或无效解，或 2 s 内没有任何回复时，改为主线程分片（每片 50,000 次哈希，片间 `setTimeout(0)`）。整体超过 60 s 停止计算并显示重试链接。
-5. 组装提交 JSON（键序 `v, type, c, pow, ret, ts, build, env, auto`；`build` 取脚本文件名中的 `hex16`，取不到时为 16 个 `0`）；URL 编码后的正文超过 8 KiB 时依次去掉 `env`、`auto`。
-6. 创建隐藏的 `<form method="POST" action="<prefix>c" enctype="application/x-www-form-urlencoded" accept-charset="UTF-8">`，唯一字段 `mg`，挂到 `body` 后 `submit()`；浏览器跟随 303 回到 `ret`，带上 `__Host-mg_clr`。
-7. 任何异常都不抛进页面：状态文字改为"验证失败，请重试"并显示重试链接。
+1. Read and validate the data attributes: `c` is base64url (≤ 1024 characters), `type` is `invisible` or `pow`, `pow_bits` is 0–32, and `ret` passes the client-side subset of §6.4 (starts with `/` but not `//`; no `\`, control characters or `#`; ≤ 512 bytes; the path is not `/__mg` or under `/__mg/`; the Edge's check is authoritative). The client must never be stricter than the Edge, or a challenge the Edge issued could never complete on the page: the reserved-path check is case-sensitive, like the raw-path rule of `mg_core::paths::is_reserved` (`/__MG/c` is an ordinary origin path). Anything invalid shows the retry link.
+2. `state = failed`: with a new C, retry automatically at most once per `ret` (sessionStorage key `mg_retry:<ret>`; no automatic retry when storage fails); otherwise show the retry link (`href = ret`).
+3. Self-test: pure-JS SHA-256 against known answers, the midstate search path against the generic path, and WebCrypto (when available) against pure JS. On any mismatch, do not start.
+4. PoW: `prefix = "mg-pow-v1" ‖ 0x00 ‖ SHA-256(C)`; start a Worker from the current script URL. When the Worker cannot be created, reports an error, replies `mg-pow-err` or an invalid solution, or sends nothing within 2 s, fall back to the main thread in slices (50,000 hashes per slice, `setTimeout(0)` between slices). Stop after 60 s in total and show the retry link.
+5. Build the submission JSON (key order `v, type, c, pow, ret, ts, build, env, auto`; `build` is the `hex16` from the script file name, or 16 `0`s when it cannot be read). When the URL-encoded body exceeds 8 KiB, drop `env`, then `auto`.
+6. Create a hidden `<form method="POST" action="<prefix>c" enctype="application/x-www-form-urlencoded" accept-charset="UTF-8">` with the single field `mg`, append it to `body` and `submit()`. The browser follows the 303 back to `ret` with `__Host-mg_clr`.
+7. No exception reaches the page: the status text changes to "verification failed, please retry" and the retry link is shown.
 
-**Worker 协议**（Worker 与页面是同一个 SDK 文件）：
+**Worker protocol** (the Worker and the page run the same SDK file):
 
 ```
 page   -> worker  {t: "mg-pow", prefix: Uint8Array(42), bits}
-worker -> page    {t: "mg-pow-ack"}                       收到合法请求后立即发送
+worker -> page    {t: "mg-pow-ack"}                       sent as soon as a valid request arrives
 worker -> page    {t: "mg-pow-ok", counter} | {t: "mg-pow-err"}
 ```
 
-`mg-pow-ack` 是对规格 §11.3 的补充：高难度下 Worker 的搜索可能超过 2 s，没有确认消息时"2 s 内无任何回复"会把正在工作的 Worker 误判为失效。页面在收到任何消息后取消 2 s 计时，Worker 的结果在提交前用通用 SHA-256 路径复核。
+`mg-pow-ack` adds to spec §11.3: at high difficulty the Worker's search can take longer than 2 s, and without an acknowledgement the "no reply within 2 s" rule would mistake a working Worker for a dead one. The page cancels the 2 s timer on any message, and re-checks the Worker's result with the generic SHA-256 path before submitting.
 
-PoW 搜索从 0 开始、上限 `2^53 − 1`，每次尝试一次压缩（前 10 轮的 midstate 预先算好，消息扩展与轮函数合并在同一个循环里）；Node 26 / Apple M 系列上约 5 M 次/秒。
+The PoW search starts at 0 with an upper bound of `2^53 − 1`, one compression per attempt (the midstate of the first 10 rounds is precomputed, and message expansion and the round function share one loop): about 5 M attempts per second on Node 26 / Apple M-series.
 
-## 嵌入
+## Embedding
 
 ```html
 <script data-cfasync="false" src="/__mg/s/mg.<hex16>.js" nonce="..." data-mg-path-prefix="/__mg/"></script>
 ```
 
-| 属性 | 默认 | 说明 |
+| Attribute | Default | Meaning |
 |---|---|---|
-| `data-mg-path-prefix` | `/__mg/` | 只接受同源绝对路径；非法值（`//host/`、`..`、URL）回退默认值 |
-| `data-mg-site` | 无 | 站点 ID，仅供调试 |
-| `data-mg-debug` | `false` | `true` 时在控制台打印快照 |
+| `data-mg-path-prefix` | `/__mg/` | Same-origin absolute paths only; invalid values (`//host/`, `..`, URLs) fall back to the default |
+| `data-mg-site` | none | Site ID, for debugging only |
+| `data-mg-debug` | `false` | `true` logs the snapshot to the console |
 
-`data-cfasync="false"` 让 Cloudflare Rocket Loader 不改写该脚本。挑战页的 CSP 需要 `worker-src 'self'`（Worker 用同一个脚本 URL 启动）与 `form-action 'self'`。
+`data-cfasync="false"` keeps Cloudflare Rocket Loader from rewriting the script. The challenge page's CSP needs `worker-src 'self'` (the Worker starts from the same script URL) and `form-action 'self'`.
 
-## 命令
+## Commands
 
 ```bash
 pnpm install
-pnpm run check      # typecheck && test && build && size
-pnpm run build      # esbuild -> dist/mg.js，然后 build-dist.mjs -> dist/sdk/
-pnpm run size       # gzip(dist/mg.js) 必须 ≤ 30720 字节
+pnpm run check      # typecheck && test && build && size && pack:check
+pnpm run build      # esbuild -> dist/mg.js, then build-dist.mjs -> dist/sdk/
+pnpm run size       # gzip(dist/mg.js) must be ≤ 30720 bytes
 ```
 
-## 测试（§11.5）
+## Tests (§11.5)
 
-| 文件 | 内容 |
+| File | Contents |
 |---|---|
-| `test/sha256.test.ts` | NIST SHA-256 向量（含 100 万个 `a`）；0–200 字节长度与 Node 的 SHA-256 对照 |
-| `test/pow.test.ts` | 直接读取 `testdata/phase1/kat.json` 的全部 `pow` 用例（前缀、`first_counter`、`digest_hex`）；计数器高位与 `2^53 − 1` 边界；Worker 消息处理器（直接调用）；随机输入不抛异常 |
-| `test/challenge.test.ts` | 数据属性解析与 `ret` 校验；提交 JSON 的形状、键序、无重复键、嵌套 ≤ 16、8 KiB 上限；表单构建（假 DOM，只有一个 `mg` 字段）；自动重试配额；自检；完整流程（假 Worker、假计时器：Worker 路径、各类回退、2 s / 60 s 计时、异常处理）；浏览器接线 |
-| `test/template.test.ts` | 模板占位符、nonce、外部资源、`data-cfasync` 顺序、结构与双语；Edge 式渲染；每条规则的反例；随机输入不抛异常 |
-| `test/build-dist.test.ts` | `buildDist` 在临时目录中生成的 manifest 与文件哈希、文件名一致；过期构建清理；非法模板与空包被拒绝 |
+| `test/sha256.test.ts` | NIST SHA-256 vectors (including one million `a`s); lengths 0–200 bytes against Node's SHA-256 |
+| `test/pow.test.ts` | Every `pow` case of `testdata/phase1/kat.json` (prefix, `first_counter`, `digest_hex`), read directly; high counter bits and the `2^53 − 1` bound; the Worker message handler (called directly); random inputs never throw |
+| `test/challenge.test.ts` | Data attribute parsing and `ret` validation; submission JSON shape, key order, no duplicate keys, nesting ≤ 16, the 8 KiB limit; form construction (fake DOM, a single `mg` field); the automatic retry quota; the self-test; the full flow (fake Worker and timers: the Worker path, every fallback, the 2 s / 60 s timers, exception handling); browser wiring |
+| `test/template.test.ts` | Template placeholders, nonces, external resources, `data-cfasync` order, structure and both languages; Edge-style rendering; a counterexample for every rule; random inputs never throw |
+| `test/build-dist.test.ts` | The manifest that `buildDist` writes to a temporary directory matches the file hashes and names; stale builds are removed; invalid templates and empty bundles are rejected |
 
-测试在 Node 中运行，不依赖已有的 `dist/`。包里没有 `@types/node`（`src/` 是浏览器代码）；测试用到的几个 Node 内置模块在 `test/node-shim.d.ts` 中声明。
+The tests run in Node and do not depend on an existing `dist/`. The package has no `@types/node` (`src/` is browser code); the few Node built-ins the tests use are declared in `test/node-shim.d.ts`.
