@@ -302,7 +302,8 @@ func TestBundleWorkflow(t *testing.T) {
 	}
 	e.must("bundle", "sign", "--in", e.path("build/blog.sitebundle.pb"), "--key", e.path("keys/owner-2026.key.age"), "--out", e.path("blog.bundle"))
 	if rec := e.lastRecord(); rec.Action != "bundle.sign" || rec.ResourceID != "blog@1790000000" || rec.Site != "blog" ||
-		!strings.Contains(string(rec.Diff), `"monitor_only":true`) || !strings.Contains(string(rec.Diff), `"rules":0`) {
+		!strings.Contains(string(rec.Diff), `"monitor_only":true`) || !strings.Contains(string(rec.Diff), `"rules":0`) ||
+		strings.Contains(string(rec.Diff), "route_modes") {
 		t.Errorf("sign record %+v %s", rec, rec.Diff)
 	}
 	out = e.must("bundle", "verify", "--in", e.path("blog.bundle"), "--pub", pub, "--site", "blog")
@@ -353,6 +354,17 @@ func TestBundleBuildWithRules(t *testing.T) {
 	entries, _ := os.ReadDir(e.path("b/artifacts"))
 	if len(entries) != 4 {
 		t.Errorf("copied artifacts %v", entries)
+	}
+
+	// Route mode overrides (I-36) are audited on sign and shown by verify.
+	e.must("keys", "gen", "--kid", "owner-2026", "--out-dir", e.path("keys"), "--insecure-test-key")
+	e.must("bundle", "sign", "--in", e.path("b/blog.sitebundle.pb"), "--key", e.path("keys/owner-2026.key.age"), "--out", e.path("blog.bundle"))
+	if rec := e.lastRecord(); !strings.Contains(string(rec.Diff), `"route_modes":{"production/api":"monitor","production/reset":"enforce"}`) {
+		t.Errorf("sign record %s", rec.Diff)
+	}
+	out := e.must("bundle", "verify", "--in", e.path("blog.bundle"), "--pub", e.path("keys/owner-2026.pub"))
+	if !strings.Contains(out, "route modes production/api=monitor,production/reset=enforce\n") {
+		t.Errorf("verify: %q", out)
 	}
 	e.expect(cli.ExitFailed, "is invalid", "site", "check", "--site-config", sitesDir+"/invalid/challenge-ttl.yaml")
 	e.expect(cli.ExitFailed, "", "site", "check", "--site-config", e.path("missing.yaml"))

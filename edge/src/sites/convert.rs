@@ -52,7 +52,12 @@ pub struct BundleRuntime {
     pub version: u64,
     /// Lower-case hex SHA-256 of the signed bundle bytes.
     pub sha256_hex: String,
+    /// The site's monitor switch; a route's [`RouteMode`] overrides it.
     pub monitor_only: bool,
+    /// Some route of some environment has `mode = enforce` (I-36): oversize
+    /// requests, which skip route matching, are then rejected even under the
+    /// site's monitor switch.
+    pub has_enforce_route: bool,
     pub upstream_kind: UpstreamProfileKind,
     pub expected_mask: u32,
     pub allowed_listeners: BTreeSet<String>,
@@ -86,6 +91,7 @@ impl fmt::Debug for BundleRuntime {
             .field("version", &self.version)
             .field("sha256", &self.sha256_hex)
             .field("monitor_only", &self.monitor_only)
+            .field("has_enforce_route", &self.has_enforce_route)
             .field("upstream_kind", &self.upstream_kind)
             .field("environments", &self.environments)
             .field("token_keys", &self.token_keys)
@@ -173,7 +179,37 @@ pub struct RouteRuntime {
     pub fail_closed: bool,
     pub require_clearance: bool,
     pub redact_path: bool,
+    pub mode: RouteMode,
     pub patterns: Vec<Glob>,
+}
+
+/// A route's override of the site's monitor switch (`Route.mode`, I-36).
+///
+/// The variants are ordered from least to most strict: when a request
+/// matches several routes through different path views (§9.4), the maximum
+/// applies, so that spelling a path differently never downgrades enforcement
+/// to recording.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RouteMode {
+    /// Record decisions, enforce nothing.
+    Monitor,
+    /// Follow `SiteBundle.monitor_only`.
+    #[default]
+    Inherit,
+    /// Enforce even when the site is in monitor mode.
+    Enforce,
+}
+
+impl RouteMode {
+    /// Whether a request with this (combined) mode is only recorded, given
+    /// the site's `monitor_only`.
+    pub fn monitor(self, site_monitor_only: bool) -> bool {
+        match self {
+            Self::Monitor => true,
+            Self::Inherit => site_monitor_only,
+            Self::Enforce => false,
+        }
+    }
 }
 
 impl RouteRuntime {
@@ -190,6 +226,7 @@ impl RouteRuntime {
             fail_closed: false,
             require_clearance: false,
             redact_path: false,
+            mode: RouteMode::Inherit,
             patterns: Vec::new(),
         }
     }
@@ -337,11 +374,17 @@ pub fn build_runtime(
         ))
     });
 
+    let has_enforce_route = environments
+        .iter()
+        .flat_map(|e| &e.routes)
+        .any(|r| r.mode == RouteMode::Enforce);
+
     Ok(BundleRuntime {
         site_id: b.site_id.clone(),
         version: b.version,
         sha256_hex: vb.sha256_hex(),
         monitor_only: b.monitor_only,
+        has_enforce_route,
         upstream_kind: kind,
         expected_mask: upstream.expected_mask,
         allowed_listeners: b.allowed_listeners.iter().cloned().collect(),
@@ -370,6 +413,12 @@ fn convert_route(r: &Route, case_insensitive: bool) -> Result<RouteRuntime, Stri
     let sensitivity = RouteSensitivity::from_proto(r.sensitivity)
         .filter(|s| *s != RouteSensitivity::Unspecified)
         .ok_or("sensitivity is unspecified or unknown")?;
+    let mode = match mg_proto::v1::RouteMode::try_from(r.mode) {
+        Ok(mg_proto::v1::RouteMode::Inherit) => RouteMode::Inherit,
+        Ok(mg_proto::v1::RouteMode::Monitor) => RouteMode::Monitor,
+        Ok(mg_proto::v1::RouteMode::Enforce) => RouteMode::Enforce,
+        Err(_) => return Err(format!("mode {} is unknown", r.mode)),
+    };
     let mut sources: Vec<&str> = r.paths.iter().map(String::as_str).collect();
     // Deprecated in Phase 1: a non-empty path_glob is one more entry of paths.
     if !r.path_glob.is_empty() {
@@ -397,6 +446,7 @@ fn convert_route(r: &Route, case_insensitive: bool) -> Result<RouteRuntime, Stri
         fail_closed: r.fail_closed,
         require_clearance: r.require_clearance,
         redact_path: r.redact_path,
+        mode,
         patterns,
     })
 }

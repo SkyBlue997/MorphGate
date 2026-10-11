@@ -175,6 +175,9 @@ func (p *parser) parseRoutes(n *yaml.Node, path string, envHosts []string) []Rou
 		if v := o.get("redact_path"); v != nil {
 			r.RedactPath, _ = p.boolean(v, o.sub("redact_path"))
 		}
+		if v := o.get("mode"); v != nil {
+			r.Mode, _ = p.enum(v, o.sub("mode"), RouteModes)
+		}
 		o.finish()
 		out = append(out, r)
 	}

@@ -14,7 +14,11 @@ use std::time::{Duration, Instant};
 fn with_bundle(env: &TestEnv, monitor_only: bool) -> Edge {
     let mut b = blog_bundle(1);
     b.monitor_only = monitor_only;
-    env.write_lkg("blog", &sign(&b));
+    start(env, &b)
+}
+
+fn start(env: &TestEnv, b: &mg_proto::v1::SiteBundle) -> Edge {
+    env.write_lkg("blog", &sign(b));
     let edge = env.spawn(&env.write_config(&env.default_config("")));
     edge.wait_metric("mg_config_version{site=\"blog\"}", 10, |v| v == 1.0);
     edge
@@ -203,6 +207,43 @@ fn monitor_and_bootstrap_forward_oversize_requests_unevaluated() {
 
 /// §9.9: a rejection sent before the body was read closes the connection;
 /// the Edge must not read an attacker's 1 MiB body to the end first.
+/// I-36: oversize requests skip route matching, so a monitor site with a
+/// `mode: enforce` route rejects them; otherwise one could reach the
+/// enforced route unevaluated.
+#[test]
+fn monitor_site_with_an_enforce_route_rejects_oversize_requests() {
+    let env = TestEnv::new("limits-route-enforce");
+    let mut b = blog_bundle(1);
+    b.monitor_only = true;
+    let routes = &mut b.environments[0].routes;
+    routes.insert(
+        0,
+        common::policy::route(
+            "admin",
+            &["/admin/**"],
+            mg_proto::v1::RouteSensitivity::High,
+            false,
+            false,
+        ),
+    );
+    routes[0].mode = mg_proto::v1::RouteMode::Enforce as i32;
+    let edge = start(&env, &b);
+    for (what, head, status, kind) in oversize_requests() {
+        let r = send(&env, &head);
+        assert_eq!(r.status, status, "{what}: {}", r.head);
+        assert_eq!(
+            edge.metric(&format!(
+                "mg_oversize_total{{kind=\"{kind}\",mode=\"monitor\",site=\"blog\"}}"
+            )),
+            0.0,
+            "{what}"
+        );
+    }
+    // Requests within the caps are still only recorded on other routes.
+    let r = send(&env, "GET /within HTTP/1.1\r\n");
+    assert_eq!(r.status, 200, "{}", r.head);
+}
+
 #[test]
 fn early_rejection_closes_without_reading_the_body() {
     let env = TestEnv::new("limits-body");

@@ -21,6 +21,59 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// Per-route override of the site's monitor switch (spec I-36). When a request
+// matches several routes through different path views (spec §9.4), the
+// strictest wins: ENFORCE > INHERIT > MONITOR. An unknown value makes the
+// bundle invalid.
+type RouteMode int32
+
+const (
+	RouteMode_ROUTE_MODE_INHERIT RouteMode = 0 // follow SiteBundle.monitor_only
+	RouteMode_ROUTE_MODE_MONITOR RouteMode = 1 // record decisions, enforce nothing
+	RouteMode_ROUTE_MODE_ENFORCE RouteMode = 2 // enforce even when SiteBundle.monitor_only is set
+)
+
+// Enum value maps for RouteMode.
+var (
+	RouteMode_name = map[int32]string{
+		0: "ROUTE_MODE_INHERIT",
+		1: "ROUTE_MODE_MONITOR",
+		2: "ROUTE_MODE_ENFORCE",
+	}
+	RouteMode_value = map[string]int32{
+		"ROUTE_MODE_INHERIT": 0,
+		"ROUTE_MODE_MONITOR": 1,
+		"ROUTE_MODE_ENFORCE": 2,
+	}
+)
+
+func (x RouteMode) Enum() *RouteMode {
+	p := new(RouteMode)
+	*p = x
+	return p
+}
+
+func (x RouteMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RouteMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_morphgate_v1_config_proto_enumTypes[0].Descriptor()
+}
+
+func (RouteMode) Type() protoreflect.EnumType {
+	return &file_morphgate_v1_config_proto_enumTypes[0]
+}
+
+func (x RouteMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RouteMode.Descriptor instead.
+func (RouteMode) EnumDescriptor() ([]byte, []int) {
+	return file_morphgate_v1_config_proto_rawDescGZIP(), []int{0}
+}
+
 type UpstreamProfile struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Kind  UpstreamProfileKind    `protobuf:"varint,1,opt,name=kind,proto3,enum=morphgate.v1.UpstreamProfileKind" json:"kind,omitempty"`
@@ -139,6 +192,7 @@ type Route struct {
 	Paths            []string         `protobuf:"bytes,9,rep,name=paths,proto3" json:"paths,omitempty"`                                                 // glob patterns (policy glob syntax) matched against every path view (spec §9.4)
 	RequireClearance bool             `protobuf:"varint,10,opt,name=require_clearance,json=requireClearance,proto3" json:"require_clearance,omitempty"` // CHALLENGE unless a valid clearance token is presented
 	RedactPath       bool             `protobuf:"varint,11,opt,name=redact_path,json=redactPath,proto3" json:"redact_path,omitempty"`                   // events and access records log "/<route name>" instead of the path (tokenized URLs)
+	Mode             RouteMode        `protobuf:"varint,12,opt,name=mode,proto3,enum=morphgate.v1.RouteMode" json:"mode,omitempty"`                     // monitor / enforce override of SiteBundle.monitor_only (spec I-36)
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -248,6 +302,13 @@ func (x *Route) GetRedactPath() bool {
 		return x.RedactPath
 	}
 	return false
+}
+
+func (x *Route) GetMode() RouteMode {
+	if x != nil {
+		return x.Mode
+	}
+	return RouteMode_ROUTE_MODE_INHERIT
 }
 
 type CompiledRule struct {
@@ -820,7 +881,7 @@ type SiteBundle struct {
 	Providers    []*ProviderConfig      `protobuf:"bytes,6,rep,name=providers,proto3" json:"providers,omitempty"` // interactive providers: Phase 2 (empty in Phase 1)
 	Artifacts    []*ArtifactRef         `protobuf:"bytes,7,rep,name=artifacts,proto3" json:"artifacts,omitempty"`
 	TokenKeyIds  []string               `protobuf:"bytes,8,rep,name=token_key_ids,json=tokenKeyIds,proto3" json:"token_key_ids,omitempty"` // clearance key ids: [0] signs, all verify (material: edge credentials)
-	MonitorOnly  bool                   `protobuf:"varint,9,opt,name=monitor_only,json=monitorOnly,proto3" json:"monitor_only,omitempty"`  // global monitor switch: record decisions, enforce nothing
+	MonitorOnly  bool                   `protobuf:"varint,9,opt,name=monitor_only,json=monitorOnly,proto3" json:"monitor_only,omitempty"`  // site monitor switch: record decisions, enforce nothing (Route.mode overrides it)
 	// Optional activation delay for sensitive changes (docs/02 §6): the Edge
 	// swaps to this bundle atomically at or after this time. 0 = immediately.
 	NotBeforeMs          int64                 `protobuf:"varint,10,opt,name=not_before_ms,json=notBeforeMs,proto3" json:"not_before_ms,omitempty"`
@@ -1760,7 +1821,7 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\x12secret_header_refs\x18\x05 \x03(\tR\x10secretHeaderRefs\x12.\n" +
 	"\x13trusted_proxy_cidrs\x18\x06 \x03(\tR\x11trustedProxyCidrs\x124\n" +
 	"\x16proxy_protocol_version\x18\a \x01(\rR\x14proxyProtocolVersion\x12#\n" +
-	"\rexpected_mask\x18\b \x01(\rR\fexpectedMask\"\xf0\x02\n" +
+	"\rexpected_mask\x18\b \x01(\rR\fexpectedMask\"\x9d\x03\n" +
 	"\x05Route\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -1775,7 +1836,8 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\x11require_clearance\x18\n" +
 	" \x01(\bR\x10requireClearance\x12\x1f\n" +
 	"\vredact_path\x18\v \x01(\bR\n" +
-	"redactPath\"\xcb\x03\n" +
+	"redactPath\x12+\n" +
+	"\x04mode\x18\f \x01(\x0e2\x17.morphgate.v1.RouteModeR\x04mode\"\xcb\x03\n" +
 	"\fCompiledRule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05phase\x18\x02 \x01(\tR\x05phase\x12\x1a\n" +
@@ -1941,7 +2003,11 @@ const file_morphgate_v1_config_proto_rawDesc = "" +
 	"\fSignedBundle\x12\x16\n" +
 	"\x06bundle\x18\x01 \x01(\fR\x06bundle\x12\x15\n" +
 	"\x06key_id\x18\x02 \x01(\tR\x05keyId\x12+\n" +
-	"\x11ed25519_signature\x18\x03 \x01(\fR\x10ed25519SignatureB6Z4morphgate/control-plane/gen/morphgate/v1;morphgatev1b\x06proto3"
+	"\x11ed25519_signature\x18\x03 \x01(\fR\x10ed25519Signature*S\n" +
+	"\tRouteMode\x12\x16\n" +
+	"\x12ROUTE_MODE_INHERIT\x10\x00\x12\x16\n" +
+	"\x12ROUTE_MODE_MONITOR\x10\x01\x12\x16\n" +
+	"\x12ROUTE_MODE_ENFORCE\x10\x02B6Z4morphgate/control-plane/gen/morphgate/v1;morphgatev1b\x06proto3"
 
 var (
 	file_morphgate_v1_config_proto_rawDescOnce sync.Once
@@ -1955,71 +2021,74 @@ func file_morphgate_v1_config_proto_rawDescGZIP() []byte {
 	return file_morphgate_v1_config_proto_rawDescData
 }
 
+var file_morphgate_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_morphgate_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_morphgate_v1_config_proto_goTypes = []any{
-	(*UpstreamProfile)(nil),         // 0: morphgate.v1.UpstreamProfile
-	(*Route)(nil),                   // 1: morphgate.v1.Route
-	(*CompiledRule)(nil),            // 2: morphgate.v1.CompiledRule
-	(*RateLimit)(nil),               // 3: morphgate.v1.RateLimit
-	(*ProviderConfig)(nil),          // 4: morphgate.v1.ProviderConfig
-	(*Environment)(nil),             // 5: morphgate.v1.Environment
-	(*ArtifactRef)(nil),             // 6: morphgate.v1.ArtifactRef
-	(*SiteBundle)(nil),              // 7: morphgate.v1.SiteBundle
-	(*ChallengeConfig)(nil),         // 8: morphgate.v1.ChallengeConfig
-	(*ClearanceConfig)(nil),         // 9: morphgate.v1.ClearanceConfig
-	(*ScoringConfig)(nil),           // 10: morphgate.v1.ScoringConfig
-	(*CrawlerPolicy)(nil),           // 11: morphgate.v1.CrawlerPolicy
-	(*EventConfig)(nil),             // 12: morphgate.v1.EventConfig
-	(*NamedList)(nil),               // 13: morphgate.v1.NamedList
-	(*CloudflareSiteConfig)(nil),    // 14: morphgate.v1.CloudflareSiteConfig
-	(*OriginHeaderConfig)(nil),      // 15: morphgate.v1.OriginHeaderConfig
-	(*SignedBundle)(nil),            // 16: morphgate.v1.SignedBundle
-	nil,                             // 17: morphgate.v1.CompiledRule.ParamsEntry
-	nil,                             // 18: morphgate.v1.SiteBundle.ListsEntry
-	(*ChallengeConfig_PowBits)(nil), // 19: morphgate.v1.ChallengeConfig.PowBits
-	nil,                             // 20: morphgate.v1.ScoringConfig.Z0Entry
-	nil,                             // 21: morphgate.v1.ScoringConfig.FamilyModesEntry
-	nil,                             // 22: morphgate.v1.ScoringConfig.WeightsEntry
-	nil,                             // 23: morphgate.v1.CrawlerPolicy.PurposesEntry
-	(UpstreamProfileKind)(0),        // 24: morphgate.v1.UpstreamProfileKind
-	(Channel)(0),                    // 25: morphgate.v1.Channel
-	(RouteSensitivity)(0),           // 26: morphgate.v1.RouteSensitivity
-	(Action)(0),                     // 27: morphgate.v1.Action
-	(ChallengeType)(0),              // 28: morphgate.v1.ChallengeType
+	(RouteMode)(0),                  // 0: morphgate.v1.RouteMode
+	(*UpstreamProfile)(nil),         // 1: morphgate.v1.UpstreamProfile
+	(*Route)(nil),                   // 2: morphgate.v1.Route
+	(*CompiledRule)(nil),            // 3: morphgate.v1.CompiledRule
+	(*RateLimit)(nil),               // 4: morphgate.v1.RateLimit
+	(*ProviderConfig)(nil),          // 5: morphgate.v1.ProviderConfig
+	(*Environment)(nil),             // 6: morphgate.v1.Environment
+	(*ArtifactRef)(nil),             // 7: morphgate.v1.ArtifactRef
+	(*SiteBundle)(nil),              // 8: morphgate.v1.SiteBundle
+	(*ChallengeConfig)(nil),         // 9: morphgate.v1.ChallengeConfig
+	(*ClearanceConfig)(nil),         // 10: morphgate.v1.ClearanceConfig
+	(*ScoringConfig)(nil),           // 11: morphgate.v1.ScoringConfig
+	(*CrawlerPolicy)(nil),           // 12: morphgate.v1.CrawlerPolicy
+	(*EventConfig)(nil),             // 13: morphgate.v1.EventConfig
+	(*NamedList)(nil),               // 14: morphgate.v1.NamedList
+	(*CloudflareSiteConfig)(nil),    // 15: morphgate.v1.CloudflareSiteConfig
+	(*OriginHeaderConfig)(nil),      // 16: morphgate.v1.OriginHeaderConfig
+	(*SignedBundle)(nil),            // 17: morphgate.v1.SignedBundle
+	nil,                             // 18: morphgate.v1.CompiledRule.ParamsEntry
+	nil,                             // 19: morphgate.v1.SiteBundle.ListsEntry
+	(*ChallengeConfig_PowBits)(nil), // 20: morphgate.v1.ChallengeConfig.PowBits
+	nil,                             // 21: morphgate.v1.ScoringConfig.Z0Entry
+	nil,                             // 22: morphgate.v1.ScoringConfig.FamilyModesEntry
+	nil,                             // 23: morphgate.v1.ScoringConfig.WeightsEntry
+	nil,                             // 24: morphgate.v1.CrawlerPolicy.PurposesEntry
+	(UpstreamProfileKind)(0),        // 25: morphgate.v1.UpstreamProfileKind
+	(Channel)(0),                    // 26: morphgate.v1.Channel
+	(RouteSensitivity)(0),           // 27: morphgate.v1.RouteSensitivity
+	(Action)(0),                     // 28: morphgate.v1.Action
+	(ChallengeType)(0),              // 29: morphgate.v1.ChallengeType
 }
 var file_morphgate_v1_config_proto_depIdxs = []int32{
-	24, // 0: morphgate.v1.UpstreamProfile.kind:type_name -> morphgate.v1.UpstreamProfileKind
-	25, // 1: morphgate.v1.Route.channel:type_name -> morphgate.v1.Channel
-	26, // 2: morphgate.v1.Route.sensitivity:type_name -> morphgate.v1.RouteSensitivity
-	27, // 3: morphgate.v1.CompiledRule.action:type_name -> morphgate.v1.Action
-	17, // 4: morphgate.v1.CompiledRule.params:type_name -> morphgate.v1.CompiledRule.ParamsEntry
-	28, // 5: morphgate.v1.RateLimit.challenge_type:type_name -> morphgate.v1.ChallengeType
-	1,  // 6: morphgate.v1.Environment.routes:type_name -> morphgate.v1.Route
-	2,  // 7: morphgate.v1.Environment.rules:type_name -> morphgate.v1.CompiledRule
-	3,  // 8: morphgate.v1.Environment.rate_limits:type_name -> morphgate.v1.RateLimit
-	0,  // 9: morphgate.v1.SiteBundle.upstream:type_name -> morphgate.v1.UpstreamProfile
-	5,  // 10: morphgate.v1.SiteBundle.environments:type_name -> morphgate.v1.Environment
-	4,  // 11: morphgate.v1.SiteBundle.providers:type_name -> morphgate.v1.ProviderConfig
-	6,  // 12: morphgate.v1.SiteBundle.artifacts:type_name -> morphgate.v1.ArtifactRef
-	8,  // 13: morphgate.v1.SiteBundle.challenge:type_name -> morphgate.v1.ChallengeConfig
-	9,  // 14: morphgate.v1.SiteBundle.clearance:type_name -> morphgate.v1.ClearanceConfig
-	10, // 15: morphgate.v1.SiteBundle.scoring:type_name -> morphgate.v1.ScoringConfig
-	11, // 16: morphgate.v1.SiteBundle.crawler_policy:type_name -> morphgate.v1.CrawlerPolicy
-	12, // 17: morphgate.v1.SiteBundle.events:type_name -> morphgate.v1.EventConfig
-	18, // 18: morphgate.v1.SiteBundle.lists:type_name -> morphgate.v1.SiteBundle.ListsEntry
-	14, // 19: morphgate.v1.SiteBundle.cloudflare:type_name -> morphgate.v1.CloudflareSiteConfig
-	15, // 20: morphgate.v1.SiteBundle.origin_headers:type_name -> morphgate.v1.OriginHeaderConfig
-	19, // 21: morphgate.v1.ChallengeConfig.pow_bits:type_name -> morphgate.v1.ChallengeConfig.PowBits
-	20, // 22: morphgate.v1.ScoringConfig.z0:type_name -> morphgate.v1.ScoringConfig.Z0Entry
-	21, // 23: morphgate.v1.ScoringConfig.family_modes:type_name -> morphgate.v1.ScoringConfig.FamilyModesEntry
-	22, // 24: morphgate.v1.ScoringConfig.weights:type_name -> morphgate.v1.ScoringConfig.WeightsEntry
-	23, // 25: morphgate.v1.CrawlerPolicy.purposes:type_name -> morphgate.v1.CrawlerPolicy.PurposesEntry
-	13, // 26: morphgate.v1.SiteBundle.ListsEntry.value:type_name -> morphgate.v1.NamedList
-	27, // [27:27] is the sub-list for method output_type
-	27, // [27:27] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	25, // 0: morphgate.v1.UpstreamProfile.kind:type_name -> morphgate.v1.UpstreamProfileKind
+	26, // 1: morphgate.v1.Route.channel:type_name -> morphgate.v1.Channel
+	27, // 2: morphgate.v1.Route.sensitivity:type_name -> morphgate.v1.RouteSensitivity
+	0,  // 3: morphgate.v1.Route.mode:type_name -> morphgate.v1.RouteMode
+	28, // 4: morphgate.v1.CompiledRule.action:type_name -> morphgate.v1.Action
+	18, // 5: morphgate.v1.CompiledRule.params:type_name -> morphgate.v1.CompiledRule.ParamsEntry
+	29, // 6: morphgate.v1.RateLimit.challenge_type:type_name -> morphgate.v1.ChallengeType
+	2,  // 7: morphgate.v1.Environment.routes:type_name -> morphgate.v1.Route
+	3,  // 8: morphgate.v1.Environment.rules:type_name -> morphgate.v1.CompiledRule
+	4,  // 9: morphgate.v1.Environment.rate_limits:type_name -> morphgate.v1.RateLimit
+	1,  // 10: morphgate.v1.SiteBundle.upstream:type_name -> morphgate.v1.UpstreamProfile
+	6,  // 11: morphgate.v1.SiteBundle.environments:type_name -> morphgate.v1.Environment
+	5,  // 12: morphgate.v1.SiteBundle.providers:type_name -> morphgate.v1.ProviderConfig
+	7,  // 13: morphgate.v1.SiteBundle.artifacts:type_name -> morphgate.v1.ArtifactRef
+	9,  // 14: morphgate.v1.SiteBundle.challenge:type_name -> morphgate.v1.ChallengeConfig
+	10, // 15: morphgate.v1.SiteBundle.clearance:type_name -> morphgate.v1.ClearanceConfig
+	11, // 16: morphgate.v1.SiteBundle.scoring:type_name -> morphgate.v1.ScoringConfig
+	12, // 17: morphgate.v1.SiteBundle.crawler_policy:type_name -> morphgate.v1.CrawlerPolicy
+	13, // 18: morphgate.v1.SiteBundle.events:type_name -> morphgate.v1.EventConfig
+	19, // 19: morphgate.v1.SiteBundle.lists:type_name -> morphgate.v1.SiteBundle.ListsEntry
+	15, // 20: morphgate.v1.SiteBundle.cloudflare:type_name -> morphgate.v1.CloudflareSiteConfig
+	16, // 21: morphgate.v1.SiteBundle.origin_headers:type_name -> morphgate.v1.OriginHeaderConfig
+	20, // 22: morphgate.v1.ChallengeConfig.pow_bits:type_name -> morphgate.v1.ChallengeConfig.PowBits
+	21, // 23: morphgate.v1.ScoringConfig.z0:type_name -> morphgate.v1.ScoringConfig.Z0Entry
+	22, // 24: morphgate.v1.ScoringConfig.family_modes:type_name -> morphgate.v1.ScoringConfig.FamilyModesEntry
+	23, // 25: morphgate.v1.ScoringConfig.weights:type_name -> morphgate.v1.ScoringConfig.WeightsEntry
+	24, // 26: morphgate.v1.CrawlerPolicy.purposes:type_name -> morphgate.v1.CrawlerPolicy.PurposesEntry
+	14, // 27: morphgate.v1.SiteBundle.ListsEntry.value:type_name -> morphgate.v1.NamedList
+	28, // [28:28] is the sub-list for method output_type
+	28, // [28:28] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_morphgate_v1_config_proto_init() }
@@ -2033,13 +2102,14 @@ func file_morphgate_v1_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_morphgate_v1_config_proto_rawDesc), len(file_morphgate_v1_config_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_morphgate_v1_config_proto_goTypes,
 		DependencyIndexes: file_morphgate_v1_config_proto_depIdxs,
+		EnumInfos:         file_morphgate_v1_config_proto_enumTypes,
 		MessageInfos:      file_morphgate_v1_config_proto_msgTypes,
 	}.Build()
 	File_morphgate_v1_config_proto = out.File

@@ -68,10 +68,12 @@ environments:
         paths: ["/account/reset/**"]
         sensitivity: high
         redact_path: true
+        mode: enforce
       - name: api
         paths: ["/api/**"]
         channel: api
         sensitivity: medium
+        mode: monitor
     rate_limits:
       - id: login-per-ip
         routes: [login]
