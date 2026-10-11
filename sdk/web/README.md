@@ -4,12 +4,12 @@ Browser challenge assets for MorphGate, a defensive bot-management and traffic-s
 
 ## Install and deploy the npm assets
 
-Version `0.1.0-phase1` is compatible with **MorphGate Edge from [v0.1.0-preview.1](https://github.com/SkyBlue997/MorphGate/releases/tag/v0.1.0-preview.1)** (`mg-edge --version` reports `0.1.0`). The Edge generates and verifies the sealed challenges. This package supplies the matching browser script and page template, consumed as a static asset directory; it has no Node.js import entry point.
+Version `0.2.0-preview.1` is compatible with **MorphGate Edge built from `master` at commit `710beea` or later** (`mg-edge --version` reports `0.1.0 (<commit>)`), which serves the `/__mg/v` entry that `MorphGate.fetch()` and `MorphGate.verify()` navigate to (spec I-39). With the Edge of [v0.1.0-preview.1](https://github.com/SkyBlue997/MorphGate/releases/tag/v0.1.0-preview.1), use `0.1.0-phase1`: the challenge page works with either version, but that Edge answers `/__mg/v` with 404. The Edge generates and verifies the sealed challenges. This package supplies the matching browser script and page template, consumed as a static asset directory; it has no Node.js import entry point.
 
 Install the pinned package in your deployment project:
 
 ```sh
-npm install --save-exact @ermiaodada/morphgate-web-sdk@0.1.0-phase1
+npm install --save-exact @ermiaodada/morphgate-web-sdk@0.2.0-preview.1
 ```
 
 The package contains `dist/sdk/manifest.json`, `dist/sdk/challenge.html`, a content-hashed `dist/sdk/mg.<hex16>.js`, license/notice files and package documentation. Source files, tests and development scripts remain in the [source repository](https://github.com/SkyBlue997/MorphGate/tree/master/sdk/web).
@@ -17,16 +17,16 @@ The package contains `dist/sdk/manifest.json`, `dist/sdk/challenge.html`, a cont
 Copy the complete `dist/sdk/` directory onto the Edge host. For example, on that host:
 
 ```sh
-sudo mkdir -p /opt/morphgate/web-sdk-0.1.0-phase1/sdk
-sudo cp -R node_modules/@ermiaodada/morphgate-web-sdk/dist/sdk/. /opt/morphgate/web-sdk-0.1.0-phase1/sdk/
-sudo cp node_modules/@ermiaodada/morphgate-web-sdk/LICENSE node_modules/@ermiaodada/morphgate-web-sdk/NOTICE /opt/morphgate/web-sdk-0.1.0-phase1/
+sudo mkdir -p /opt/morphgate/web-sdk-0.2.0-preview.1/sdk
+sudo cp -R node_modules/@ermiaodada/morphgate-web-sdk/dist/sdk/. /opt/morphgate/web-sdk-0.2.0-preview.1/sdk/
+sudo cp node_modules/@ermiaodada/morphgate-web-sdk/LICENSE node_modules/@ermiaodada/morphgate-web-sdk/NOTICE /opt/morphgate/web-sdk-0.2.0-preview.1/
 ```
 
 Set the corresponding directory in the Edge configuration:
 
 ```toml
 [sdk]
-dir = "/opt/morphgate/web-sdk-0.1.0-phase1/sdk"
+dir = "/opt/morphgate/web-sdk-0.2.0-preview.1/sdk"
 ```
 
 Keep the hashed script, template and manifest together without editing their contents or names. Edge validates the manifest hashes and template when loading the directory. Validate the complete server configuration, with its credentials available, before starting or reloading:
@@ -39,7 +39,7 @@ Edge serves the script under `/__mg/s/` on the protected site's own origin and r
 
 For fresh deployment keys, configuration and the checked systemd reload procedure, see the [getting-started guide](https://github.com/SkyBlue997/MorphGate/blob/master/docs/getting-started.md) and [example service](https://github.com/SkyBlue997/MorphGate/blob/master/deploy/systemd/mg-edge.service). Package installation and configuration validation do not establish live Cloudflare acceptance, browser compatibility or production readiness; those owner-operated checks remain required.
 
-## Challenged fetches (next release; Edge with spec I-39)
+## Challenged fetches (Edge with spec I-39)
 
 A fetch from a page can receive the Edge's JSON challenge (`403`, `{"error":"mg_challenge",...}`). A script cannot solve it in place in Phase 1. Instead, the page navigates to `/__mg/v?ret=<its own path>`. The Edge challenges there, and the solved challenge returns to the page with a clearance that the fetch's route accepts. To use this, include the hashed script from `dist/sdk/manifest.json` on the site's pages and send requests through the SDK:
 
@@ -59,7 +59,7 @@ The sections below describe source-tree development. Build and test commands req
 
 MorphGate 第一方 Web SDK。设计见 [04 §7](https://github.com/SkyBlue997/MorphGate/blob/master/docs/04-challenge-and-tokens.md#7-客户端信号采集web--mobile-sdk)；Phase 1 契约见 [实现规格 §10–§11](https://github.com/SkyBlue997/MorphGate/blob/master/docs/impl/phase1-spec.md#11-web-sdk-phase-1wp-w1)。
 
-## 现状：Phase 1（`SDK_VERSION = "0.1.0-phase1"`）
+## 现状：Phase 1（`SDK_VERSION = "0.2.0-preview.1"`）
 
 Phase 1 的 SDK 有网络副作用的事只有两件：在 Edge 下发的挑战页上完成无感 Challenge（SHA-256 PoW）并以表单导航提交 `POST /__mg/c`；站点页面用 `MorphGate.fetch()` 时，fetch 收到 JSON Challenge 就把页面导航到 `/__mg/v?ret=`（I-39）。遥测上传、会话密钥、`MG-Proof`、就地解挑战在 Phase 2。
 

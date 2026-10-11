@@ -1,6 +1,6 @@
 {
   "name": "@ermiaodada/morphgate-web-sdk",
-  "version": "0.1.0-phase1",
+  "version": "0.2.0-preview.1",
   "description": "First-party browser assets for MorphGate Phase 1: an owner-operated defensive bot-management platform.",
   "type": "module",
   "license": "Apache-2.0",

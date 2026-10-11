@@ -36,7 +36,7 @@ export type { MgConfig, MgEndpoint } from "./config";
 export { VERIFY_GUARD_MS, VERIFY_KEY_PREFIX, isMgChallenge, startVerify, verifyUrl } from "./verify";
 export type { VerifyDeps, VerifyLocation } from "./verify";
 
-export const SDK_VERSION = "0.1.0-phase1";
+export const SDK_VERSION = "0.2.0-preview.1";
 
 export interface Snapshot {
   env: EnvSummary;
