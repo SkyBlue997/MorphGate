@@ -4,7 +4,8 @@ name: Fuzz
 # untrusted input: Cloudflare's x-mg-cf-* headers, request limits, signed
 # bundles, sealed challenges, clearance tokens, /__mg paths and `ret`,
 # ClientHello / JA4, challenge submissions (v1 and v2), renewals, MG-Proof
-# headers and interaction telemetry (fuzz/). Each target runs for
+# headers, interaction telemetry, refresh and /__mg/t bodies, Turnstile
+# siteverify responses and mg-turnstile-keys files (fuzz/). Each target runs for
 # FUZZ_SECONDS, daily and on pull requests that touch a parser crate or
 # fuzz/. A crash fails the job and uploads the reproducer; `make fuzz` runs
 # the same locally.
@@ -65,6 +66,8 @@ jobs:
             targets: mg_proof submission_v2 renew ix_telemetry
           - group: phase2-e2b
             targets: refresh telemetry
+          - group: phase2-e2c
+            targets: siteverify_response turnstile_keys
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

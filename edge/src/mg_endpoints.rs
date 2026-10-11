@@ -75,6 +75,22 @@
 //! signature verified. The nonce of an interactive `C` is kept until the
 //! `C` can no longer be renewed (`crate::renew::interactive_nonce_ttl_ms`).
 //!
+//! ## Turnstile (Phase 2 spec §7.5 steps 5, 12, 13, §8.5; WP-E2c)
+//!
+//! `p = turnstile` must also pass §5.4 rule 2 for the current request
+//! (configured and usable, host, the `C`'s route, no `redact_path`,
+//! countries); otherwise `ic.provider_not_offered`, not counted, and no
+//! siteverify. Round trip 2 adds the token's replay key `mg:rp:*` (a used
+//! token is `ic.ts_dup`, the nonce consumed). Step 13 calls siteverify
+//! through `crate::turnstile::Verifier` (deadline `min(timeout_ms, 5000)`)
+//! and records `ChallengeResult.provider`. `Pass` earns
+//! `interactive_ext:turnstile` (shadow and enforce alike); `Fail`
+//! (`ic.ts_*`) counts only under `enforce`; `Unavailable` /
+//! `Misconfigured` (`ic.provider_unavailable` / `ic.provider_misconfigured`,
+//! the feedback outcome likewise) never count. After an `Unavailable`,
+//! `Misconfigured` or any shadow failure the new `C` offers no Turnstile, so
+//! the visitor falls back to `self_hold`.
+//!
 //! Answers follow the submission's encoding: a form navigation gets HTML
 //! (the failed challenge page, or the short 429 page), a fetch gets JSON.
 //! When the media type is not one of the two, the §9.9 navigation test of
@@ -497,6 +513,10 @@ pub struct Submit<'a> {
     /// on the raw headers: a `Connection` option naming it does not hide it
     /// from step 3).
     pub content_encoding: bool,
+    /// The site's Turnstile, when the bundle enables it (Phase 2 spec §8).
+    pub turnstile: Option<crate::turnstile::Offer<'a>>,
+    /// Runs siteverify (`mg-outbound`).
+    pub verifier: &'a dyn crate::turnstile::Verifier,
 }
 
 impl fmt::Debug for Submit<'_> {
@@ -692,6 +712,15 @@ struct Flow<'a, 's> {
     previous: Option<ClearanceClaims>,
     /// Its `sub` has an active near-line session verdict (§6.8).
     session_flagged: bool,
+    /// The new `C` of this failure offers no Turnstile (§8.5: after an
+    /// unavailable, misconfigured or shadow-failed verification).
+    exclude_turnstile: bool,
+    /// Whether this failure counts in `mg.c.fail`, when not by its code
+    /// (Turnstile's failures count only under `enforce`, §7.5).
+    counted: Option<bool>,
+    /// The feedback outcome of a failure that is not `fail` (the provider
+    /// was unavailable or misconfigured, §3.3).
+    outcome: Option<VerdictOutcome>,
 }
 
 impl<'s> Flow<'_, 's> {
@@ -709,6 +738,30 @@ impl<'s> Flow<'_, 's> {
             ip_prefix: Some(&self.prefix),
             asn: self.s.built.ctx.net.asn,
             asn_available: self.s.bundle.intel.has_asn(),
+        }
+    }
+
+    /// The §5.4 inputs of a `C` of `claims` on this request: the `C`'s
+    /// route (with `ret`'s routes for `redact_path`), the request's
+    /// countries and cookie, and the site's Turnstile unless excluded.
+    fn selecting<'f>(
+        &'f self,
+        claims: &'f SealedChallengeClaims,
+        ret: Option<&'f str>,
+    ) -> interactive::Selecting<'f> {
+        let s = self.s;
+        let route = interactive::c_route(s.bundle, s.env, s.host, &claims.route_class, ret);
+        interactive::Selecting {
+            host: s.host,
+            route_id: route.map_or("", |r| r.0),
+            redact_path: route.is_some_and(|r| r.1),
+            countries: crate::turnstile::Countries::of(&s.built.ctx.net),
+            a11y_pref: interactive::a11y_pref(&s.built.cookies),
+            turnstile: if route.is_some() && !self.exclude_turnstile {
+                s.turnstile
+            } else {
+                None
+            },
         }
     }
 
@@ -895,10 +948,21 @@ impl<'s> Flow<'_, 's> {
                         return fail(reason::A11Y_QUOTA);
                     }
                 }
-                // External providers are verified by WP-E2c; until then a
-                // C never offers one, and nothing is counted against the
-                // visitor.
-                _ => return fail(reason::PROVIDER_UNAVAILABLE),
+                // §5.4 rule 2 again for this request (§7.5 step 5): no
+                // siteverify, not counted; the new C is selected for this
+                // request, so it no longer offers Turnstile.
+                ProviderId::Turnstile => {
+                    let sel = self.selecting(claims, Some(&sub.ret));
+                    if !interactive::turnstile_ok(cfg, &sel) {
+                        self.counted = Some(false);
+                        return fail(reason::PROVIDER_NOT_OFFERED);
+                    }
+                }
+                // No other external provider is ever offered (D-70).
+                _ => {
+                    self.counted = Some(false);
+                    return fail(reason::PROVIDER_NOT_OFFERED);
+                }
             }
             provider = Some((p, cfg));
         }
@@ -1023,6 +1087,22 @@ impl<'s> Flow<'_, 's> {
         if let Some((ProviderId::PowA11y, cfg)) = provider {
             quota_checks.extend(interactive::a11y_checks(site, cfg, &self.dims(), true));
         }
+        // Turnstile: the token's replay key (§14.2), only for a token that
+        // could pass the local pre-check (§8.4).
+        let ts_mode = s
+            .turnstile
+            .map_or(mg_core::EvalMode::Enforce, |o| o.cfg.mode);
+        let replay = match (provider, v2) {
+            (Some((ProviderId::Turnstile, _)), Some(v2))
+                if mg_edge_core::outbound::token_precheck(&v2.pp) =>
+            {
+                Some(mg_edge_core::state::TokenReplay::new(
+                    ProviderId::Turnstile.as_str(),
+                    &v2.pp,
+                ))
+            }
+            _ => None,
+        };
         // An interactive C's nonce outlives its renewal window
         // (crate::renew::interactive_nonce_ttl_ms).
         let ttl_ms = if interactive {
@@ -1042,7 +1122,7 @@ impl<'s> Flow<'_, 's> {
                     site: site.to_owned(),
                     nonce: claims.nonce,
                     ttl_ms,
-                    replay: None,
+                    replay,
                     limits: quota_checks.clone(),
                 },
                 now_ms,
@@ -1051,8 +1131,14 @@ impl<'s> Flow<'_, 's> {
             .await;
         let mut replay_unchecked = false;
         let quotas = match nonce {
-            NonceResultV2::Reused | NonceResultV2::TokenReused => {
-                return fail(reason::NONCE_REUSED);
+            NonceResultV2::Reused => return fail(reason::NONCE_REUSED),
+            // The token was presented before (the Edge's own replay set,
+            // §14.2); the nonce is consumed.
+            NonceResultV2::TokenReused => {
+                let (c, e) = ts_failure(ts_mode);
+                self.counted = Some(c);
+                self.exclude_turnstile = e;
+                return fail(mg_edge_core::outbound::reason::TS_DUP);
             }
             NonceResultV2::Fresh { limits } => limits,
             NonceResultV2::Unavailable { limits } => {
@@ -1079,7 +1165,48 @@ impl<'s> Flow<'_, 's> {
             });
         }
 
-        // 13. (Turnstile's siteverify: WP-E2c.)
+        // 13. Turnstile: siteverify (§8.4, §8.5), after the nonce.
+        if let (Some((ProviderId::Turnstile, _)), Some(v2), Some(offer)) =
+            (provider, v2, s.turnstile)
+        {
+            let report = match offer.site.secrets() {
+                Some(secrets) => {
+                    let job = crate::turnstile::Job::new(
+                        &offer,
+                        secrets,
+                        claims,
+                        &v2.pp,
+                        ip,
+                        s.host,
+                        self.clock(),
+                    );
+                    s.verifier.verify(job).await
+                }
+                // Unreachable: step 5 needs a usable provider.
+                None => crate::turnstile::not_sent(mg_edge_core::outbound::VerifyReason::Busy),
+            };
+            self.record.feedback.provider = Some(report.provider_outcome(offer.cfg.mode));
+            match report.verdict.outcome {
+                VerdictOutcome::Pass => {}
+                VerdictOutcome::Fail => {
+                    let (c, e) = ts_failure(offer.cfg.mode);
+                    self.counted = Some(c);
+                    self.exclude_turnstile = e;
+                    return fail(ts_fail_code(report.reason));
+                }
+                outcome @ (VerdictOutcome::Unavailable | VerdictOutcome::Misconfigured) => {
+                    self.counted = Some(false);
+                    self.exclude_turnstile = true;
+                    self.outcome = Some(outcome);
+                    return fail(if outcome == VerdictOutcome::Misconfigured {
+                        mg_edge_core::outbound::reason::PROVIDER_MISCONFIGURED
+                    } else {
+                        reason::PROVIDER_UNAVAILABLE
+                    });
+                }
+            }
+        }
+
         // 14. The score (§7.8): only `enforce` decides with it.
         if let Some((a, cfg)) = &assessment {
             metrics()
@@ -1105,6 +1232,9 @@ impl<'s> Flow<'_, 's> {
             (ChallengeType::Invisible, _) => TokenLevel::Invisible,
             (ChallengeType::Interactive, Some((ProviderId::PowA11y, _))) => {
                 TokenLevel::InteractiveA11y
+            }
+            (ChallengeType::Interactive, Some((ProviderId::Turnstile, _))) => {
+                TokenLevel::InteractiveExt(ProviderId::Turnstile)
             }
             (ChallengeType::Interactive, _) => TokenLevel::Interactive,
             _ => TokenLevel::Pow,
@@ -1219,6 +1349,14 @@ impl<'s> Flow<'_, 's> {
                         retry_after_s,
                     });
                 }
+                let sel = self.selecting(claims, Some(ret));
+                let ix_ts = sel.turnstile.map(|offer| interactive::IxTurnstile {
+                    offer,
+                    lang: crate::turnstile::widget_lang(pages::page_lang(
+                        context::header(&s.built.headers, "accept-language"),
+                        bundle.default_lang,
+                    )),
+                });
                 challenge::issue_interactive(
                     &interactive::Seal {
                         sealer: s.sealer,
@@ -1227,13 +1365,7 @@ impl<'s> Flow<'_, 's> {
                         band,
                         attempt_no,
                         renew_no: 0,
-                        providers: interactive::providers(
-                            ix,
-                            s.host,
-                            &claims.route_class,
-                            attempt_no,
-                            interactive::a11y_pref(&s.built.cookies),
-                        ),
+                        providers: interactive::providers(ix, &sel, attempt_no),
                         ui_seed: None,
                         pow: interactive::pow_params(ix, band),
                         ret_hash: ret_hash(ret),
@@ -1244,6 +1376,7 @@ impl<'s> Flow<'_, 's> {
                     ix,
                     ret,
                     self.a11y_quota_reissue,
+                    ix_ts.as_ref(),
                     self.rng,
                 )
                 .map_err(unavailable)?
@@ -1316,7 +1449,10 @@ impl<'s> Flow<'_, 's> {
                 EdgeResponse::rate_limited(s.request_id, retry_after_s, navigation)
             }
             Stop::Failed { code, reissue } => {
-                if counts_as_failure(code) {
+                if let Some(outcome) = self.outcome {
+                    self.record.feedback.outcome = Some(outcome);
+                }
+                if self.counted.unwrap_or_else(|| counts_as_failure(code)) {
                     let failures = s.bundle.challenge_limits.failures(s.site_id, &self.dims());
                     // A full queue drops the count (mg_state_async_dropped_total).
                     let _ = self.state.record_failure(failures);
@@ -1383,6 +1519,27 @@ impl<'s> Flow<'_, 's> {
     }
 }
 
+/// A Turnstile failure (`ic.ts_*`, §8.5) in `mode`: `(counted, exclude)`.
+/// It counts under `enforce`; under `shadow` it only falls back (not
+/// counted, the new `C` offers no Turnstile).
+fn ts_failure(mode: mg_core::EvalMode) -> (bool, bool) {
+    let enforce = mode == mg_core::EvalMode::Enforce;
+    (enforce, !enforce)
+}
+
+/// The `ic.ts_*` code of a failed siteverify (§8.5).
+fn ts_fail_code(r: mg_edge_core::outbound::VerifyReason) -> &'static str {
+    use mg_edge_core::outbound::{VerifyReason as R, reason as ts};
+    match r {
+        R::Hostname => ts::TS_HOSTNAME,
+        R::Action => ts::TS_ACTION,
+        R::Cdata => ts::TS_CDATA,
+        R::Time => ts::TS_TIME,
+        R::Dup => ts::TS_DUP,
+        _ => ts::TS_FAIL,
+    }
+}
+
 /// Runs `POST /__mg/c` for an active site (see the module documentation)
 /// and counts `mg_challenge_total`.
 pub async fn submit(
@@ -1416,6 +1573,9 @@ pub async fn submit(
         a11y_quota_reissue: false,
         previous: None,
         session_flagged: false,
+        exclude_turnstile: false,
+        counted: None,
+        outcome: None,
     };
     let response = match flow.run(body).await {
         Ok(resp) => resp,

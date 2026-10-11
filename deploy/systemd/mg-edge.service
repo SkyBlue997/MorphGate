@@ -127,6 +127,8 @@ LoadCredentialEncrypted=mg-blog-seal-root:/etc/credstore.encrypted/mg-blog-seal-
 LoadCredentialEncrypted=mg-pseudo-key:/etc/credstore.encrypted/mg-pseudo-key
 # With origin_keys (edge.toml, spec I-38):
 # LoadCredentialEncrypted=mg-blog-origin-keys:/etc/credstore.encrypted/mg-blog-origin-keys
+# With turnstile_keys (edge.toml, Phase 2 spec §8.7; mgctl turnstile secret import):
+# LoadCredentialEncrypted=mg-turnstile-keys-blog:/etc/credstore.encrypted/mg-turnstile-keys-blog
 LoadCredentialEncrypted=mg-valkey-password:/etc/credstore.encrypted/mg-valkey-password
 UMask=0027
 LimitNOFILE=1048576

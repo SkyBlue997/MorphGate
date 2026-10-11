@@ -340,6 +340,8 @@ fn run_bound(
         built: &built,
         bind: &bind,
         content_encoding: crate::context::received(&req.headers, "content-encoding"),
+        turnstile: None,
+        verifier: &crate::turnstile::NoVerifier,
     };
     rt().block_on(submit(&f.state, rng, &s, body))
 }
@@ -1590,6 +1592,8 @@ fn issuance_quota_used_up_after_round_trip_1() {
         built: &built,
         bind: &bind,
         content_encoding: false,
+        turnstile: None,
+        verifier: &crate::turnstile::NoVerifier,
     };
     let (first, second) = rt().block_on(async {
         tokio::join!(

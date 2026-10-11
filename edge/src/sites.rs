@@ -30,6 +30,7 @@ pub use routing::{RouteMatch, higher_level, select_env, select_route};
 use crate::config::{BootstrapMode, EdgeConfig, IntelConfig, LkgInvalidMode, SiteConfig};
 use crate::creds::{OriginKeys, Secret};
 use crate::metrics::metrics;
+use crate::turnstile::{Offer, SiteTurnstile};
 use arc_swap::ArcSwap;
 use mg_challenge::{SealKeys, Sealer};
 use mg_core::UpstreamProfileKind;
@@ -231,6 +232,9 @@ pub struct SiteKeys {
     pub token_file: Secret,
     /// `origin-keys.json` (I-38): signs `MG-Origin-Auth` when set.
     pub origin: Option<OriginKeys>,
+    /// `mg-turnstile-keys` (Phase 2 spec §8.7): the Turnstile secret, when
+    /// `turnstile_keys` is set.
+    pub turnstile: Option<mg_edge_core::outbound::TurnstileSecrets>,
 }
 
 impl fmt::Debug for SiteKeys {
@@ -239,6 +243,7 @@ impl fmt::Debug for SiteKeys {
             .field("seal", &self.seal)
             .field("token_file", &self.token_file)
             .field("origin", &self.origin)
+            .field("turnstile", &self.turnstile)
             .finish()
     }
 }
@@ -252,6 +257,9 @@ pub struct Site {
     /// is independent of bundle swaps (the seal roots are edge.toml
     /// credentials, not bundle content).
     pub sealer: Sealer,
+    /// The Turnstile secret and circuit breaker (Phase 2 spec §8.2, §8.6):
+    /// edge.toml state that outlives bundle swaps.
+    pub turnstile: SiteTurnstile,
     runtime: ArcSwap<SiteRuntime>,
 }
 
@@ -287,12 +295,25 @@ impl Site {
             .with_label_values(&[&settings.id])
             .set(i64::from(settings.force_monitor));
         let sealer = Sealer::new(&settings.id, keys.seal.clone());
+        let turnstile = SiteTurnstile::new(&settings.id, keys.turnstile.clone());
+        turnstile.apply(initial.bundle.as_deref());
         Self {
             settings,
             keys,
             sealer,
+            turnstile,
             runtime: ArcSwap::from_pointee(initial),
         }
+    }
+
+    /// The Turnstile `bundle` lets this site offer, if any (Phase 2 spec
+    /// §5.4 rule 2's "configured and usable").
+    pub fn turnstile_offer<'a>(
+        &'a self,
+        bundle: &'a BundleRuntime,
+        now_ms: i64,
+    ) -> Option<Offer<'a>> {
+        Offer::new(bundle, &self.turnstile, &self.keys.seal, now_ms)
     }
 
     /// The runtime in effect (keep the `Arc` for the whole request).
@@ -309,6 +330,7 @@ impl Site {
             .interactive_available
             .with_label_values(&[&self.settings.id])
             .set(i64::from(available));
+        self.turnstile.apply(rt.bundle.as_deref());
         self.runtime.store(Arc::new(rt));
     }
 

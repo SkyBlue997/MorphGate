@@ -1,6 +1,8 @@
 //! Builds the Pingora server (docs/impl/phase1-spec.md §9.1.1, §9.2): one
 //! proxy service per listener, the metrics endpoint, and the background
-//! services `mg-bundles`, `mg-state`, `mg-events` and `mg-rdns`.
+//! services `mg-bundles`, `mg-state`, `mg-events` and `mg-rdns`, plus
+//! `mg-outbound` (Turnstile siteverify, Phase 2 spec §8.4) when some site
+//! has a Turnstile secret.
 //!
 //! Everything here runs in `main()` before [`Server::run_forever`] forks:
 //! only runtime-free objects are created (handles, bounded channels, the
@@ -124,6 +126,21 @@ pub fn build(startup: Startup, run: RunOptions) -> Server {
         startup.resolver.clone(),
         crate::dns::job_deadline(cfg.intel.dns_timeout_ms),
     );
+    // Phase 2 spec §8.4: siteverify runs on `mg-outbound`; without any
+    // Turnstile secret no job can exist and the service is not started (a
+    // job would then be answered `busy`).
+    let (turnstile, turnstile_jobs) =
+        crate::turnstile::Dispatcher::new(crate::turnstile::QUEUE_CAPACITY);
+    let outbound = startup
+        .sites
+        .iter()
+        .any(|s| s.turnstile.secrets().is_some())
+        .then(|| {
+            crate::turnstile::OutboundBackground::new(
+                turnstile_jobs,
+                startup.siteverify_url.clone(),
+            )
+        });
     let shared = Arc::new(Shared {
         edge_id: cfg.edge_id.clone(),
         sites: Arc::clone(&startup.sites),
@@ -135,6 +152,7 @@ pub fn build(startup: Startup, run: RunOptions) -> Server {
         rdns: Arc::new(rdns),
         telemetry_dedup: crate::telemetry::Dedup::default(),
         inflight: Arc::clone(&inflight),
+        turnstile,
     });
 
     for l in &startup.listeners {
@@ -189,6 +207,9 @@ pub fn build(startup: Startup, run: RunOptions) -> Server {
         EventsBackground::new(flusher, cfg.events.clone(), stream, inflight, drain),
     ));
     server.add_service(background_service("mg-rdns", rdns_service));
+    if let Some(outbound) = outbound {
+        server.add_service(background_service("mg-outbound", outbound));
+    }
     server
 }
 

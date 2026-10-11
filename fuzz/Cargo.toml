@@ -131,3 +131,17 @@ path = "fuzz_targets/telemetry.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "siteverify_response"
+path = "fuzz_targets/siteverify_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "turnstile_keys"
+path = "fuzz_targets/turnstile_keys.rs"
+test = false
+doc = false
+bench = false

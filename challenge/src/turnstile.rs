@@ -49,6 +49,12 @@ pub fn turnstile_cdata(root: &SealRoot, site_id: &str, epoch: u64, nonce: &[u8; 
     b64::encode(&cdata_mac(root, site_id, epoch, nonce))
 }
 
+/// The `cData` the Edge issues for a challenge (§6.9): [`turnstile_cdata`]
+/// under the site's first root, the one that seals (`roots[0]`).
+pub fn turnstile_cdata_for(keys: &SealKeys, site_id: &str, epoch: u64, nonce: &[u8; 16]) -> String {
+    turnstile_cdata(&keys.roots()[0], site_id, epoch, nonce)
+}
+
 /// Whether `cdata` (from a siteverify response) is the `cData` of this
 /// challenge under any of the site's roots. Every root is tried and the
 /// comparison is constant-time.
@@ -137,6 +143,9 @@ mod tests {
         assert!(turnstile_cdata_matches(&both, "blog", 5, &nonce, &c1));
         assert!(turnstile_cdata_matches(&both, "blog", 5, &nonce, &c2));
         assert!(turnstile_cdata_matches(&only1, "blog", 5, &nonce, &c1));
+        // Issuing uses roots[0].
+        assert_eq!(turnstile_cdata_for(&both, "blog", 5, &nonce), c2);
+        assert_eq!(turnstile_cdata_for(&only1, "blog", 5, &nonce), c1);
         assert!(!turnstile_cdata_matches(&only1, "blog", 5, &nonce, &c2));
         assert!(!turnstile_cdata_matches(&only1, "shop", 5, &nonce, &c1));
         assert!(!turnstile_cdata_matches(&only1, "blog", 6, &nonce, &c1));

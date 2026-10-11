@@ -41,7 +41,10 @@
 //! ip entity is over it). The page carries the plain parameters in
 //! `{{ix}}`, the JSON challenge in `ix`; the page language falls back to
 //! `challenge.default_lang`, and `{{help_href}}` / `{{privacy_href}}` are
-//! the bundle's paths. Without `interactive_available`, `interactive` is
+//! the bundle's paths. With the site's Turnstile (WP-E2c) the selection
+//! also sees the request's countries, every matched route's `redact_path`
+//! and the provider's health, and a `C` offering Turnstile carries
+//! `ix.turnstile` (its page gets the CSP of §8.3, `crate::pages`). Without `interactive_available`, `interactive` is
 //! issued as `pow` (D-08).
 //!
 //! # Return path (§9.9)
@@ -327,12 +330,14 @@ pub fn issue_with_ret_hash(
 }
 
 /// An interactive `C` as [`Issued`]: sealed by `crate::interactive::seal`,
-/// with its `ix` (`a11y_quota` per §7.9).
+/// with its `ix` (`a11y_quota` per §7.9; `turnstile` when the `C` offers
+/// it, Phase 2 spec §7.2).
 pub fn issue_interactive(
     req: &interactive::Seal<'_>,
     cfg: &crate::sites::InteractiveRuntime,
     ret: &str,
     a11y_quota: bool,
+    turnstile: Option<&interactive::IxTurnstile<'_>>,
     rng: &dyn Rng,
 ) -> Result<Issued, IssueError> {
     let (c, claims) = interactive::seal(req, rng)?;
@@ -342,7 +347,7 @@ pub fn issue_interactive(
         bits: req.pow.difficulty,
         band: req.band,
         ret: ret.to_owned(),
-        ix: Some(interactive::ix_value(&claims, cfg, a11y_quota)),
+        ix: Some(interactive::ix_value(&claims, cfg, a11y_quota, turnstile)),
         provider: claims
             .providers
             .first()
@@ -395,6 +400,12 @@ pub struct ChallengeRequest<'a> {
     pub route_class: &'a str,
     /// The selected route's id (Turnstile's route list, §5.4).
     pub route_id: &'a str,
+    /// Any matched route has `redact_path` (no Turnstile, §5.4).
+    pub redact_path: bool,
+    /// The request's country sources (§8.1).
+    pub countries: crate::turnstile::Countries<'a>,
+    /// The site's Turnstile, if its bundle enables it (Phase 2 spec §8).
+    pub turnstile: Option<crate::turnstile::Offer<'a>>,
     /// The decision's type.
     pub ty: ChallengeType,
     /// The pre-challenge risk band (`RiskAssessment.score.band()`).
@@ -497,6 +508,21 @@ pub fn respond(req: &ChallengeRequest<'_>, rng: &dyn Rng) -> (EdgeResponse, Chal
                     ChallengeAnswer::RateLimited,
                 );
             }
+            let sel = interactive::Selecting {
+                host: req.host,
+                route_id: req.route_id,
+                redact_path: req.redact_path,
+                countries: req.countries,
+                a11y_pref: req.a11y_pref,
+                turnstile: req.turnstile,
+            };
+            let ix_ts = req.turnstile.map(|offer| interactive::IxTurnstile {
+                offer,
+                lang: crate::turnstile::widget_lang(pages::page_lang(
+                    req.accept_language,
+                    b.default_lang,
+                )),
+            });
             issue_interactive(
                 &interactive::Seal {
                     sealer: req.sealer,
@@ -505,7 +531,7 @@ pub fn respond(req: &ChallengeRequest<'_>, rng: &dyn Rng) -> (EdgeResponse, Chal
                     band: req.band,
                     attempt_no: 1,
                     renew_no: 0,
-                    providers: interactive::providers(ix, req.host, req.route_id, 1, req.a11y_pref),
+                    providers: interactive::providers(ix, &sel, 1),
                     ui_seed: None,
                     pow: interactive::pow_params(ix, req.band),
                     ret_hash: ret_hash(&ret),
@@ -516,6 +542,7 @@ pub fn respond(req: &ChallengeRequest<'_>, rng: &dyn Rng) -> (EdgeResponse, Chal
                 ix,
                 &ret,
                 false,
+                ix_ts.as_ref(),
                 rng,
             )
         }
@@ -844,6 +871,9 @@ mod tests {
             accept_language: Some("zh-CN,zh;q=0.9"),
             route_class: "members",
             route_id: "members",
+            redact_path: false,
+            countries: crate::turnstile::Countries::default(),
+            turnstile: None,
             ty: ChallengeType::Invisible,
             band: RiskBand::Medium,
             bind: b,

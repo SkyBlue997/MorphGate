@@ -39,6 +39,7 @@ fn credential_names(cfg: &EdgeConfig) -> BTreeSet<String> {
         refs.push(&s.token_keys);
         refs.push(&s.seal_root);
         refs.extend(s.origin_keys.iter());
+        refs.extend(s.turnstile_keys.iter());
     }
     refs.into_iter()
         .filter_map(|r| match r {
@@ -81,6 +82,11 @@ impl Sandbox {
         ] {
             std::fs::copy(repo("testdata/phase1/keys").join(src), creds.join(name)).unwrap();
         }
+        std::fs::copy(
+            repo("testdata/phase2/samples/keys/valid/two-values.json"),
+            creds.join("mg-turnstile-keys-blog"),
+        )
+        .unwrap();
         std::fs::write(creds.join("mg-valkey-password"), "not-a-real-password\n").unwrap();
         let text = example
             .replace("/etc/morphgate", &etc.display().to_string())
@@ -302,6 +308,46 @@ fn optional_origin_keys_lines_match_when_enabled() {
         .args(["--check-config", "--config"])
         .arg(&sandbox.config)
         .env("CREDENTIALS_DIRECTORY", &sandbox.creds)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The commented `turnstile_keys` lines (Phase 2 spec §8.7) of the example
+/// and the unit work together once uncommented; the example keeps the
+/// production siteverify URL.
+#[test]
+fn optional_turnstile_keys_lines_match_when_enabled() {
+    let unit = std::fs::read_to_string(repo(UNIT)).unwrap();
+    let example = std::fs::read_to_string(repo(EXAMPLE)).unwrap();
+    let unit_on = unit.replace(
+        "# LoadCredentialEncrypted=mg-turnstile-keys-blog:",
+        "LoadCredentialEncrypted=mg-turnstile-keys-blog:",
+    );
+    let example_on = example.replace("# turnstile_keys = ", "turnstile_keys = ");
+    assert_ne!(unit_on, unit);
+    assert_ne!(example_on, example);
+    let sandbox = Sandbox::new(&example_on);
+    let cfg = EdgeConfig::load(&sandbox.config).unwrap();
+    assert!(cfg.sites[0].turnstile_keys.is_some());
+    assert_eq!(
+        cfg.outbound.turnstile_siteverify_url,
+        "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    );
+    let loaded: BTreeSet<String> = unit_values(&unit_on, "LoadCredentialEncrypted")
+        .iter()
+        .map(|v| v.split(':').next().unwrap().to_owned())
+        .collect();
+    assert_eq!(credential_names(&cfg), loaded);
+    let out = Command::new(EDGE_BIN)
+        .args(["--check-config", "--config"])
+        .arg(&sandbox.config)
+        .env("CREDENTIALS_DIRECTORY", &sandbox.creds)
+        .env_remove("MG_EDGE_TEST_OUTBOUND")
         .output()
         .unwrap();
     assert!(

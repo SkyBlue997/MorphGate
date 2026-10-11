@@ -18,7 +18,10 @@
 use crate::config::{
     DnsResolverConfig, EdgeConfig, ListenerAuth, ListenerConfig, ListenerProfile, ValkeyMode,
 };
-use crate::creds::{CredResolver, OriginKeys, PseudoKey, UpstreamKeys, read_public, read_secret};
+use crate::creds::{
+    CredResolver, OriginKeys, PseudoKey, UpstreamKeys, parse_turnstile_keys, read_public,
+    read_secret,
+};
 use crate::dns::ResolverSetup;
 use crate::listener::ListenerRuntime;
 use crate::sdk::SdkDir;
@@ -27,6 +30,7 @@ use mg_challenge::{KeyError, SealKeys, TokenKeySet};
 use mg_edge_core::bundle::{
     Fetcher, FetcherConfig, OwnerKeys, SiteSource, Source, StateDir, VerifiedBundle, verify_bundle,
 };
+use mg_edge_core::outbound::{SiteverifyUrl, report_siteverify_url, validate_siteverify_url};
 use mg_edge_core::state::{StateConfig, StateMode};
 use pingora::listeners::tls::TlsSettings;
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,6 +69,9 @@ pub struct Startup {
     pub sdk: Arc<SdkDir>,
     /// What `mg-rdns` resolves with (`[intel] dns_resolver`).
     pub resolver: ResolverSetup,
+    /// `[outbound] turnstile_siteverify_url`, checked against
+    /// `MG_EDGE_TEST_OUTBOUND` (Phase 2 spec §8.4).
+    pub siteverify_url: SiteverifyUrl,
     /// Non-fatal findings (`--check-config` prints them).
     pub warnings: Vec<String>,
     /// Findings that fail `--check-config` (exit code 2) but do not stop a
@@ -92,8 +99,31 @@ impl Startup {
     /// is a configuration error; an unusable LKG is not (see
     /// [`Startup::lkg_failures`]).
     pub fn load(cfg: EdgeConfig, resolver: &CredResolver) -> Result<Self, String> {
+        Self::load_with(cfg, resolver, crate::turnstile::test_outbound_allowed())
+    }
+
+    /// [`Startup::load`] with the `MG_EDGE_TEST_OUTBOUND=1` switch given
+    /// (tests).
+    pub fn load_with(
+        cfg: EdgeConfig,
+        resolver: &CredResolver,
+        test_outbound: bool,
+    ) -> Result<Self, String> {
         let mut warnings = Vec::new();
         let mut warn = |w: String| warnings.push(w);
+
+        // [outbound] (Phase 2 spec §8.4): a loopback siteverify URL only
+        // with MG_EDGE_TEST_OUTBOUND=1; the start fails otherwise, so a
+        // mistake never widens egress silently.
+        let siteverify_url =
+            validate_siteverify_url(&cfg.outbound.turnstile_siteverify_url, test_outbound)
+                .map_err(|e| format!("[outbound] {e}"))?;
+        report_siteverify_url(&siteverify_url);
+        if siteverify_url.is_override() {
+            warn(format!(
+                "[outbound] turnstile_siteverify_url = {siteverify_url}: a loopback test destination (MG_EDGE_TEST_OUTBOUND=1); never in production"
+            ));
+        }
 
         // [trust]
         let mut pubs = Vec::new();
@@ -193,10 +223,24 @@ impl Startup {
                     )
                 }
             };
+            // Phase 2 spec §8.7: the Turnstile secret file (format and site
+            // checked; a broken file fails the start like any credential).
+            let turnstile = match &s.turnstile_keys {
+                None => None,
+                Some(r) => {
+                    let file = read_secret(resolver, r, &mut warn)
+                        .map_err(|e| format!("site {}: turnstile_keys: {e}", s.id))?;
+                    Some(
+                        parse_turnstile_keys(file.bytes(), &s.id)
+                            .map_err(|e| format!("site {}: turnstile_keys {r}: {e}", s.id))?,
+                    )
+                }
+            };
             let keys = SiteKeys {
                 seal,
                 token_file,
                 origin,
+                turnstile,
             };
 
             let (initial, current) = load_lkg(&settings, &keys, &state_dir, &owner_keys, &mut warn);
@@ -220,6 +264,14 @@ impl Startup {
                 warn(forced_monitor_warning(&s.id));
             }
             stream_warning(&s.id, current.as_ref(), &cfg.valkey, &mut warn);
+            if let Some(e) = turnstile_check(
+                &s.id,
+                current.as_ref(),
+                s.turnstile_keys.is_some(),
+                &mut warn,
+            ) {
+                check_errors.push(e);
+            }
             interactive_warnings(
                 &s.id,
                 current.as_ref(),
@@ -259,6 +311,7 @@ impl Startup {
             fetcher,
             sdk,
             resolver: dns,
+            siteverify_url,
             warnings,
             check_errors,
         })
@@ -310,6 +363,7 @@ fn state_config(
     state.local_limiter_capacity = v.local_limiter_capacity;
     state.local_nonce_capacity = v.local_nonce_capacity;
     state.local_jti_capacity = v.local_jti_capacity;
+    state.local_rp_capacity = v.local_rp_capacity;
     debug_assert!(matches!(state.mode, StateMode::Valkey | StateMode::Local));
     state.validate().map_err(|e| format!("[valkey] {e}"))?;
     Ok(state)
@@ -473,6 +527,50 @@ pub fn stream_warning(
             "site {site}: the bundle sets events.stream but [valkey] mode = \"local\" writes no mg:ev: mg-nearline gets no input (D-38)"
         ));
     }
+}
+
+/// Phase 2 spec §8.2, §10.1, §10.2: a site whose LKG enables the Turnstile
+/// provider. Without `turnstile_keys` the result is an error that fails
+/// `--check-config` (a starting Edge logs it and runs the provider as
+/// `disabled(no_secret)`). With them, warnings: visitors' IPs go to
+/// Cloudflare's siteverify (the privacy notice must say so, D-70), and a
+/// `denied_countries` list without any country source never offers it.
+pub fn turnstile_check(
+    site: &str,
+    lkg: Option<&VerifiedBundle>,
+    has_keys: bool,
+    warn: &mut dyn FnMut(String),
+) -> Option<String> {
+    let vb = lkg?;
+    let rt = crate::turnstile::TurnstileRuntime::from_bundle(&vb.bundle)
+        .ok()
+        .flatten()?;
+    if !has_keys {
+        return Some(format!(
+            "site {site}: the bundle enables the Turnstile provider but [[sites]] turnstile_keys is not set (Phase 2 spec §8.2)"
+        ));
+    }
+    warn(format!(
+        "site {site}: Turnstile is enabled ({} mode, {} selection): the client IP of every visitor offered Turnstile is sent to Cloudflare's siteverify; the privacy notice must say so (Phase 2 spec §19 step 2, D-70)",
+        rt.mode.as_str(),
+        rt.selection.as_str()
+    ));
+    if !rt.denied_countries.is_empty() {
+        let geo = vb.bundle.artifacts.iter().any(|a| {
+            mg_intel::ArtifactKind::from_name(&a.name) == Some(mg_intel::ArtifactKind::GeoipCountry)
+        });
+        let cf = vb
+            .bundle
+            .cloudflare
+            .as_ref()
+            .is_some_and(|c| c.location_headers);
+        if !geo && !cf {
+            warn(format!(
+                "site {site}: Turnstile has denied_countries but the bundle has neither a geoip-country artifact nor cloudflare.location_headers: the country is always unknown and Turnstile is never offered (Phase 2 spec §8.1)"
+            ));
+        }
+    }
+    None
 }
 
 /// Smallest `local_nonce_capacity` recommended with interactive challenges

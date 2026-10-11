@@ -43,6 +43,9 @@ pub const DEFAULT_SHUTDOWN_DRAIN_MS: u64 = 2_000;
 /// `[valkey] local_jti_capacity` (Phase 2 spec §10.1).
 pub const LOCAL_JTI_CAPACITY: std::ops::RangeInclusive<usize> = 1_000..=10_000_000;
 
+/// `[valkey] local_rp_capacity` (Phase 2 spec §10.1, §14.4).
+pub const LOCAL_RP_CAPACITY: std::ops::RangeInclusive<usize> = 100..=1_000_000;
+
 /// `bundle_poll_seconds` range (§8.1); the poll loop itself does not clamp.
 pub const BUNDLE_POLL_SECONDS: std::ops::RangeInclusive<u64> = 2..=300;
 
@@ -311,6 +314,11 @@ pub struct SiteConfig {
     /// route's `mode: enforce`. Logged as a WARN at every load and hourly.
     #[serde(default)]
     pub force_monitor: bool,
+    /// The site's `mg-turnstile-keys` file (Phase 2 spec §8.2, §8.7): the
+    /// Turnstile secret, current value first. Needed when the bundle enables
+    /// the Turnstile provider.
+    #[serde(default)]
+    pub turnstile_keys: Option<CredRef>,
 }
 
 fn default_bundle_timeout_ms() -> u64 {
@@ -386,6 +394,10 @@ pub struct ValkeyConfig {
     /// `1000..=10000000`.
     #[serde(default = "ValkeyConfig::default_local_jti_capacity")]
     pub local_jti_capacity: usize,
+    /// The in-process provider-token replay set (Phase 2 spec §14.4,
+    /// §10.1): `100..=1000000`.
+    #[serde(default = "ValkeyConfig::default_local_rp_capacity")]
+    pub local_rp_capacity: usize,
 }
 
 impl ValkeyConfig {
@@ -403,6 +415,9 @@ impl ValkeyConfig {
     }
     fn default_local_jti_capacity() -> usize {
         mg_edge_core::state::DEFAULT_LOCAL_JTI_CAPACITY
+    }
+    fn default_local_rp_capacity() -> usize {
+        mg_edge_core::state::DEFAULT_LOCAL_RP_CAPACITY
     }
 }
 
@@ -464,6 +479,25 @@ pub struct SdkConfig {
     pub dir: PathBuf,
 }
 
+/// `[outbound]` (Phase 2 spec §8.4, §10.1): the destinations of the Edge's
+/// own outbound requests.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutboundConfig {
+    /// The Turnstile siteverify endpoint: the production URL; a loopback
+    /// mock (`http://127.0.0.1:<port>/…`, `http://[::1]:<port>/…`) only with
+    /// `MG_EDGE_TEST_OUTBOUND=1` in the environment (checked at start-up).
+    pub turnstile_siteverify_url: String,
+}
+
+impl Default for OutboundConfig {
+    fn default() -> Self {
+        Self {
+            turnstile_siteverify_url: mg_edge_core::outbound::SITEVERIFY_URL.to_owned(),
+        }
+    }
+}
+
 /// Validated `edge.toml` v1.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -491,6 +525,8 @@ pub struct EdgeConfig {
     #[serde(default)]
     pub intel: IntelConfig,
     pub sdk: SdkConfig,
+    #[serde(default)]
+    pub outbound: OutboundConfig,
 }
 
 /// Why a configuration could not be loaded.
@@ -637,6 +673,14 @@ impl EdgeConfig {
         self.validate_intel()?;
         if self.sdk.dir.as_os_str().is_empty() {
             return invalid("[sdk] dir must not be empty");
+        }
+        // The shape only; whether a loopback test destination is allowed
+        // depends on the environment (crate::startup).
+        if let Err(e) = mg_edge_core::outbound::validate_siteverify_url(
+            &self.outbound.turnstile_siteverify_url,
+            true,
+        ) {
+            return invalid(format!("[outbound] {e}"));
         }
         Ok(())
     }
@@ -868,6 +912,14 @@ impl EdgeConfig {
                 v.local_jti_capacity,
                 LOCAL_JTI_CAPACITY.start(),
                 LOCAL_JTI_CAPACITY.end()
+            ));
+        }
+        if !LOCAL_RP_CAPACITY.contains(&v.local_rp_capacity) {
+            return invalid(format!(
+                "[valkey] local_rp_capacity {} must be {}..={}",
+                v.local_rp_capacity,
+                LOCAL_RP_CAPACITY.start(),
+                LOCAL_RP_CAPACITY.end()
             ));
         }
         // The remaining rules (URL shape, no password in the URL, non-zero
@@ -1131,6 +1183,69 @@ dir = "/opt/morphgate/sdk"
             "seal_root = \"cred://mg-blog-seal-root\"\nforce_monitor = true",
         );
         assert!(EdgeConfig::from_toml_str(&forced).unwrap().sites[0].force_monitor);
+    }
+
+    /// Phase 2 spec §10.1, §8.4: `local_rp_capacity`, `turnstile_keys` and
+    /// `[outbound]` (the shape of the siteverify URL; the environment
+    /// switch is checked at start-up).
+    #[test]
+    fn turnstile_keys_and_outbound() {
+        let c = EdgeConfig::from_toml_str(VALID).unwrap();
+        assert_eq!(c.valkey.local_rp_capacity, 10_000);
+        assert_eq!(c.sites[0].turnstile_keys, None);
+        assert_eq!(
+            c.outbound.turnstile_siteverify_url,
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+        );
+        let with = |extra: &str| {
+            replace(
+                "mode = \"local\"\n",
+                &format!("mode = \"local\"\n{extra}\n"),
+            )
+        };
+        assert_eq!(
+            EdgeConfig::from_toml_str(&with("local_rp_capacity = 100"))
+                .unwrap()
+                .valkey
+                .local_rp_capacity,
+            100
+        );
+        for bad in ["99", "1000001"] {
+            let e = err(&with(&format!("local_rp_capacity = {bad}")));
+            assert!(e.contains("local_rp_capacity"), "{e}");
+        }
+        let keyed = replace(
+            "seal_root = \"cred://mg-blog-seal-root\"",
+            "seal_root = \"cred://mg-blog-seal-root\"\nturnstile_keys = \"cred://mg-turnstile-keys-blog\"",
+        );
+        assert_eq!(
+            EdgeConfig::from_toml_str(&keyed).unwrap().sites[0].turnstile_keys,
+            Some(CredRef::Credential("mg-turnstile-keys-blog".into()))
+        );
+        let outbound = |url: &str| {
+            EdgeConfig::from_toml_str(&format!(
+                "{VALID}\n[outbound]\nturnstile_siteverify_url = \"{url}\"\n"
+            ))
+        };
+        let c = outbound("http://127.0.0.1:18080/turnstile/v0/siteverify").unwrap();
+        assert!(
+            c.outbound
+                .turnstile_siteverify_url
+                .starts_with("http://127.0.0.1:")
+        );
+        assert!(outbound("http://[::1]:9/x").is_ok());
+        for bad in [
+            "https://example.com/siteverify",
+            "http://localhost:80/x",
+            "http://10.0.0.1:80/x",
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify/",
+            "",
+        ] {
+            let e = outbound(bad).unwrap_err().to_string();
+            assert!(e.contains("[outbound]"), "{bad}: {e}");
+        }
+        let e = err(&format!("{VALID}\n[outbound]\nother = 1\n"));
+        assert!(e.contains("unknown field"), "{e}");
     }
 
     #[test]

@@ -15,6 +15,8 @@
 #   - mg_interactive_available is 0 for a site listed in --interactive-sites;
 #   - more than 5 % of the MG-Proof verifications failed (excluding
 #     `unchecked`): visitors looping on proof: required routes;
+#   - more than 5 % of the Turnstile verifications were unavailable or
+#     misconfigured (§8.5), or Turnstile is disabled on a site (§8.6);
 #   - interactive challenges issued / GET navigations above 0.1 % (§20,
 #     an upper bound: /__mg/v counts twice);
 #   - with --nearline-url / --nearline-file: mg_nl_backlog > 10000 or
@@ -67,7 +69,7 @@ while [[ $# -gt 0 ]]; do
     --nearline-file) nearline_file="${2?missing value}"; shift 2 ;;
     --valkey-cli) valkey_cli="${2?missing value}"; shift 2 ;;
     --vl-url) vl_url="${2?missing value}"; shift 2 ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
 done
@@ -162,6 +164,14 @@ bad="$(delta '^mg_proof_verify_total[{]result="(missing|malformed|unbound|jkt|ht
 all="$(delta '^mg_proof_verify_total[{]')"
 r="$(ratio "$bad" "$all")"
 if above "$r" 0.05; then alert "MG-Proof failures $bad / $all = $r (> 5 %)"; else ok "MG-Proof failures $bad / $all = $r"; fi
+
+# §8.5, §8.6: Turnstile verifications that fell back, and disabled sites.
+bad="$(delta '^mg_provider_verify_total[{]outcome="(unavailable|misconfigured)",provider="turnstile",')"
+all="$(delta '^mg_provider_verify_total[{].*provider="turnstile"')"
+r="$(ratio "$bad" "$all")"
+if above "$r" 0.05; then alert "Turnstile unavailable or misconfigured $bad / $all = $r (> 5 %)"; else ok "Turnstile unavailable or misconfigured $bad / $all = $r"; fi
+disabled="$(awk '$1 ~ /^mg_provider_state[{]provider="turnstile",.*state="disabled"[}]/ && $2 == 1 { print $1 }' "$tmp/cur")"
+if [[ -n "$disabled" ]]; then alert "Turnstile disabled: $(echo "$disabled" | tr '\n' ' ')"; else ok "Turnstile not disabled anywhere"; fi
 
 # §20: human friction, request level (an upper bound).
 issued="$(delta '^mg_challenge_total[{]provider="[a-z_]+",result="issued",type="interactive"[}]')"

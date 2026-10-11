@@ -73,7 +73,11 @@ fn ix_c(
             band: RiskBand::Low,
             attempt_no: attempt,
             renew_no,
-            providers: interactive::providers(cfg, HOST, "members", attempt, false),
+            providers: interactive::providers(
+                cfg,
+                &interactive::Selecting::builtin(HOST, "members", false),
+                attempt,
+            ),
             ui_seed: None,
             pow: interactive::pow_params(cfg, RiskBand::Low),
             ret_hash: ret_hash("/members/a"),
@@ -182,6 +186,8 @@ fn run_renew(f: &Fixture, req: &Req, v: &Value, now: i64) -> Renewed {
         built: &built,
         bind: &bind,
         content_encoding: false,
+        turnstile: None,
+        verifier: &crate::turnstile::NoVerifier,
     };
     let mut body = Chunks(vec![Bytes::from(v.to_string())]);
     rt().block_on(renew(&f.state, &OsRng, &s, &mut body))
@@ -945,7 +951,11 @@ fn unbound_interactive_soft_prefix_mismatch() {
                 band: RiskBand::Low,
                 attempt_no: 1,
                 renew_no: u32::from(jkt.is_some()),
-                providers: interactive::providers(&cfg, HOST, "members", 1, false),
+                providers: interactive::providers(
+                    &cfg,
+                    &interactive::Selecting::builtin(HOST, "members", false),
+                    1,
+                ),
                 ui_seed: None,
                 pow: interactive::pow_params(&cfg, RiskBand::Low),
                 ret_hash: ret_hash("/members/a"),
@@ -981,3 +991,5 @@ fn unbound_interactive_soft_prefix_mismatch() {
     );
     assert_eq!(reasons(&out)[0], reason::BIND_JKT);
 }
+
+mod turnstile;

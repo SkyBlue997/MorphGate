@@ -50,6 +50,9 @@ pub struct RouteMatch<'a> {
     /// AND of `channel = web` over every route matched by some candidate:
     /// one condition of an exempt navigation (Phase 2 spec D-40, §9.1).
     pub all_web: bool,
+    /// OR of `redact_path` over every route matched by some candidate: such
+    /// a page never offers Turnstile (Phase 2 spec §5.4 rule 2).
+    pub redact_path: bool,
 }
 
 impl RouteMatch<'_> {
@@ -92,6 +95,7 @@ pub fn select_route<'a>(
     let mut proof_required = false;
     let mut min_level: Option<ChallengeType> = None;
     let mut all_web = true;
+    let mut redact_path = false;
     for candidate in &candidates {
         let Some((pos, route)) = eligible
             .iter()
@@ -107,6 +111,7 @@ pub fn select_route<'a>(
         proof_required |= route.proof_required;
         min_level = higher_level(min_level, route.min_level);
         all_web &= route.channel == Channel::Web;
+        redact_path |= route.redact_path;
         let better = match selected {
             None => true,
             Some((best_pos, best)) => {
@@ -128,6 +133,7 @@ pub fn select_route<'a>(
             proof_required,
             min_level,
             all_web,
+            redact_path,
         },
         None => {
             let route = env
@@ -144,6 +150,7 @@ pub fn select_route<'a>(
                 proof_required: route.proof_required,
                 min_level: route.min_level,
                 all_web: route.channel == Channel::Web,
+                redact_path: route.redact_path,
             }
         }
     }
@@ -321,6 +328,7 @@ mod tests {
     fn most_sensitive_match_wins_and_flags_are_ored() {
         let mut raw_only = route("raw", &["/a%2Fb"], RouteSensitivity::Medium);
         raw_only.require_clearance = true;
+        raw_only.redact_path = true;
         let mut decoded = route("decoded", &["/a/b"], RouteSensitivity::High);
         decoded.fail_closed = true;
         let e = env(vec![
@@ -332,6 +340,9 @@ mod tests {
         assert_eq!(m.route.name, "decoded");
         assert!(m.require_clearance, "OR includes the medium route's flag");
         assert!(m.fail_closed);
+        // Phase 2 spec §5.4: redact_path of any matched route (no Turnstile).
+        assert!(m.redact_path && !m.route.redact_path);
+        assert!(!pick(&e, "GET", "/a/b", false).redact_path);
 
         // Equal sensitivity: the one declared first.
         let e = env(vec![

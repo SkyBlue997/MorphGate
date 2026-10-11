@@ -155,6 +155,9 @@ fn vmalert_rules_use_served_series() {
         .filter(|e| e.path().extension().is_some_and(|x| x == "go"))
         .map(|e| std::fs::read_to_string(e.path()).unwrap())
         .collect();
+    // The provider families come from edge-core's outbound metrics; they
+    // are served once a site has Turnstile (edge/tests/turnstile_flow.rs).
+    let outbound = std::fs::read_to_string(repo("edge-core/src/outbound/metrics.rs")).unwrap();
     let mut seen = BTreeSet::new();
     for expr in &exprs {
         let sels = selectors(expr);
@@ -165,6 +168,21 @@ fn vmalert_rules_use_served_series() {
                     nearline.contains(&format!("\"{name}\"")),
                     "{name} is not an mg-nearline family"
                 );
+                continue;
+            }
+            if name.starts_with("mg_provider_") {
+                let at = outbound
+                    .find(&format!("\"{name}\""))
+                    .unwrap_or_else(|| panic!("{name} is not an outbound family"));
+                let decl = &outbound[at..];
+                let labels_decl = &decl[decl.find("&[").unwrap()..];
+                let labels_decl = &labels_decl[..labels_decl.find(']').unwrap()];
+                for l in labels.iter().chain(&grouping(expr)) {
+                    assert!(
+                        labels_decl.contains(&format!("\"{l}\"")),
+                        "{name} has no label {l}: {labels_decl}"
+                    );
+                }
                 continue;
             }
             let have = edge
@@ -189,6 +207,8 @@ fn vmalert_rules_use_served_series() {
         "mg_interactive_available",
         "mg_proof_verify_total",
         "mg_navigations_total",
+        "mg_provider_verify_total",
+        "mg_provider_state",
         "mg_nl_backlog",
         "mg_nl_lag_seconds",
     ] {
@@ -264,6 +284,14 @@ fn daily_check_flags_each_condition() {
     assert!(out.contains("mg-daily-check: ok"), "{out}");
     assert!(!out.contains("ALERT"), "{out}");
     assert!(
+        out.contains("OK    Turnstile unavailable or misconfigured 0 / 0 = -"),
+        "{out}"
+    );
+    assert!(
+        out.contains("OK    Turnstile not disabled anywhere"),
+        "{out}"
+    );
+    assert!(
         out.contains("cf audit 18: worst missing signal 0 / 1000"),
         "{out}"
     );
@@ -288,6 +316,22 @@ fn daily_check_flags_each_condition() {
             5.0,
         ),
         ("mg_cf_foreign_worker_total{site=\"blog\"}", 1.0),
+        (
+            "mg_provider_verify_total{outcome=\"pass\",provider=\"turnstile\",reason=\"ok\"}",
+            4.0,
+        ),
+        (
+            "mg_provider_verify_total{outcome=\"unavailable\",provider=\"turnstile\",reason=\"timeout\"}",
+            5.0,
+        ),
+        (
+            "mg_provider_verify_total{outcome=\"misconfigured\",provider=\"turnstile\",reason=\"secret\"}",
+            1.0,
+        ),
+        (
+            "mg_provider_state{provider=\"turnstile\",site=\"blog\",state=\"disabled\"}",
+            1.0,
+        ),
         (
             "mg_upstream_signal_missing_total{profile=\"cloudflare\",signal=\"rtt\"}",
             20.0,
@@ -321,6 +365,8 @@ fn daily_check_flags_each_condition() {
         "ALERT MG-Proof failures 10 / 100",
         "ALERT mg-nearline backlog 20000",
         "ALERT cf audit 18: mg_cf_foreign_worker_total +1",
+        "ALERT Turnstile unavailable or misconfigured 6 / 10 = 0.6000",
+        "ALERT Turnstile disabled: mg_provider_state{provider=\"turnstile\",site=\"blog\",state=\"disabled\"}",
     ] {
         assert!(out.contains(want), "missing `{want}` in:\n{out}");
     }

@@ -80,6 +80,16 @@
 //!   proxies (I-52, [`background`]);
 //! * `mg:ev` v2, the Phase 2 event fields and metrics ([`events`],
 //!   [`metrics`]).
+//!
+//! Phase 2 Turnstile (WP-E2c):
+//!
+//! * [`turnstile`]: the bundle's provider, the site's secret and circuit
+//!   breaker, the country sources, `ix.turnstile`, and siteverify on the
+//!   background service `mg-outbound`; offered by [`interactive`] /
+//!   [`challenge`] / [`renew`], verified in [`mg_endpoints`] (token replay
+//!   key, §8.5 mapping, failures that fall back), with its own CSP in
+//!   [`pages`] and the `[outbound]` / `turnstile_keys` settings in
+//!   [`config`], [`creds`] and [`startup`].
 
 pub mod background;
 pub mod challenge;
@@ -112,6 +122,7 @@ pub mod startup;
 pub mod submission;
 pub mod telemetry;
 pub mod tls;
+pub mod turnstile;
 
 /// The commit this binary was built from (`edge/build.rs`), or `unknown`.
 pub const COMMIT: &str = env!("MG_EDGE_COMMIT");
@@ -179,6 +190,7 @@ pub(crate) mod test_support {
             seal: SealKeys::from_key_file(&seal, "blog").unwrap(),
             token_file: read_secret(&CredResolver::with_dir(None), &token, &mut |_| {}).unwrap(),
             origin: None,
+            turnstile: None,
         }
     }
 

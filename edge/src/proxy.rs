@@ -115,6 +115,8 @@ pub struct Shared {
     /// Requests in flight (a request context exists): on shutdown the event
     /// flusher is told to stop only once this reaches 0 (ruling I-52).
     pub inflight: Arc<AtomicUsize>,
+    /// Turnstile siteverify jobs for `mg-outbound` (Phase 2 spec §8.4).
+    pub turnstile: crate::turnstile::Dispatcher,
 }
 
 /// Counts one request in flight for as long as its context lives (the
@@ -255,6 +257,9 @@ pub struct SelectedRoute {
     pub require_clearance: bool,
     pub fail_closed: bool,
     pub redact_path: bool,
+    /// OR of `redact_path` over every matched route (Phase 2 spec §5.4:
+    /// no Turnstile on such a page).
+    pub redact_any: bool,
 }
 
 /// Per-request state shared across filter callbacks. Its `Debug` never
@@ -817,6 +822,7 @@ impl EdgeProxy {
                     require_clearance: route.require_clearance,
                     fail_closed: route.fail_closed,
                     redact_path: rm.route.redact_path,
+                    redact_any: rm.redact_path,
                 });
                 if rm.route.redact_path {
                     ctx.redact_as = Some(route.name.clone());
@@ -1100,6 +1106,9 @@ impl EdgeProxy {
                 accept_language: crate::context::header(&headers, "accept-language"),
                 route_class,
                 route_id: c.ctx.route.as_ref().map_or("default", |r| r.id.as_str()),
+                redact_path: c.ctx.route.as_ref().is_some_and(|r| r.redact_any),
+                countries: crate::turnstile::Countries::of(&c.rec.ctx.net),
+                turnstile: c.site.turnstile_offer(c.bundle, unix_now_ms()),
                 ty: c.ty,
                 band: c.rec.risk.score.band(),
                 bind: &c.rec.bind,
@@ -1248,6 +1257,8 @@ impl EdgeProxy {
                 built: &built,
                 bind: &bind,
                 content_encoding: crate::context::received(raw, "content-encoding"),
+                turnstile: site.turnstile_offer(bundle, unix_now_ms()),
+                verifier: &self.shared.turnstile,
             };
             mg_endpoints::submit(&self.shared.state, &OsRng, &s, &mut SessionBody(session)).await
         };
@@ -1360,6 +1371,8 @@ impl EdgeProxy {
                 built: &built,
                 bind: &bind,
                 content_encoding: crate::context::received(raw, "content-encoding"),
+                turnstile: site.turnstile_offer(bundle, unix_now_ms()),
+                verifier: &self.shared.turnstile,
             };
             crate::renew::renew(&self.shared.state, &OsRng, &s, &mut SessionBody(session)).await
         };
