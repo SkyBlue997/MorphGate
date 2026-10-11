@@ -31,8 +31,7 @@ env:
   # crate against the SHA-256 in the crates.io index (--locked uses the
   # tool's own Cargo.lock), Go checks modules against the checksum database.
   CARGO_DENY_VERSION: "0.20.2"
-  # govulncheck v1.8.0 and later need Go 1.26; the modules are on Go 1.25.
-  GOVULNCHECK_VERSION: "v1.7.0"
+  GOVULNCHECK_VERSION: "v1.8.0"
 
 jobs:
   rust:
@@ -72,7 +71,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.25"
+          go-version: "1.27"
           cache-dependency-path: "*/go.sum"
 
       - name: govulncheck control-plane

@@ -1,6 +1,6 @@
 module morphgate/control-plane
 
-go 1.25.0
+go 1.27.0
 
 require (
 	filippo.io/age v1.3.2
