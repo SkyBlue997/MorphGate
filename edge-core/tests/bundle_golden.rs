@@ -66,3 +66,58 @@ fn golden_rules_bundle_verifies_and_every_rule_converts() {
     }
     assert!(converted > 0, "golden-rules.bundle carries no rules");
 }
+
+/// Phase 2 spec §2.1, §3.2, §17 WP-C5 / WP-G4: the Go-built schema 2 golden
+/// bundle (`site-phase2.yaml`) passes every Phase 2 rule of the Edge, and
+/// its rules still convert.
+#[test]
+fn golden_phase2_bundle_verifies() {
+    use mg_proto::v1::{ChallengeType, ProofMode};
+
+    let v = verify("golden-phase2.bundle");
+    let b = &v.bundle;
+    assert_eq!(b.schema_version, 2);
+    let challenge = b.challenge.as_ref().expect("challenge");
+    assert_eq!(challenge.default_lang, "en");
+    let ix = challenge
+        .interactive
+        .as_ref()
+        .expect("challenge.interactive");
+    assert!(ix.enabled);
+    assert_eq!(ix.scoring_mode, "enforce");
+    assert_eq!((ix.pow_k, ix.a11y_bits, ix.escalate_after), (6, 18, 3));
+    let clearance = b.clearance.as_ref().expect("clearance");
+    assert!(clearance.refresh);
+    assert_eq!(clearance.ttl_interactive_s, 2400);
+    let events = b.events.as_ref().expect("events");
+    assert!(events.telemetry_behavior && !events.scanner_baits_builtin);
+    assert_eq!(events.scanner_baits.len(), 3);
+    assert_eq!(b.providers.len(), 1);
+    assert_eq!(b.providers[0].id, "turnstile");
+    assert_eq!(b.providers[0].fallback, "self_hold");
+    let routes: Vec<_> = b.environments.iter().flat_map(|e| &e.routes).collect();
+    assert!(routes.iter().any(|r| r.proof == ProofMode::Required as i32));
+    assert!(
+        routes
+            .iter()
+            .any(|r| r.min_level == ChallengeType::Interactive as i32)
+    );
+    assert!(
+        b.environments
+            .iter()
+            .flat_map(|e| &e.rate_limits)
+            .any(|rl| rl.challenge_type == ChallengeType::Interactive as i32),
+        "a limiter with on_exceed type interactive"
+    );
+    let lists = NamedLists::new(
+        b.lists
+            .iter()
+            .map(|(name, l)| (name.clone(), l.entries.clone()))
+            .collect::<BTreeMap<_, _>>(),
+    );
+    for env in &b.environments {
+        for r in &env.rules {
+            rule_from_proto(r, &lists).unwrap_or_else(|e| panic!("{} / {}: {e}", env.name, r.id));
+        }
+    }
+}
