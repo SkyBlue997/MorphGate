@@ -27,6 +27,10 @@ const FAMILIES: &[(&str, &[&str])] = &[
     ("mg_edge_added_latency_seconds", &["site", "kind"]),
     ("mg_origin_connect_seconds", &["site"]),
     ("mg_challenge_total", &["type", "provider", "result"]),
+    // Phase 2 (WP-E2a, spec §15.5).
+    ("mg_challenge_renew_total", &["result"]),
+    ("mg_interactive_score", &["provider", "mode"]),
+    ("mg_interactive_available", &["site"]),
     (
         "mg_upstream_auth_failures_total",
         &["listener", "profile", "reason"],

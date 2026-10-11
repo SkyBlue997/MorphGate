@@ -21,6 +21,8 @@
 #          no-store and private, never seen by the origin;
 #        - GET /__mg/s/<sdk file> serves the SDK build from the [sdk] dir
 #          (immutable, byte for byte), and an unknown name there is 404;
+#          the alias /__mg/s/mg.js serves the same bytes (300 s, ETag, 304);
+#        - POST /__mg/c/renew is 404 under the schema 1 bundle (D-66);
 #        - GET /smoke/marker.txt (Host example.com) is proxied: 200 with the
 #          origin's bytes, and the origin received MG-Client-IP;
 #        - the origin's 404 passes through;
@@ -313,6 +315,22 @@ cache_control="$(header_value sdkfile cache-control)"
 code="$(site_get /__mg/s/manifest.json sdkmissing)"
 [[ "$code" == 404 ]] || fail "GET /__mg/s/manifest.json returned $code, want 404 (only manifest files are served)"
 log "ok: /__mg/s/$sdk_file served from the SDK dir (immutable), other names 404"
+
+# The stable alias (Phase 2 spec D-39, §11.1): the same bytes, 300 s, ETag, 304.
+code="$(site_get /__mg/s/mg.js alias)"
+[[ "$code" == 200 ]] || fail "GET /__mg/s/mg.js returned $code, want 200"
+cmp -s "$tmp/alias.body" "$sdk_dir/$sdk_file" || fail "GET /__mg/s/mg.js did not serve the SDK file byte for byte"
+[[ "$(header_value alias cache-control)" == *"max-age=300"* ]] || fail "GET /__mg/s/mg.js is not cached for 300 s"
+etag="$(grep -i '^etag:' "$tmp/alias.headers" | cut -d: -f2- | tr -d '\r ')"
+[[ -n "$etag" ]] || fail "GET /__mg/s/mg.js has no ETag"
+code="$(site_get /__mg/s/mg.js alias304 -H "If-None-Match: $etag")"
+[[ "$code" == 304 ]] || fail "GET /__mg/s/mg.js with If-None-Match returned $code, want 304"
+log "ok: /__mg/s/mg.js alias (max-age=300, ETag $etag, 304)"
+
+# /__mg/c/renew (Phase 2 spec §11.1, D-66): 404 for this schema 1 bundle.
+code="$(site_get /__mg/c/renew renew -X POST -H 'Content-Type: application/json' --data '{"v":2}')"
+[[ "$code" == 404 ]] || fail "POST /__mg/c/renew returned $code, want 404 for a schema 1 bundle"
+log "ok: /__mg/c/renew -> 404 under a schema 1 bundle"
 
 code="$(site_get /smoke/marker.txt proxied)"
 [[ "$code" == 200 ]] || fail "GET /smoke/marker.txt via mg-edge returned $code, want 200"

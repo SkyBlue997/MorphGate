@@ -6,7 +6,7 @@
 
 use mg_core::gcra::GcraParams;
 use mg_edge_core::state::{
-    LimitCheck, LimiterKey, NonceIssue, NonceResult, StateConfig, StateService, dims, kh,
+    LimitCheck, LimiterKey, NonceIssueV2, NonceResultV2, StateConfig, StateService, dims, kh,
     parse_verdict,
 };
 use mg_edge_core::testkit::valkey::FaultTarget;
@@ -134,17 +134,18 @@ async fn local_nonce_checks_with_arbitrary_times_never_panic() {
                 write: true,
             })
             .collect();
-        let req = NonceIssue {
+        let req = NonceIssueV2 {
             site: "s".into(),
             nonce,
             ttl_ms: r.u64_edgy(),
+            replay: None,
             limits,
         };
         let now = r.u64_edgy() as i64;
         let iat = r.u64_edgy() as i64;
-        match h.nonce_issue(req, now, iat).await {
-            NonceResult::Reused => {}
-            NonceResult::Fresh { limits } | NonceResult::Unavailable { limits } => {
+        match h.nonce_issue_v2(req, now, iat).await {
+            NonceResultV2::Reused | NonceResultV2::TokenReused => {}
+            NonceResultV2::Fresh { limits } | NonceResultV2::Unavailable { limits } => {
                 assert!(limits.len() <= 2);
             }
         }

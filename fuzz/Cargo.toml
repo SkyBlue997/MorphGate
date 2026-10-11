@@ -89,3 +89,31 @@ path = "fuzz_targets/submission.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mg_proof"
+path = "fuzz_targets/mg_proof.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "submission_v2"
+path = "fuzz_targets/submission_v2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "renew"
+path = "fuzz_targets/renew.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ix_telemetry"
+path = "fuzz_targets/ix_telemetry.rs"
+test = false
+doc = false
+bench = false

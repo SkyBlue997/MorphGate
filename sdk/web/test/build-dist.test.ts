@@ -17,7 +17,6 @@ import {
 
 /** The template of the default build (phase2-spec §2.1). */
 const TEMPLATE = readFileSync(new URL(`../templates/${TEMPLATE_SOURCES[DEFAULT_MANIFEST_VERSION]}`, import.meta.url));
-const TEMPLATE_V1 = readFileSync(new URL("../templates/challenge.html", import.meta.url));
 const TEMPLATE_V2 = readFileSync(new URL("../templates/challenge.v2.html", import.meta.url));
 const BUNDLE = new TextEncoder().encode('(()=>{"use strict";var mg=1})();\n');
 /** The Edge serves only names matching this under /__mg/s/ (§10.4). */
@@ -108,11 +107,9 @@ describe("buildDist", () => {
 });
 
 describe("manifest and template versions (phase2-spec §2.1, §12.2)", () => {
-  it("stage 1 builds manifest v1 from templates/challenge.html", () => {
-    // WP-E2a switches this to 2 together with the Edge; until then the
-    // Phase 1 Edge must keep accepting the SDK directory.
-    expect(DEFAULT_MANIFEST_VERSION).toBe(1);
-    expect(TEMPLATE_SOURCES).toEqual({ 1: "challenge.html", 2: "challenge.v2.html" });
+  it("builds manifest v2 from templates/challenge.v2.html since the WP-E2a switch", () => {
+    expect(DEFAULT_MANIFEST_VERSION).toBe(2);
+    expect(TEMPLATE_SOURCES).toEqual({ 2: "challenge.v2.html" });
   });
 
   it("a v2 build writes manifest v2 and the v2 template as challenge.html; files never list mg.js", () => {
@@ -126,9 +123,7 @@ describe("manifest and template versions (phase2-spec §2.1, §12.2)", () => {
   });
 
   it("each build version accepts only its own template", () => {
-    expect(() => buildDist({ bundle: BUNDLE, template: TEMPLATE_V1 }, dir, 2)).toThrow(/template contract \(v2\)/);
     expect(() => buildDist({ bundle: BUNDLE, template: TEMPLATE_V2 }, dir, 1)).toThrow(/template contract \(v1\)/);
-    expect(validateTemplate(TEMPLATE_V1, 1)).toEqual([]);
     expect(validateTemplate(TEMPLATE_V2, 2)).toEqual([]);
   });
 

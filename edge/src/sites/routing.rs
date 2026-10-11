@@ -25,6 +25,8 @@
 //! once.
 
 use super::convert::{EnvRuntime, RouteMode, RouteRuntime};
+use mg_core::ChallengeType;
+use mg_core::policy::challenge_rank;
 
 /// The route a request is attributed to.
 #[derive(Debug, Clone, Copy)]
@@ -39,6 +41,12 @@ pub struct RouteMatch<'a> {
     pub mode: RouteMode,
     /// AND over every route matched by some candidate.
     pub never_challenge: bool,
+    /// OR of `proof = required` over every route matched by some candidate
+    /// (Phase 2 spec §1.4 step 5, D-40).
+    pub proof_required: bool,
+    /// The highest `min_level` over every route matched by some candidate
+    /// (Phase 2 spec §1.4 step 5, D-64).
+    pub min_level: Option<ChallengeType>,
 }
 
 impl RouteMatch<'_> {
@@ -78,6 +86,8 @@ pub fn select_route<'a>(
     let mut fail_closed = false;
     let mut mode = RouteMode::Monitor;
     let mut never_challenge = true;
+    let mut proof_required = false;
+    let mut min_level: Option<ChallengeType> = None;
     for candidate in &candidates {
         let Some((pos, route)) = eligible
             .iter()
@@ -90,6 +100,8 @@ pub fn select_route<'a>(
         fail_closed |= route.fail_closed;
         mode = mode.max(route.mode);
         never_challenge &= route.never_challenge;
+        proof_required |= route.proof_required;
+        min_level = higher_level(min_level, route.min_level);
         let better = match selected {
             None => true,
             Some((best_pos, best)) => {
@@ -108,6 +120,8 @@ pub fn select_route<'a>(
             fail_closed,
             mode,
             never_challenge,
+            proof_required,
+            min_level,
         },
         None => {
             let route = env
@@ -121,8 +135,19 @@ pub fn select_route<'a>(
                 fail_closed: false,
                 mode: route.mode,
                 never_challenge: route.never_challenge,
+                proof_required: route.proof_required,
+                min_level: route.min_level,
             }
         }
+    }
+}
+
+/// The higher of two `min_level`s (by `challenge_rank`; `None` is lowest).
+pub fn higher_level(a: Option<ChallengeType>, b: Option<ChallengeType>) -> Option<ChallengeType> {
+    match (a, b) {
+        (Some(x), Some(y)) if challenge_rank(y) > challenge_rank(x) => Some(y),
+        (Some(x), _) => Some(x),
+        (None, y) => y,
     }
 }
 
@@ -157,6 +182,8 @@ mod tests {
             redact_path: false,
             mode: RouteMode::Inherit,
             never_challenge: false,
+            proof_required: false,
+            min_level: None,
             patterns: paths.iter().map(|p| Glob::new(p).unwrap()).collect(),
         }
     }
@@ -174,6 +201,8 @@ mod tests {
                 Default::default(),
                 &crate::sites::default_scoring(),
                 &crate::sites::default_crawler_policy(),
+                1,
+                false,
             ),
         }
     }

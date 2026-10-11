@@ -18,16 +18,15 @@
 //! | Operation | Valkey | Local fallback |
 //! |---|---|---|
 //! | [`StateHandle::round_trip1`] | one pipeline: `MGET` verdicts + `EVALSHA mg_gcra` | no verdicts (except still-fresh cached ones), local GCRA table |
-//! | [`StateHandle::nonce_issue`] | `EVALSHA mg_nonce_issue` after the local replay check | local replay set + local GCRA table (all-or-nothing) |
 //! | [`StateHandle::record_failure`] | async `EVALSHA mg_gcra` by one consumer | local GCRA table |
 //! | [`StateHandle::xadd_batch`] | one pipeline of `XADD mg:ev MAXLEN ~ n *` | error (the caller counts a drop) |
 //! | [`StateHandle::local_check`] | never | local GCRA table (`scope = local`) |
 //! | [`StateHandle::round_trip1_v2`] (Phase 2) | as `round_trip1`, plus `EVALSHA mg_jti` after the local `jti` check | as `round_trip1`; the local `jti` verdict only under the §9.2 conditions |
-//! | [`StateHandle::nonce_issue_v2`] (Phase 2) | `EVALSHA mg_nonce_issue` v2 after the local nonce and token checks | local nonce and token sets + local GCRA table (all-or-nothing) |
+//! | [`StateHandle::nonce_issue_v2`] | `EVALSHA mg_nonce_issue` v2 after the local nonce and token checks | local nonce and token sets + local GCRA table (all-or-nothing) |
 //!
-//! Phase 2 (docs/impl/phase2-spec.md §9.2, §14; WP-C5) adds the second pair
-//! as new entry points; the Phase 1 calls keep their behaviour until the
-//! stage 2 switch (§2.3). The Edge loads all four scripts at connect time.
+//! Phase 2 (docs/impl/phase2-spec.md §9.2, §14; WP-C5) added `round_trip1_v2`
+//! and `nonce_issue_v2`; the stage 2 switch (WP-E2a, ruling I-52) removed
+//! `mg_nonce_issue` v1. The Edge loads its three scripts at connect time.
 //!
 //! # Circuit breaker
 //!
@@ -84,8 +83,6 @@ pub use service::{StateHandle, StateService, StateStatus};
 
 /// `mg_gcra` v1 (spec §9.7), byte-for-byte as specified.
 pub const MG_GCRA_LUA: &str = include_str!("state/lua/mg_gcra.lua");
-/// `mg_nonce_issue` v1 (spec §9.7, D-37), byte-for-byte as specified.
-pub const MG_NONCE_ISSUE_LUA: &str = include_str!("state/lua/mg_nonce_issue.lua");
 /// `mg_nonce_issue` v2 (Phase 2 spec §14.2), byte-for-byte as specified:
 /// the nonce, then at most one provider-token replay key, then the issuance
 /// quotas (all-or-nothing).
@@ -120,7 +117,7 @@ pub const VERDICT_CACHE_CAPACITY: usize = 50_000;
 /// Verdict values longer than this are ignored (counted as parse errors).
 pub const MAX_VERDICT_BYTES: usize = 4096;
 
-/// Upper bound of [`NonceIssue::ttl_ms`] (a sealed challenge lives for
+/// Upper bound of [`NonceIssueV2::ttl_ms`] (a sealed challenge lives for
 /// minutes; this only keeps a bad value from pinning replay entries forever
 /// or overflowing the script's `PX` argument).
 pub const MAX_NONCE_TTL_MS: u64 = 86_400_000;
@@ -295,7 +292,7 @@ pub struct LimitCheck {
     /// Requests consumed (Phase 1: 1; 0 counts as 1).
     pub cost: u32,
     /// `true`: store the new TAT when allowed; `false`: check only.
-    /// Ignored by [`StateHandle::nonce_issue`], whose quotas are written iff
+    /// Ignored by [`StateHandle::nonce_issue_v2`], whose quotas are written iff
     /// all of them allow (as `mg_nonce_issue` does).
     pub write: bool,
 }
@@ -346,48 +343,6 @@ impl fmt::Debug for RoundTrip1Result {
             .field("mode", &self.mode)
             .finish()
     }
-}
-
-/// Round trip 2 of `POST /__mg/c` (§9.7, D-37): the sealed challenge's nonce
-/// plus the issuance quotas (`mg.clr.issue.ipp`, `mg.clr.issue.asn`).
-#[derive(Clone, PartialEq, Eq)]
-pub struct NonceIssue {
-    pub site: String,
-    pub nonce: [u8; 16],
-    /// `exp_ms − now_ms + 60000` (§9.7 key table); clamped to
-    /// `1..=MAX_NONCE_TTL_MS`.
-    pub ttl_ms: u64,
-    pub limits: Vec<LimitCheck>,
-}
-
-impl fmt::Debug for NonceIssue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NonceIssue")
-            .field("site", &self.site)
-            .field("nonce", &"<redacted>")
-            .field("ttl_ms", &self.ttl_ms)
-            .field("limits", &self.limits)
-            .finish()
-    }
-}
-
-/// Outcome of [`StateHandle::nonce_issue`].
-///
-/// `Fresh` / `Unavailable` carry the issuance-quota outcomes (from Valkey, or
-/// from the local table when Valkey gave no answer); `Unavailable` = no
-/// authoritative replay check (§9.7 rules 3-4): the caller answers 429
-/// `ic.replay_unavailable` on `fail_closed` routes and otherwise issues with
-/// `ic.replay_unchecked`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NonceResult {
-    /// The nonce was used before (`ic.nonce_reused`); no quota was consumed.
-    Reused,
-    Fresh {
-        limits: Vec<GcraOutcome>,
-    },
-    Unavailable {
-        limits: Vec<GcraOutcome>,
-    },
 }
 
 /// A provider token's replay key in `mg_nonce_issue` v2 (Phase 2 spec
@@ -448,7 +403,7 @@ impl fmt::Debug for NonceIssueV2 {
 
 /// Outcome of [`StateHandle::nonce_issue_v2`] (Phase 2 spec §14.2, §14.4).
 ///
-/// As [`NonceResult`], plus [`NonceResultV2::TokenReused`]: the provider
+/// The nonce check of Phase 1 §9.7, plus [`NonceResultV2::TokenReused`]: the provider
 /// token was presented before (`ic.ts_dup`); the nonce **is** consumed, no
 /// quota is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -823,10 +778,11 @@ mod tests {
     fn debug_never_prints_dims_nonce_or_secrets() {
         let lk = LimiterKey::new("blog", "l", "ip=203.0.113.7");
         assert!(!format!("{lk:?}").contains("203.0.113.7"));
-        let ni = NonceIssue {
+        let ni = NonceIssueV2 {
             site: "blog".into(),
             nonce: [0xcd; 16],
             ttl_ms: 1,
+            replay: None,
             limits: vec![],
         };
         assert!(!format!("{ni:?}").contains("cdcd"));

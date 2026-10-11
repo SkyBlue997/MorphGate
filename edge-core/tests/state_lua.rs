@@ -1,13 +1,13 @@
 //! The Lua scripts on a real Valkey (spec §9.7; WP-C3 tests in §15):
 //! `mg_gcra` agrees with `mg_core::gcra_check` on every case of
-//! `core/testdata/gcra-cases.json` (explicit `now_us`), and `mg_nonce_issue`
-//! consumes a nonce once and writes quotas all-or-nothing.
+//! `core/testdata/gcra-cases.json` (explicit `now_us`); `mg_nonce_issue` v2
+//! is tested in `state_phase2.rs`.
 //!
 //! Skipped (with `SKIPPED: …`) without a Valkey server; see
 //! `mg_edge_core::testkit::valkey::ValkeyFixture`.
 
 use mg_core::gcra::{GcraOutcome, GcraParams, gcra_check};
-use mg_edge_core::state::{MG_GCRA_LUA, MG_NONCE_ISSUE_LUA};
+use mg_edge_core::state::{MG_GCRA_LUA, MG_JTI_LUA, MG_NONCE_ISSUE_V2_LUA};
 use mg_edge_core::testkit::valkey::ValkeyFixture;
 use redis::aio::MultiplexedConnection;
 use redis::{Script, Value};
@@ -205,105 +205,8 @@ async fn mg_gcra_zero_now_uses_server_time() {
     );
 }
 
-struct NonceCall<'a> {
-    nonce_key: &'a str,
-    keys: &'a [String],
-    ttl_ms: u64,
-    now: u64,
-    params: &'a [(u64, u32)],
-}
-
-async fn nonce_issue(conn: &mut MultiplexedConnection, c: &NonceCall<'_>) -> Vec<i64> {
-    let script = Script::new(MG_NONCE_ISSUE_LUA);
-    let mut inv = script.prepare_invoke();
-    inv.key(c.nonce_key);
-    for k in c.keys {
-        inv.key(k);
-    }
-    inv.arg(c.ttl_ms).arg(c.now);
-    for (interval, burst) in c.params {
-        inv.arg(*interval).arg(*burst).arg(1);
-    }
-    ints(inv.invoke_async(conn).await.unwrap())
-}
-
-/// D-37: first use -> `{1, …}` with quota outcomes and the nonce stored with
-/// its TTL; reuse -> `{0}` and no quota consumed; a denied quota writes no
-/// TAT at all (not even for the quotas that allowed).
-#[tokio::test]
-async fn mg_nonce_issue_semantics() {
-    let Some(fx) = ValkeyFixture::start().await else {
-        return;
-    };
-    let mut conn = connect(&fx).await;
-    let site = fx.site();
-    let now = 1_790_000_000_000_000u64;
-    let ipp = format!("mg:rl:{site}:mg.clr.issue.ipp:k1");
-    let asn = format!("mg:rl:{site}:mg.clr.issue.asn:k2");
-    let keys = [ipp.clone(), asn.clone()];
-    // ipp: burst 2 per 60 s; asn: burst 1 per 60 s.
-    let params = [(30_000_000u64, 2u32), (60_000_000u64, 1u32)];
-    let n1 = format!("mg:n:{site}:{}", "11".repeat(16));
-    let call = |nonce_key| NonceCall {
-        nonce_key,
-        keys: &keys,
-        ttl_ms: 180_000,
-        now,
-        params: &params,
-    };
-
-    // First use: both quotas allow and are written.
-    let out = nonce_issue(&mut conn, &call(&n1)).await;
-    assert_eq!(out, [1, 1, 0, 30_000_000, 1, 0, 60_000_000]);
-    assert_eq!(get(&mut conn, &n1).await.as_deref(), Some("1"));
-    let left = pttl(&mut conn, &n1).await;
-    assert!(left > 170_000 && left <= 180_000, "nonce PTTL {left}");
-    assert_eq!(
-        get(&mut conn, &ipp).await,
-        Some((now + 30_000_000).to_string())
-    );
-    assert_eq!(
-        get(&mut conn, &asn).await,
-        Some((now + 60_000_000).to_string())
-    );
-
-    // Reuse: {0}, quotas untouched.
-    assert_eq!(nonce_issue(&mut conn, &call(&n1)).await, [0]);
-    assert_eq!(
-        get(&mut conn, &ipp).await,
-        Some((now + 30_000_000).to_string())
-    );
-    assert_eq!(
-        get(&mut conn, &asn).await,
-        Some((now + 60_000_000).to_string())
-    );
-
-    // New nonce: asn exhausted -> denied; ipp would allow but is NOT written.
-    let n2 = format!("mg:n:{site}:{}", "22".repeat(16));
-    let out = nonce_issue(&mut conn, &call(&n2)).await;
-    assert_eq!(out, [1, 1, 0, 60_000_000, 0, 60_000_000, 60_000_000]);
-    assert_eq!(
-        get(&mut conn, &ipp).await,
-        Some((now + 30_000_000).to_string())
-    );
-    assert_eq!(
-        get(&mut conn, &asn).await,
-        Some((now + 60_000_000).to_string())
-    );
-    // The nonce itself is consumed even though issuance was refused.
-    assert_eq!(nonce_issue(&mut conn, &call(&n2)).await, [0]);
-
-    // No issuance limiters at all (e.g. no geoip-asn and no ipp quota).
-    let n3 = format!("mg:n:{site}:{}", "33".repeat(16));
-    let bare = NonceCall {
-        nonce_key: &n3,
-        keys: &[],
-        ttl_ms: 1,
-        now,
-        params: &[],
-    };
-    assert_eq!(nonce_issue(&mut conn, &bare).await, [1]);
-}
+// `mg_nonce_issue` v1 was removed with the stage 2 switch (Phase 2 spec
+// §2.3, ruling I-52); v2 is tested in `state_phase2.rs`.
 
 /// The SHA-1s the Edge uses for `EVALSHA` are the ones `SCRIPT LOAD` returns.
 #[tokio::test]
@@ -312,7 +215,7 @@ async fn script_load_returns_the_expected_sha() {
         return;
     };
     let mut conn = connect(&fx).await;
-    for src in [MG_GCRA_LUA, MG_NONCE_ISSUE_LUA] {
+    for src in [MG_GCRA_LUA, MG_NONCE_ISSUE_V2_LUA, MG_JTI_LUA] {
         let sha: String = redis::cmd("SCRIPT")
             .arg("LOAD")
             .arg(src)

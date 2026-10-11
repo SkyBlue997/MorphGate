@@ -6,7 +6,8 @@ import { XorShift32 } from "./xorshift";
 
 const BYTES = readFileSync(new URL("../templates/challenge.v2.html", import.meta.url));
 const T = new TextDecoder("utf-8", { fatal: true }).decode(BYTES);
-const V1 = readFileSync(new URL("../templates/challenge.html", import.meta.url), "utf8");
+/** A page without the v2 parameters (the v1 template was removed with the WP-E2a switch). */
+const V1 = T.replace(' data-mg-ix="{{ix}}"', "");
 const STYLE = /<style nonce="\{\{nonce\}\}">([\s\S]*?)<\/style>/.exec(T)![1]!;
 
 /** The declarations of the CSS rule whose selector list is exactly `selector`. */
@@ -52,7 +53,7 @@ describe("templates/challenge.v2.html: contract (§12.3)", () => {
   it("passes the v2 validator, and only that one", () => {
     expect(validateTemplate(BYTES, 2)).toEqual([]);
     expect(validateTemplate(BYTES, 1).join("\n")).toMatch(/unknown placeholder \{\{ix\}\}/);
-    // The v1 template lacks the v2 structure.
+    // A page without {{ix}} fails the v2 rules.
     expect(validateTemplate(V1, 2).join("\n")).toMatch(/\{\{ix\}\} missing/);
     expect(validateTemplate(BYTES, 3)).toEqual(["unknown template version 3"]);
   });

@@ -66,8 +66,9 @@ adapters-check: ## Cloudflare adapter templates and the origin's MG-Origin-Auth 
 compose-check: ## Validate the dev docker-compose file (no Docker daemon needed)
 	$(COMPOSE) config -q
 
-docs-check: ## Check relative links and #anchors in README.md, CLAUDE.md, docs/
+docs-check: ## Check relative links and #anchors in README.md, CLAUDE.md, docs/; the Phase 2 vectors match their generator (I-47)
 	python3 scripts/check_doc_links.py
+	node testdata/phase2/gen/kat.mjs --check
 
 check: rust-check wasm-check go-check web-check adapters-check compose-check docs-check ## All lint/test gates (CI also runs edge-smoke, lab-egress-check, proto drift)
 
@@ -116,7 +117,8 @@ audit: ## Dependency audit: cargo-deny (deny.toml), govulncheck, pnpm audit
 FUZZ_TOOLCHAIN := nightly-2026-10-11
 CARGO_FUZZ_VERSION := 0.13.2
 FUZZ_SECONDS := 60
-FUZZ_TARGETS := cf_headers request_limits bundle_verify paths_ret sealed_open clearance_token client_hello submission
+FUZZ_TARGETS := cf_headers request_limits bundle_verify paths_ret sealed_open clearance_token client_hello submission \
+  mg_proof submission_v2 renew ix_telemetry
 
 fuzz-lock-check: ## fuzz/Cargo.lock pins the same versions as Cargo.lock (plus the fuzzing crates)
 	scripts/check-fuzz-lock.sh

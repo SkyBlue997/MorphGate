@@ -3,15 +3,15 @@
 // (docs/impl/phase1-spec.md §11.1; docs/impl/phase2-spec.md §2.1, §12.2, §12.3):
 //
 //   mg.<hex16>.js   byte-identical to dist/mg.js; hex16 = first 16 hex chars of its SHA-256
-//   challenge.html  the challenge page template, validated here: templates/challenge.html
-//                   (v1) or templates/challenge.v2.html (v2), by DEFAULT_MANIFEST_VERSION
+//   challenge.html  the challenge page template, validated here: templates/challenge.v2.html
+//                   (template v2; the v1 template was removed with the switch, phase2-spec §2.1)
 //   manifest.json   {"v","build","sdk","files":{name: sha256},"templates":{"challenge.html": sha256}}
 //
 // DEFAULT_MANIFEST_VERSION switches the whole build (spec §2.1): the template
 // file and its rules, the manifest version, and `MG_MANIFEST_VERSION` in the
-// bundle (in-place solving of JSON challenges needs a v2 Edge). Stage 1
-// keeps 1, because the Phase 1 Edge accepts only manifest v1 directories;
-// WP-E2a switches it to 2 together with the Edge.
+// bundle (in-place solving of JSON challenges needs a v2 Edge). WP-E2a
+// switched it to 2 together with the Edge, which accepts manifest v1 and v2
+// directories; the v1 rules stay in validateTemplate (the Edge ports both).
 //
 // The Edge serves only the `files` names under /__mg/s/ and reads `templates`
 // itself; it re-checks the hashes and the template rules when it loads the
@@ -24,13 +24,13 @@ import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSy
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Manifest and template version of this build (spec §2.1); WP-E2a switches it to 2. */
-export const DEFAULT_MANIFEST_VERSION = 1;
+/** Manifest and template version of this build (spec §2.1); switched to 2 by WP-E2a. */
+export const DEFAULT_MANIFEST_VERSION = 2;
 /** Kept for the Phase 1 tests: the version of the default build. */
 export const MANIFEST_VERSION = DEFAULT_MANIFEST_VERSION;
 export const TEMPLATE_NAME = "challenge.html";
-/** Template source file per manifest version; both are written to dist/sdk/challenge.html. */
-export const TEMPLATE_SOURCES = Object.freeze({ 1: "challenge.html", 2: "challenge.v2.html" });
+/** Template source file per manifest version, written to dist/sdk/challenge.html (v1's was removed). */
+export const TEMPLATE_SOURCES = Object.freeze({ 2: "challenge.v2.html" });
 /** esbuild options of the bundle (IIFE, minified, ES2020). */
 export function esbuildOptions(version = DEFAULT_MANIFEST_VERSION) {
   return {

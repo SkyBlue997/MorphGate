@@ -3,8 +3,9 @@
 //!
 //! Every one carries `X-Content-Type-Options: nosniff`, `Cache-Control:
 //! no-store, private` unless it is an SDK file (`/__mg/s/*`, immutable,
-//! §10.4), and never an `MG-*` header except `MG-Challenge` on a JSON
-//! challenge (§10.2). A response sent before the request body was read
+//! §10.4; the alias `mg.js` 300 s, D-39), and never an `MG-*` header except
+//! `MG-Challenge` on a JSON challenge (§10.2) and `MG-Error` on JSON errors
+//! (Phase 2 spec §11.2). A response sent before the request body was read
 //! closes the connection (`set_keepalive(None)`, §9.9): Pingora 0.9 drains
 //! the rest of the body before reusing a keep-alive connection, with no total
 //! deadline. Its `close_on_response_before_downstream_finish` default happens
@@ -114,11 +115,13 @@ impl EdgeResponse {
         Self::new(status, TEXT, Bytes::from_static(body.as_bytes()))
     }
 
-    fn page(status: u16, navigation: bool, html: String, json: String) -> Self {
+    /// The HTML or the JSON form; the JSON form carries `MG-Error: <error>`
+    /// (Phase 2 spec §11.2).
+    fn page(status: u16, navigation: bool, html: String, json: String, error: &str) -> Self {
         if navigation {
             Self::new(status, HTML, html)
         } else {
-            Self::new(status, JSON, json)
+            Self::new(status, JSON, json).with("MG-Error", error)
         }
     }
 
@@ -148,7 +151,8 @@ impl EdgeResponse {
                  <p>如有疑问请联系站点所有者。If you think this is a mistake, please contact the site owner.</p>\
                  <p>Request ID: <code>{id}</code></p></body></html>\n"
             ),
-            format!("{{\"error\":\"mg_blocked\",\"request_id\":\"{id}\"}}"),
+            format!("{{\"v\":2,\"error\":\"mg_blocked\",\"request_id\":\"{id}\"}}"),
+            "mg_blocked",
         )
     }
 
@@ -169,8 +173,9 @@ impl EdgeResponse {
                  <p>Request ID: <code>{id}</code></p></body></html>\n"
             ),
             format!(
-                "{{\"error\":\"mg_rate_limited\",\"retry_after\":{retry_after_s},\"request_id\":\"{id}\"}}"
+                "{{\"v\":2,\"error\":\"mg_rate_limited\",\"retry_after\":{retry_after_s},\"request_id\":\"{id}\"}}"
             ),
+            "mg_rate_limited",
         )
         .with("Retry-After", retry_after_s.to_string())
     }
@@ -275,8 +280,12 @@ impl EdgeResponse {
     /// The response header with the §9.9 common headers.
     pub fn header(&self) -> pingora::Result<ResponseHeader> {
         let mut h = ResponseHeader::build(self.status, Some(10 + self.headers.len()))?;
-        h.insert_header("Content-Type", self.content_type)?;
-        h.insert_header("Content-Length", self.body.len())?;
+        // A 304 has no content (RFC 9110 §15.4.5): no Content-Type, and no
+        // Content-Length that would differ from the 200's.
+        if self.status != 304 {
+            h.insert_header("Content-Type", self.content_type)?;
+            h.insert_header("Content-Length", self.body.len())?;
+        }
         h.insert_header("Cache-Control", self.cache_control)?;
         h.insert_header("X-Content-Type-Options", "nosniff")?;
         if self.content_type == HTML {
@@ -299,7 +308,8 @@ impl EdgeResponse {
         if self.close {
             session.set_keepalive(None);
         }
-        let head_only = session.req_header().method == pingora::http::Method::HEAD;
+        let head_only =
+            session.req_header().method == pingora::http::Method::HEAD || self.status == 304;
         session
             .write_response_header(Box::new(self.header()?), head_only)
             .await?;
@@ -344,9 +354,17 @@ mod tests {
                 h.headers["content-length"],
                 resp.body.len().to_string().as_str()
             );
+            // The only MG-* header is MG-Error on a JSON error (Phase 2
+            // spec §11.2).
             assert!(
-                h.headers.keys().all(|k| !k.as_str().starts_with("mg-")),
-                "Edge responses never carry MG-* headers"
+                h.headers
+                    .keys()
+                    .all(|k| !k.as_str().starts_with("mg-") || k == "mg-error"),
+                "Edge responses carry no other MG-* header"
+            );
+            assert_eq!(
+                h.headers.contains_key("mg-error"),
+                resp.content_type == JSON
             );
             // Only the health check keeps the connection open.
             assert_eq!(resp.close, resp.status != 200, "{}", resp.status);
@@ -422,17 +440,27 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(b.body_text()).unwrap();
         assert_eq!(
             v,
-            serde_json::json!({"error": "mg_blocked", "request_id": ID})
+            serde_json::json!({"v": 2, "error": "mg_blocked", "request_id": ID})
         );
         let r = EdgeResponse::rate_limited(ID, 30, false);
         let v: serde_json::Value = serde_json::from_str(r.body_text()).unwrap();
         assert_eq!(
             v,
-            serde_json::json!({"error": "mg_rate_limited", "retry_after": 30, "request_id": ID})
+            serde_json::json!({"v": 2, "error": "mg_rate_limited", "retry_after": 30, "request_id": ID})
         );
         let h = r.header().unwrap();
         assert_eq!(h.status.as_u16(), 429);
         assert_eq!(h.headers["retry-after"], "30");
+        // Phase 2 spec §11.2: JSON errors name themselves in MG-Error.
+        assert_eq!(h.headers["mg-error"], "mg_rate_limited");
+        assert_eq!(b.header().unwrap().headers["mg-error"], "mg_blocked");
+        assert!(
+            !EdgeResponse::blocked(ID, true)
+                .header()
+                .unwrap()
+                .headers
+                .contains_key("mg-error")
+        );
         let page = EdgeResponse::rate_limited(ID, 30, true);
         assert!(page.body_text().contains("请求过多") && page.body_text().contains(ID));
         let h = page.header().unwrap();

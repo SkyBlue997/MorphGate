@@ -1,5 +1,6 @@
-# cargo-deny policy for the Rust workspace (`make deny`, CI job "Dependency
-# audit"). Advisories come from the RustSec database, fetched at run time.
+# cargo-deny policy for the Rust workspace (`make audit`, workflow "Dependency
+# audit", job "Rust (cargo-deny)"). Advisories come from the RustSec database,
+# fetched at run time.
 
 [graph]
 all-features = true

@@ -172,7 +172,8 @@ impl Startup {
         let mut sites = Vec::with_capacity(cfg.sites.len());
         let mut sources = Vec::with_capacity(cfg.sites.len());
         for s in &cfg.sites {
-            let settings = SiteSettings::new(s, &cfg);
+            let mut settings = SiteSettings::new(s, &cfg);
+            settings.sdk_manifest_v2 = sdk.manifest_version == 2;
             let seal_file = read_secret(resolver, &s.seal_root, &mut warn)
                 .map_err(|e| format!("site {}: seal_root: {e}", s.id))?;
             let seal = SealKeys::from_key_file(seal_file.bytes(), &s.id)
@@ -215,6 +216,13 @@ impl Startup {
                     ));
                 }
             }
+            interactive_warnings(
+                &s.id,
+                current.as_ref(),
+                sdk.manifest_version,
+                &cfg.valkey,
+                &mut warn,
+            );
             let root = Source::parse(&s.bundle_root)
                 .map_err(|e| format!("site {}: bundle_root: {e}", s.id))?;
             if let Source::File(dir) = &root
@@ -433,4 +441,49 @@ fn artifact_sha(vb: &VerifiedBundle, name: &str) -> String {
         .find(|a| a.name == name)
         .map(|a| a.sha256.clone())
         .unwrap_or_default()
+}
+
+/// Smallest `local_nonce_capacity` recommended with interactive challenges
+/// in local mode (Phase 2 spec §14.4: their nonces live much longer).
+pub const INTERACTIVE_LOCAL_NONCE_CAPACITY: usize = 400_000;
+
+/// The `--check-config` warnings about interactive challenges of a site
+/// whose LKG enables them (Phase 2 spec §5.1, §10.1): a manifest v1 SDK
+/// directory (interactive runs as `pow`), and local mode (an interactive
+/// `C` cannot be renewed after a reload; the nonce set should be larger).
+pub fn interactive_warnings(
+    site: &str,
+    lkg: Option<&VerifiedBundle>,
+    sdk_manifest_version: u32,
+    valkey: &crate::config::ValkeyConfig,
+    warn: &mut dyn FnMut(String),
+) {
+    let enabled = lkg.is_some_and(|vb| {
+        vb.bundle.schema_version >= 2
+            && vb
+                .bundle
+                .challenge
+                .as_ref()
+                .and_then(|c| c.interactive.as_ref())
+                .is_some_and(|ix| ix.enabled)
+    });
+    if !enabled {
+        return;
+    }
+    if sdk_manifest_version < 2 {
+        warn(format!(
+            "site {site}: the bundle enables interactive challenges but [sdk] dir is a manifest v{sdk_manifest_version} directory: they run as pow (Phase 2 spec §5.1)"
+        ));
+    }
+    if valkey.mode == ValkeyMode::Local {
+        warn(format!(
+            "site {site}: interactive challenges in [valkey] mode = \"local\": after every reload, challenges in progress cannot be renewed for up to 10 minutes (D-38)"
+        ));
+        if valkey.local_nonce_capacity < INTERACTIVE_LOCAL_NONCE_CAPACITY {
+            warn(format!(
+                "site {site}: [valkey] local_nonce_capacity = {} is below {INTERACTIVE_LOCAL_NONCE_CAPACITY}, which interactive challenges need (Phase 2 spec §14.4)",
+                valkey.local_nonce_capacity
+            ));
+        }
+    }
 }

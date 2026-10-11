@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use mg_core::gcra::GcraParams;
 use mg_edge_core::state::builtin::{ChallengeLimits, ClientDims};
 use mg_edge_core::state::{
-    BreakerConfig, EVENT_STREAM_KEY, LimitCheck, LimiterKey, NonceIssue, NonceResult, RoundTrip1,
-    StateConfig, StateHandle, StateMode, StateService, dims, entity_key, parse_verdict,
+    BreakerConfig, EVENT_STREAM_KEY, LimitCheck, LimiterKey, NonceIssueV2, NonceResultV2,
+    RoundTrip1, StateConfig, StateHandle, StateMode, StateService, dims, entity_key, parse_verdict,
     verdict_key,
 };
 use mg_edge_core::testkit::valkey::{FaultMode, FaultProxy, ValkeyFixture};
@@ -216,11 +216,12 @@ async fn round_trips_per_request_type() {
     assert!(rt1.limits.iter().all(|o| o.allowed));
     let now = now_ms();
     let rt2 = h
-        .nonce_issue(
-            NonceIssue {
+        .nonce_issue_v2(
+            NonceIssueV2 {
                 site: site.to_owned(),
                 nonce: [0x5a; 16],
                 ttl_ms: 180_000,
+                replay: None,
                 limits: builtin.issuance(site, &client),
             },
             now,
@@ -228,7 +229,7 @@ async fn round_trips_per_request_type() {
         )
         .await;
     assert_eq!(proxy.round_trips() - base, 2, "/__mg/c: two round trips");
-    let NonceResult::Fresh { limits } = rt2 else {
+    let NonceResultV2::Fresh { limits } = rt2 else {
         panic!("expected Fresh, got {rt2:?}")
     };
     assert!(limits.len() == 2 && limits.iter().all(|o| o.allowed));
@@ -573,23 +574,24 @@ async fn nonce_issue_across_edges_and_when_valkey_is_down() {
             write,
         )]
     };
-    let issue = |nonce: u8| NonceIssue {
+    let issue = |nonce: u8| NonceIssueV2 {
         site: site.to_owned(),
         nonce: [nonce; 16],
         ttl_ms: 180_000,
+        replay: None,
         limits: quota(true),
     };
     let now = now_ms();
 
-    let r = a.handle.nonce_issue(issue(1), now, now).await;
+    let r = a.handle.nonce_issue_v2(issue(1), now, now).await;
     assert!(
-        matches!(&r, NonceResult::Fresh { limits } if limits[0].allowed),
+        matches!(&r, NonceResultV2::Fresh { limits } if limits[0].allowed),
         "{r:?}"
     );
     let base = proxy.round_trips();
     assert_eq!(
-        a.handle.nonce_issue(issue(1), now, now).await,
-        NonceResult::Reused
+        a.handle.nonce_issue_v2(issue(1), now, now).await,
+        NonceResultV2::Reused
     );
     assert_eq!(
         proxy.round_trips(),
@@ -597,24 +599,24 @@ async fn nonce_issue_across_edges_and_when_valkey_is_down() {
         "the local set answers without valkey"
     );
     assert_eq!(
-        b.handle.nonce_issue(issue(1), now, now).await,
-        NonceResult::Reused,
+        b.handle.nonce_issue_v2(issue(1), now, now).await,
+        NonceResultV2::Reused,
         "valkey {{0}}"
     );
     // Quota exhausted by the first issuance (burst 1), counted in Valkey.
-    let r = b.handle.nonce_issue(issue(2), now, now).await;
+    let r = b.handle.nonce_issue_v2(issue(2), now, now).await;
     assert!(
-        matches!(&r, NonceResult::Fresh { limits } if !limits[0].allowed),
+        matches!(&r, NonceResultV2::Fresh { limits } if !limits[0].allowed),
         "{r:?}"
     );
 
     // Valkey down: no authoritative answer.
     proxy.set_mode(FaultMode::Refuse);
-    let r = a.handle.nonce_issue(issue(3), now, now).await;
-    assert!(matches!(r, NonceResult::Unavailable { .. }), "{r:?}");
+    let r = a.handle.nonce_issue_v2(issue(3), now, now).await;
+    assert!(matches!(r, NonceResultV2::Unavailable { .. }), "{r:?}");
     assert_eq!(
-        a.handle.nonce_issue(issue(3), now, now).await,
-        NonceResult::Reused
+        a.handle.nonce_issue_v2(issue(3), now, now).await,
+        NonceResultV2::Reused
     );
     proxy.set_mode(FaultMode::Pass);
     a.shutdown().await;
@@ -625,11 +627,12 @@ fn local_cfg() -> StateConfig {
     StateConfig::local(K)
 }
 
-fn issue(nonce: u8, limits: Vec<LimitCheck>) -> NonceIssue {
-    NonceIssue {
+fn issue(nonce: u8, limits: Vec<LimitCheck>) -> NonceIssueV2 {
+    NonceIssueV2 {
         site: "blog".into(),
         nonce: [nonce; 16],
         ttl_ms: 180_000,
+        replay: None,
         limits,
     }
 }
@@ -641,11 +644,14 @@ fn issue(nonce: u8, limits: Vec<LimitCheck>) -> NonceIssue {
 async fn local_replay_rules() {
     // Not authoritative: Unavailable, but reuse is still detected.
     let (_s, h) = StateService::new(local_cfg());
-    let r = h.nonce_issue(issue(1, vec![]), 2_000_000, 2_000_000).await;
-    assert_eq!(r, NonceResult::Unavailable { limits: vec![] });
+    let r = h
+        .nonce_issue_v2(issue(1, vec![]), 2_000_000, 2_000_000)
+        .await;
+    assert_eq!(r, NonceResultV2::Unavailable { limits: vec![] });
     assert_eq!(
-        h.nonce_issue(issue(1, vec![]), 2_000_001, 2_000_000).await,
-        NonceResult::Reused
+        h.nonce_issue_v2(issue(1, vec![]), 2_000_001, 2_000_000)
+            .await,
+        NonceResultV2::Reused
     );
 
     // Authoritative, 3 slots, process started at t = 1,000,000 ms.
@@ -655,36 +661,44 @@ async fn local_replay_rules() {
     cfg.process_start_ms = 1_000_000;
     let (_s, h) = StateService::new(cfg);
     let now = 2_000_000;
-    let fresh = NonceResult::Fresh { limits: vec![] };
-    let unavailable = NonceResult::Unavailable { limits: vec![] };
-    assert_eq!(h.nonce_issue(issue(2, vec![]), now, 1_500_000).await, fresh);
+    let fresh = NonceResultV2::Fresh { limits: vec![] };
+    let unavailable = NonceResultV2::Unavailable { limits: vec![] };
     assert_eq!(
-        h.nonce_issue(issue(3, vec![]), now, 999_999).await,
+        h.nonce_issue_v2(issue(2, vec![]), now, 1_500_000).await,
+        fresh
+    );
+    assert_eq!(
+        h.nonce_issue_v2(issue(3, vec![]), now, 999_999).await,
         unavailable,
         "challenge issued before this process started (graceful upgrade window)"
     );
-    assert_eq!(h.nonce_issue(issue(4, vec![]), now, 1_500_000).await, fresh);
+    assert_eq!(
+        h.nonce_issue_v2(issue(4, vec![]), now, 1_500_000).await,
+        fresh
+    );
     // Full (2, 3, 4 are live): not recorded -> Unavailable; live ones stay.
     assert_eq!(
-        h.nonce_issue(issue(5, vec![]), now + 10, 1_500_000).await,
+        h.nonce_issue_v2(issue(5, vec![]), now + 10, 1_500_000)
+            .await,
         unavailable
     );
     for n in [2, 3, 4] {
         assert_eq!(
-            h.nonce_issue(issue(n, vec![]), now + 20, 1_500_000).await,
-            NonceResult::Reused
+            h.nonce_issue_v2(issue(n, vec![]), now + 20, 1_500_000)
+                .await,
+            NonceResultV2::Reused
         );
     }
     // After the entries expired, the set has room again, but nonce 5 (never
     // recorded) must not be judged fresh: its challenge predates the overflow.
     let later = now + 180_000 + 1;
     assert_eq!(
-        h.nonce_issue(issue(5, vec![]), later, 1_500_000).await,
+        h.nonce_issue_v2(issue(5, vec![]), later, 1_500_000).await,
         unavailable
     );
     // Challenges issued after the last overflow are judged locally again.
     assert_eq!(
-        h.nonce_issue(issue(6, vec![]), later, now + 11).await,
+        h.nonce_issue_v2(issue(6, vec![]), later, now + 11).await,
         fresh
     );
 }
@@ -704,11 +718,13 @@ async fn local_issuance_quotas_are_all_or_nothing() {
         ]
     };
     let now = 2_000_000_000_000;
-    let NonceResult::Fresh { limits } = h.nonce_issue(issue(1, quotas()), now, now).await else {
+    let NonceResultV2::Fresh { limits } = h.nonce_issue_v2(issue(1, quotas()), now, now).await
+    else {
         panic!("fresh expected")
     };
     assert!(limits.iter().all(|o| o.allowed));
-    let NonceResult::Fresh { limits } = h.nonce_issue(issue(2, quotas()), now, now).await else {
+    let NonceResultV2::Fresh { limits } = h.nonce_issue_v2(issue(2, quotas()), now, now).await
+    else {
         panic!("fresh expected")
     };
     assert!(!limits[0].allowed && limits[1].allowed);
@@ -773,7 +789,7 @@ fn futures_are_send_and_the_handle_is_shareable() {
     shareable::<StateHandle>();
     let (service, h) = StateService::new(local_cfg());
     send(&h.round_trip1(RoundTrip1::default()));
-    send(&h.nonce_issue(issue(1, vec![]), 0, 0));
+    send(&h.nonce_issue_v2(issue(1, vec![]), 0, 0));
     send(&h.xadd_batch(1, vec![]));
     let (_stop, rx) = watch::channel(false);
     send(&service.run(rx));

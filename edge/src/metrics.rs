@@ -22,6 +22,12 @@
 //! result}` (`provider="none"` in Phase 1; `result` = issued / solved /
 //! failed / expired) and `mg_https_redirect_total{site}`.
 //!
+//! Phase 2 (WP-E2a, docs/impl/phase2-spec.md §15.5): `mg_challenge_total`
+//! with `provider` = `none` / `self_hold` / `pow_a11y` and the results
+//! `renewed` and `reissued`, `mg_challenge_renew_total{result}`,
+//! `mg_interactive_score{provider, mode}` and
+//! `mg_interactive_available{site}`.
+//!
 //! The observability families (WP-E1d): `mg_requests_total{site, env,
 //! route, action, class}`, `mg_edge_added_latency_seconds{site, kind}`
 //! (`kind` = `site` / `mg`, I-31) and `mg_origin_connect_seconds{site}` (see
@@ -52,6 +58,27 @@ pub const LATENCY_BUCKETS: &[f64] = &[
     0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 1.0,
 ];
 
+/// Buckets of `mg_interactive_score` (Phase 2 spec §15.5): 0.1 … 1.0.
+pub const SCORE_BUCKETS: &[f64] = &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+
+/// `result` values of `mg_challenge_renew_total` (Phase 2 spec §15.5).
+pub const RENEW_RESULTS: [&str; 14] = [
+    "ok",
+    "rebind",
+    "cap",
+    "expired",
+    "invalid",
+    "body",
+    "binding",
+    "sig",
+    "nonce_reused",
+    "unavailable",
+    "interactive_unavailable",
+    "rate_limited",
+    "no_client_ip",
+    "too_early",
+];
+
 /// Values of the `kind` label of `mg_edge_added_latency_seconds` (I-31).
 pub const LATENCY_KINDS: [&str; 2] = ["site", "mg"];
 
@@ -65,6 +92,7 @@ pub fn latency_kind(route: RouteKind) -> &'static str {
         RouteKind::Healthz
         | RouteKind::SdkFile
         | RouteKind::Submit
+        | RouteKind::Renew
         | RouteKind::Verify
         | RouteKind::EdgeReserved => LATENCY_KINDS[1],
     }
@@ -137,6 +165,12 @@ pub struct EdgeMetrics {
     /// `mg_https_redirect_total{site}`: http visitors redirected to https
     /// instead of being challenged (§9.9, D-32).
     pub https_redirect: IntCounterVec,
+    /// `mg_challenge_renew_total{result}` (Phase 2 spec §7.4, §15.5).
+    pub challenge_renew: IntCounterVec,
+    /// `mg_interactive_score{provider, mode}` (Phase 2 spec §7.8, §15.5).
+    pub interactive_score: HistogramVec,
+    /// `mg_interactive_available{site}` (Phase 2 spec §5.1).
+    pub interactive_available: IntGaugeVec,
     /// `mg_requests_total{site, env, route, action, class}` (§13.7): every
     /// request that reached the decision step, with the decision before
     /// execution (under monitor the action that would have been taken).
@@ -295,6 +329,23 @@ impl EdgeMetrics {
                 "Challenges issued and /__mg/c submissions by type, provider and result (issued, solved, failed, expired).",
                 &["type", "provider", "result"]
             ),
+            challenge_renew: counter!(
+                "mg_challenge_renew_total",
+                "POST /__mg/c/renew answers by result.",
+                &["result"]
+            ),
+            interactive_score: register_histogram_vec!(
+                "mg_interactive_score",
+                "Soft score of interactive submissions that passed the hard checks.",
+                &["provider", "mode"],
+                SCORE_BUCKETS.to_vec()
+            )
+            .expect("register mg_interactive_score"),
+            interactive_available: gauge!(
+                "mg_interactive_available",
+                "1 when the site's bundle enables interactive challenges and the SDK directory is manifest v2.",
+                &["site"]
+            ),
             https_redirect: counter!(
                 "mg_https_redirect_total",
                 "http visitors redirected to https instead of being challenged (D-32).",
@@ -337,6 +388,7 @@ impl EdgeMetrics {
         for h in [&self.decision_latency, &self.origin_connect] {
             h.with_label_values(&[site]);
         }
+        self.interactive_available.with_label_values(&[site]);
         for kind in LATENCY_KINDS {
             self.edge_added_latency.with_label_values(&[site, kind]);
         }
@@ -412,12 +464,28 @@ impl EdgeMetrics {
             self.cf_vbot_disagree.with_label_values(&[direction]);
         }
         for ty in [ChallengeType::Invisible, ChallengeType::Pow] {
-            for result in ["issued", "solved", "failed", "expired"] {
+            for result in ["issued", "reissued", "solved", "failed", "expired"] {
                 self.challenge.with_label_values(&[
                     ty.as_str(),
                     crate::challenge::PROVIDER_NONE,
                     result,
                 ]);
+            }
+        }
+        for provider in ["self_hold", "pow_a11y"] {
+            for result in [
+                "issued", "reissued", "renewed", "solved", "failed", "expired",
+            ] {
+                self.challenge
+                    .with_label_values(&["interactive", provider, result]);
+            }
+        }
+        for result in RENEW_RESULTS {
+            self.challenge_renew.with_label_values(&[result]);
+        }
+        for provider in ["self_hold", "pow_a11y"] {
+            for mode in ["shadow", "enforce"] {
+                self.interactive_score.with_label_values(&[provider, mode]);
             }
         }
     }
@@ -553,6 +621,7 @@ mod tests {
             RouteKind::Healthz,
             RouteKind::SdkFile,
             RouteKind::Submit,
+            RouteKind::Renew,
             RouteKind::Verify,
             RouteKind::EdgeReserved,
         ] {

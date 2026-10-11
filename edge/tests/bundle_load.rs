@@ -235,6 +235,111 @@ fn runtime_conversion_rejects_what_the_edge_cannot_run() {
     assert!(rt.intel.tor_exits.as_ref().is_some_and(|s| s.is_empty()));
 }
 
+/// Phase 2 spec §2.1 / §17 WP-E2a: the Go-built Phase 2 golden bundle
+/// (schema 2, every Phase 2 key) converts in the Edge, with the interactive
+/// settings, the route `min_level` / `proof`, the `interactive` limiter and
+/// the page settings as written in `site-phase2.yaml`.
+#[test]
+fn golden_phase2_bundle_converts() {
+    let hosts = common::HOSTS.map(String::from);
+    let bytes = std::fs::read(repo(
+        "control-plane/testdata/sites/golden/golden-phase2.bundle",
+    ))
+    .unwrap();
+    let vb = verify_bundle(&bytes, &owner_test_keys(), "blog", &hosts).unwrap();
+    assert_eq!(vb.bundle.schema_version, 2);
+    let (mut settings, keys) = settings_and_keys("token.keys.rotated.json");
+    for sdk_v2 in [false, true] {
+        settings.sdk_manifest_v2 = sdk_v2;
+        let rt = build_runtime(&settings, &keys, &vb, &BTreeMap::new()).unwrap();
+        assert_eq!(rt.schema_version, 2);
+        assert!(rt.phase2());
+        // §5.1: enabled in the bundle, available only with a v2 SDK directory.
+        assert_eq!(rt.interactive_available, sdk_v2);
+        let ix = rt.interactive.as_ref().unwrap();
+        assert!(ix.enabled);
+        assert_eq!(
+            (
+                ix.pow_bits.low,
+                ix.pow_bits.very_high,
+                ix.pow_k,
+                ix.a11y_bits
+            ),
+            (13, 19, 6, 18)
+        );
+        assert_eq!(
+            (ix.escalate_after, ix.min_pow_ms, ix.a11y_min_ms),
+            (3, 250, 2500)
+        );
+        assert_eq!(
+            ix.scoring,
+            mg_core::ScoringMode::Enforce {
+                t_pass: 0.4,
+                t_block: 0.8
+            }
+        );
+        assert_eq!(
+            (rt.default_lang, rt.help_path.as_str()),
+            ("en", "/help/verification")
+        );
+        assert_eq!(rt.privacy_path, "/privacy?section=verification");
+        assert_eq!(rt.ttl_for(&mg_core::TokenLevel::Interactive), 2400);
+        assert_eq!(rt.ttl_for(&mg_core::TokenLevel::InteractiveA11y), 600);
+        let prod = rt.env_for_host("example.com").unwrap();
+        let route = |name: &str| prod.routes.iter().find(|r| r.name == name).unwrap();
+        assert_eq!(
+            route("login").min_level,
+            Some(mg_core::ChallengeType::Interactive)
+        );
+        assert_eq!(route("signup").min_level, Some(mg_core::ChallengeType::Pow));
+        assert!(route("api").proof_required && !route("signup").proof_required);
+        let signup = prod
+            .limiters
+            .iter()
+            .find(|l| l.id == "signup-per-ip")
+            .unwrap();
+        assert_eq!(
+            signup.on_exceed,
+            mg_core::LimiterAction::Challenge(mg_core::ChallengeType::Interactive)
+        );
+    }
+}
+
+/// D-66: a schema 1 bundle is strictly Phase 1 (no interactive settings,
+/// `en` pages, `/` links), even with a v2 SDK directory; schema 2 fields of
+/// a hand-made bundle are refused.
+#[test]
+fn schema_1_bundles_stay_phase_1() {
+    let (mut settings, keys) = settings_and_keys("token.keys.json");
+    settings.sdk_manifest_v2 = true;
+    let convert = |b: &SiteBundle| {
+        let signed = sign(b);
+        let vb = verify_bundle(&signed, &owner_test_keys(), "blog", &settings.hosts)
+            .map_err(|e| format!("verify: {e}"))?;
+        build_runtime(&settings, &keys, &vb, &BTreeMap::new())
+    };
+    let rt = convert(&blog_bundle(1)).unwrap();
+    assert_eq!(rt.schema_version, 1);
+    assert!(!rt.phase2() && rt.interactive.is_none() && !rt.interactive_available);
+    assert_eq!((rt.default_lang, rt.help_path.as_str()), ("en", "/"));
+    // A schema 1 bundle with a Phase 2 route field does not verify.
+    let mut b = blog_bundle(1);
+    b.environments[0].routes[0].min_level = mg_proto::v1::ChallengeType::Pow as i32;
+    assert!(convert(&b).unwrap_err().starts_with("verify:"));
+    // Schema 2 with interactive challenges disabled: not available.
+    let mut b = mg_edge_core::testkit::http::test_site_bundle_v2("blog", &common::HOSTS, 1);
+    let rt = convert(&b).unwrap();
+    assert!(rt.phase2() && rt.interactive.is_some() && !rt.interactive_available);
+    b.challenge
+        .as_mut()
+        .unwrap()
+        .interactive
+        .as_mut()
+        .unwrap()
+        .enabled = true;
+    assert!(convert(&b).unwrap().interactive_available);
+}
+
 fn now_ms() -> i64 {
     i64::try_from(
         SystemTime::now()

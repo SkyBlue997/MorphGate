@@ -939,8 +939,10 @@ mod tests {
                     v: 1,
                     webdriver: Some(false),
                 }),
+                ix: None,
             }),
             reissued: None,
+            provider: "none",
         }
     }
 

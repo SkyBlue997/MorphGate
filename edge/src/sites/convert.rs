@@ -23,6 +23,14 @@
 //! Messages that are absent as a whole get the §8.3 defaults; present
 //! messages are used as they are (proto3 cannot tell "unset" from zero).
 //!
+//! Phase 2 (WP-E2a, docs/impl/phase2-spec.md §3.2, D-66): the bundle's
+//! `schema_version` (1: strictly Phase 1; 2: the Phase 2 fields, which
+//! `verify_bundle` has range-checked and which are used as they are, never
+//! back-filled), the interactive settings ([`InteractiveRuntime`]),
+//! `interactive_available` (§5.1: schema 2, `challenge.interactive.enabled`
+//! and a manifest v2 SDK directory), the routes' `proof` / `min_level` and
+//! `interactive` limiter challenges (schema 2 only).
+//!
 //! WP-E1b adds the per-environment Decision Core ([`EnvRuntime::core`],
 //! built by [`crate::decide::build_core`]) and the crawler verifier of the
 //! `crawler-registry` artifact ([`Intel::crawler`]).
@@ -32,7 +40,8 @@ use mg_challenge::TokenKeySet;
 use mg_core::gcra::GcraParams;
 use mg_core::policy::{Glob, NamedLists, Rule};
 use mg_core::{
-    ChallengeType, Channel, DecisionCore, LimiterAction, RouteSensitivity, UpstreamProfileKind,
+    ChallengeType, Channel, DecisionCore, LimiterAction, RouteSensitivity, ScoringMode, TokenLevel,
+    UpstreamProfileKind,
 };
 use mg_edge_core::bundle::VerifiedBundle;
 use mg_edge_core::state::builtin::ChallengeLimits;
@@ -40,7 +49,8 @@ use mg_intel::{ArtifactKind, CrawlerRegistry, CrawlerVerifier, GeoDb, IpSet};
 use mg_proto::ir::rule_from_proto;
 use mg_proto::v1::{
     ChallengeConfig, ClearanceConfig, CloudflareSiteConfig, CrawlerPolicy, EventConfig,
-    OriginHeaderConfig, RateLimit, Route, ScoringConfig, challenge_config::PowBits,
+    InteractiveConfig, OriginHeaderConfig, ProofMode, RateLimit, Route, ScoringConfig,
+    challenge_config::PowBits,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -52,6 +62,18 @@ pub struct BundleRuntime {
     pub version: u64,
     /// Lower-case hex SHA-256 of the signed bundle bytes.
     pub sha256_hex: String,
+    /// `SiteBundle.schema_version`: 1 (strictly Phase 1, D-66) or 2.
+    pub schema_version: u32,
+    /// The interactive settings; `Some` iff `schema_version = 2`.
+    pub interactive: Option<InteractiveRuntime>,
+    /// Phase 2 spec §5.1: `schema_version = 2`, `challenge.interactive.enabled`
+    /// and a manifest v2 SDK directory. `false`: `interactive` runs as `pow`.
+    pub interactive_available: bool,
+    /// `challenge.default_lang` (§7.3): `zh-CN` or `en` (`en` in schema 1).
+    pub default_lang: &'static str,
+    /// `challenge.help_path` / `privacy_path` (§12.3; `/` in schema 1).
+    pub help_path: String,
+    pub privacy_path: String,
     /// The site's monitor switch; a route's [`RouteMode`] overrides it.
     pub monitor_only: bool,
     /// Some route of some environment has `mode = enforce` (I-36): oversize
@@ -90,6 +112,8 @@ impl fmt::Debug for BundleRuntime {
             .field("site_id", &self.site_id)
             .field("version", &self.version)
             .field("sha256", &self.sha256_hex)
+            .field("schema_version", &self.schema_version)
+            .field("interactive_available", &self.interactive_available)
             .field("monitor_only", &self.monitor_only)
             .field("has_enforce_route", &self.has_enforce_route)
             .field("upstream_kind", &self.upstream_kind)
@@ -102,6 +126,24 @@ impl fmt::Debug for BundleRuntime {
 }
 
 impl BundleRuntime {
+    /// `schema_version = 2` (Phase 2 behaviour, D-66).
+    pub fn phase2(&self) -> bool {
+        self.schema_version >= 2
+    }
+
+    /// The clearance lifetime of `lvl` (§6.8), clamped to 1..=86400 s.
+    pub fn ttl_for(&self, lvl: &TokenLevel) -> u32 {
+        let c = &self.clearance;
+        let ttl = match lvl {
+            TokenLevel::Invisible => c.ttl_invisible_s,
+            TokenLevel::Pow => c.ttl_pow_s,
+            TokenLevel::Interactive => c.ttl_interactive_s,
+            TokenLevel::InteractiveA11y => c.ttl_interactive_a11y_s,
+            TokenLevel::InteractiveExt(_) => c.ttl_interactive_ext_s,
+        };
+        ttl.clamp(1, mg_challenge::MAX_TOKEN_LIFETIME_S as u32)
+    }
+
     /// The environment serving `host`.
     pub fn env_for_host(&self, host: &str) -> Option<&EnvRuntime> {
         super::select_env(&self.environments, host)
@@ -182,6 +224,10 @@ pub struct RouteRuntime {
     pub mode: RouteMode,
     /// A CHALLENGE is recorded and the request forwarded (I-37).
     pub never_challenge: bool,
+    /// `proof = required` (Phase 2 spec D-40; schema 2 only).
+    pub proof_required: bool,
+    /// `min_level` (Phase 2 spec D-64; schema 2 only).
+    pub min_level: Option<ChallengeType>,
     pub patterns: Vec<Glob>,
 }
 
@@ -230,8 +276,93 @@ impl RouteRuntime {
             redact_path: false,
             mode: RouteMode::Inherit,
             never_challenge: false,
+            proof_required: false,
+            min_level: None,
             patterns: Vec::new(),
         }
+    }
+}
+
+/// The interactive challenge settings of a schema 2 bundle
+/// (`challenge.interactive`, Phase 2 spec §3.2, §10.2, §7.9), range-checked
+/// by `verify_bundle`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InteractiveRuntime {
+    pub enabled: bool,
+    /// `self_hold`, per sub-puzzle, by risk band.
+    pub pow_bits: PowBits,
+    pub pow_k: u32,
+    /// `pow_a11y`, per sub-puzzle.
+    pub a11y_bits: u32,
+    /// `N` of D-50.
+    pub escalate_after: u32,
+    pub scoring: ScoringMode,
+    pub min_pow_ms: u32,
+    pub a11y_min_ms: u32,
+    /// `mg.ix.issue` per ip entity and its 4x ipp tier (D-67).
+    pub issue: GcraParams,
+    pub issue_ipp: GcraParams,
+    /// `mg.c.renew` per ip entity and its 4x ipp tier.
+    pub renew: GcraParams,
+    pub renew_ipp: GcraParams,
+    /// `mg.a11y.issue` per ip entity and per ipp.
+    pub a11y_ip: GcraParams,
+    pub a11y_ipp: GcraParams,
+}
+
+impl InteractiveRuntime {
+    /// From the verified `challenge.interactive`.
+    pub fn from_proto(ix: &InteractiveConfig) -> Result<Self, String> {
+        let gcra = |name: &str, rate: u32, period: u32, burst: u32| {
+            GcraParams::new(rate, period, burst)
+                .ok_or_else(|| format!("challenge.interactive.{name}: invalid GCRA parameters"))
+        };
+        let scoring = match ix.scoring_mode.as_str() {
+            "shadow" => ScoringMode::Shadow,
+            "enforce" => ScoringMode::Enforce {
+                t_pass: ix.t_pass,
+                t_block: ix.t_block,
+            },
+            other => return Err(format!("challenge.interactive.scoring_mode {other:?}")),
+        };
+        Ok(Self {
+            enabled: ix.enabled,
+            pow_bits: ix
+                .pow_bits
+                .ok_or("challenge.interactive.pow_bits: missing")?,
+            pow_k: ix.pow_k,
+            a11y_bits: ix.a11y_bits,
+            escalate_after: ix.escalate_after,
+            scoring,
+            min_pow_ms: ix.min_pow_ms,
+            a11y_min_ms: ix.a11y_min_ms,
+            issue: gcra("issue", ix.issue_rate, ix.issue_period_s, ix.issue_burst)?,
+            issue_ipp: gcra(
+                "issue",
+                ix.issue_rate.saturating_mul(4),
+                ix.issue_period_s,
+                ix.issue_burst.saturating_mul(4),
+            )?,
+            renew: gcra("renew", ix.renew_rate, ix.renew_period_s, ix.renew_burst)?,
+            renew_ipp: gcra(
+                "renew",
+                ix.renew_rate.saturating_mul(4),
+                ix.renew_period_s,
+                ix.renew_burst.saturating_mul(4),
+            )?,
+            a11y_ip: gcra(
+                "a11y_issue_per_ip",
+                ix.a11y_issue_per_ip,
+                ix.a11y_issue_period_s,
+                ix.a11y_issue_per_ip,
+            )?,
+            a11y_ipp: gcra(
+                "a11y_issue_per_ipp",
+                ix.a11y_issue_per_ipp,
+                ix.a11y_issue_period_s,
+                ix.a11y_issue_per_ipp,
+            )?,
+        })
     }
 }
 
@@ -322,6 +453,19 @@ pub fn build_runtime(
             .collect(),
     );
 
+    let schema_version = b.schema_version;
+    let phase2 = schema_version >= 2;
+    let interactive = match b.challenge.as_ref().and_then(|c| c.interactive.as_ref()) {
+        Some(ix) if phase2 => Some(InteractiveRuntime::from_proto(ix)?),
+        None if phase2 => {
+            return Err("challenge.interactive: required with schema_version 2".into());
+        }
+        _ => None,
+    };
+    // Phase 2 spec §5.1.
+    let interactive_available =
+        interactive.as_ref().is_some_and(|ix| ix.enabled) && settings.sdk_manifest_v2;
+
     let scoring = b.scoring.clone().unwrap_or_else(default_scoring);
     let crawler_policy = b
         .crawler_policy
@@ -334,7 +478,7 @@ pub fn build_runtime(
         let mut routes = Vec::with_capacity(env.routes.len());
         for r in &env.routes {
             routes.push(
-                convert_route(r, b.case_insensitive_paths)
+                convert_route(r, b.case_insensitive_paths, phase2)
                     .map_err(|e| format!("{}: {e}", at(&format!("routes[{}]", r.name))))?,
             );
         }
@@ -348,12 +492,18 @@ pub fn build_runtime(
         let mut limiters = Vec::with_capacity(env.rate_limits.len());
         for l in &env.rate_limits {
             limiters.push(
-                convert_limiter(l, &routes)
+                convert_limiter(l, &routes, phase2)
                     .map_err(|e| format!("{}: {e}", at(&format!("rate_limits[{}]", l.id))))?,
             );
         }
-        let core =
-            crate::decide::build_core(rules.clone(), lists.clone(), &scoring, &crawler_policy);
+        let core = crate::decide::build_core(
+            rules.clone(),
+            lists.clone(),
+            &scoring,
+            &crawler_policy,
+            schema_version,
+            interactive_available,
+        );
         environments.push(EnvRuntime {
             name: env.name.clone(),
             hosts: env.hosts.clone(),
@@ -382,10 +532,29 @@ pub fn build_runtime(
         .flat_map(|e| &e.routes)
         .any(|r| r.mode == RouteMode::Enforce);
 
+    let (default_lang, help_path, privacy_path) = match &challenge {
+        c if phase2 => (
+            if c.default_lang == "zh-CN" {
+                "zh-CN"
+            } else {
+                "en"
+            },
+            page_path(&c.help_path),
+            page_path(&c.privacy_path),
+        ),
+        _ => ("en", "/".to_owned(), "/".to_owned()),
+    };
+
     Ok(BundleRuntime {
         site_id: b.site_id.clone(),
         version: b.version,
         sha256_hex: vb.sha256_hex(),
+        schema_version,
+        interactive,
+        interactive_available,
+        default_lang,
+        help_path,
+        privacy_path,
         monitor_only: b.monitor_only,
         has_enforce_route,
         upstream_kind: kind,
@@ -409,7 +578,17 @@ pub fn build_runtime(
     })
 }
 
-fn convert_route(r: &Route, case_insensitive: bool) -> Result<RouteRuntime, String> {
+/// A site-relative page path (`help_path`, `privacy_path`; validated like
+/// `ret` by `verify_bundle`); `/` when empty or invalid.
+fn page_path(p: &str) -> String {
+    if mg_challenge::validate_ret(p).is_ok() {
+        p.to_owned()
+    } else {
+        "/".to_owned()
+    }
+}
+
+fn convert_route(r: &Route, case_insensitive: bool, phase2: bool) -> Result<RouteRuntime, String> {
     let channel = Channel::from_proto(r.channel)
         .filter(|c| *c != Channel::Unspecified)
         .ok_or("channel is unspecified or unknown")?;
@@ -428,6 +607,23 @@ fn convert_route(r: &Route, case_insensitive: bool) -> Result<RouteRuntime, Stri
         return Err(
             "never_challenge on a high or critical route, or with require_clearance".into(),
         );
+    }
+    // Phase 2 fields (D-40, D-64); a schema 1 bundle has them at zero
+    // (verify_bundle), and is strictly Phase 1 anyway (D-66).
+    let proof_required = match ProofMode::try_from(r.proof) {
+        Ok(ProofMode::Off) => false,
+        Ok(ProofMode::Required) => phase2,
+        Err(_) => return Err(format!("proof {} is unknown", r.proof)),
+    };
+    let min_level = match ChallengeType::from_proto(r.min_level) {
+        Some(ChallengeType::Unspecified) => None,
+        Some(t @ (ChallengeType::Invisible | ChallengeType::Pow | ChallengeType::Interactive)) => {
+            phase2.then_some(t)
+        }
+        _ => return Err(format!("min_level {} is not allowed", r.min_level)),
+    };
+    if r.never_challenge && (proof_required || min_level.is_some()) {
+        return Err("never_challenge with proof or min_level".into());
     }
     let mut sources: Vec<&str> = r.paths.iter().map(String::as_str).collect();
     // Deprecated in Phase 1: a non-empty path_glob is one more entry of paths.
@@ -458,11 +654,17 @@ fn convert_route(r: &Route, case_insensitive: bool) -> Result<RouteRuntime, Stri
         redact_path: r.redact_path,
         mode,
         never_challenge: r.never_challenge,
+        proof_required,
+        min_level,
         patterns,
     })
 }
 
-fn convert_limiter(l: &RateLimit, routes: &[RouteRuntime]) -> Result<LimiterSpec, String> {
+fn convert_limiter(
+    l: &RateLimit,
+    routes: &[RouteRuntime],
+    phase2: bool,
+) -> Result<LimiterSpec, String> {
     if l.algorithm != "gcra" {
         return Err(format!("algorithm {:?} is not gcra", l.algorithm));
     }
@@ -481,9 +683,13 @@ fn convert_limiter(l: &RateLimit, routes: &[RouteRuntime]) -> Result<LimiterSpec
             weight: l.signal_weight,
         },
         "challenge" => {
+            // `interactive` only in schema 2 (Phase 2 spec §3.2, §5.2).
             let t = ChallengeType::from_proto(l.challenge_type)
-                .filter(|t| matches!(t, ChallengeType::Invisible | ChallengeType::Pow))
-                .ok_or("challenge_type must be invisible or pow")?;
+                .filter(|t| {
+                    matches!(t, ChallengeType::Invisible | ChallengeType::Pow)
+                        || (phase2 && *t == ChallengeType::Interactive)
+                })
+                .ok_or("challenge_type must be invisible or pow (or interactive in schema 2)")?;
             LimiterAction::Challenge(t)
         }
         "rate_limit" => LimiterAction::RateLimit {
