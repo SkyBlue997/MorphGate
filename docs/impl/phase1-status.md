@@ -22,7 +22,8 @@
 | Phase 1 之后 | 构建提交号：`mg-edge --version` 输出 `0.1.0 (<12 位提交号>)`，启动日志与 `mg_edge_info{commit}` 相同（`edge/build.rs`；没有 Git 检出时为 `unknown`，可用 `MG_EDGE_COMMIT` 指定） | 完成 | PR #9 |
 | Phase 1 之后 | 运维文档：单机形态（本机 Valkey + `local_replay_authoritative`，没有 VictoriaMetrics 时 `cf audit` 第 18 项用 `/metrics` 快照判定，01 §8）；mg-edge 日志写入独立的 journald 命名空间 `morphgate`，保留 14 天（`deploy/systemd/journald@morphgate.conf`） | 完成 | PR #10 |
 | Phase 1 之后 | Lab 验收用例：`phase1-route-modes.yaml`（`mode: monitor` 路由与 `never_challenge` 路由只记录挑战并转发，阻断照常；客户端伪造的源站头被替换）；`lab-e2e` 的源站改用 `adapters/origin/` 参考实现校验 `MG-Origin-Auth`，绕过 Edge 的未签名与伪造请求 401 | 完成 | PR #11 |
-| Phase 1 之后 | 依赖审计：`deny.toml` 与 `.github/workflows/audit.yml`（cargo-deny、govulncheck、`pnpm audit`；每个 PR 与每周）、`make audit`；SDK 构建依赖 source-map-js 升到 1.2.2（GHSA-68fv-2mgg-jv7q，只影响构建工具） | 完成，待 PR 合并 | 见分支 `claude/bot-guard-takeover-zcsbs5` |
+| Phase 1 之后 | 依赖审计：`deny.toml` 与 `.github/workflows/audit.yml`（cargo-deny、govulncheck、`pnpm audit`；每个 PR 与每周）、`make audit`；首轮发现已处理：SDK 构建依赖 source-map-js 升到 1.2.2（GHSA-68fv-2mgg-jv7q，只影响构建工具）；yoke-derive 0.8.3 已撤回，升到 0.8.4；derivative 无人维护（RUSTSEC-2024-0388，只有固定版本的 pingora-core 用到，记入 `deny.toml` 的 ignore）；Go 1.25 已停止维护，govulncheck 报 9 个标准库漏洞，Go 升到 1.27 | 完成 | PR #12 |
+| Phase 1 之后 | 裁决 I-41：`mg-edge.service` 的 `ExecReload=` 第一行改为不读凭据的 `mg-edge --version`（systemd 255 不给第一行凭据，`--check-config` 在第一行必然失败，reload 做不成），并加 `RefreshOnReload=credentials`；轮换后凭据何时生效按 systemd 版本写进单元注释与 §17 | 完成，待 PR 合并 | 见分支 `claude/bot-guard-takeover-zcsbs5` |
 
 ## 2. 当前代码状态
 

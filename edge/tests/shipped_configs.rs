@@ -196,22 +196,32 @@ fn systemd_example_matches_the_unit() {
 
 /// `systemctl reload` must check the new configuration before it hands the
 /// sockets over: a failing check stops the reload and the old process keeps
-/// serving.
+/// serving. The check cannot be the first line: systemd 255 gives the first
+/// `ExecReload=` no credentials (spec I-41), so that line reads none.
 #[test]
 fn reload_checks_the_configuration_first() {
     let unit = std::fs::read_to_string(repo(UNIT)).unwrap();
     let reload = unit_values(&unit, "ExecReload");
-    assert!(reload.len() >= 3, "{reload:?}");
-    assert!(
-        reload[0].contains("/mg-edge ") && reload[0].contains("--check-config"),
-        "the first ExecReload= must be mg-edge --check-config: {reload:?}"
+    assert_eq!(reload.len(), 4, "{reload:?}");
+    assert_eq!(
+        reload[0], "/usr/local/bin/mg-edge --version",
+        "the first ExecReload= must not read credentials: {reload:?}"
     );
     assert!(
-        !reload[0].starts_with('-'),
-        "a failing check must stop the reload"
+        reload[1].contains("/mg-edge ") && reload[1].contains("--check-config"),
+        "the check must run before the signal: {reload:?}"
     );
-    assert!(reload[1].contains("kill -QUIT"), "{reload:?}");
-    assert!(reload[2].contains(" -u "), "{reload:?}");
+    assert!(
+        reload.iter().all(|c| !c.starts_with('-')),
+        "a failing line must stop the reload: {reload:?}"
+    );
+    assert!(reload[2].contains("kill -QUIT"), "{reload:?}");
+    assert!(reload[3].contains(" -u "), "{reload:?}");
+    assert_eq!(
+        unit_values(&unit, "RefreshOnReload"),
+        ["credentials"],
+        "systemd 260+: reload picks up changed credentials"
+    );
 }
 
 /// Every `mg-edge` command line in the unit, run with `--check-config` against
