@@ -1,8 +1,8 @@
 # Phase 2 进度记录
 
 **更新时间**：2026-10-12
-**分支**：每个工作包一个 PR，合入 `master`（PR #19–#38 已合入）；本文件随 WP-D2 的 PR #40 提交。
-**状态**：规格、契约落地、阶段 1（7 个 WP）与阶段 2（E2a → E2b → E2c）已合入；阶段 3 中设计文档勘误（WP-D2）随本文件提交，Validation Lab 的 Phase 2 场景（WP-L2）进行中。代码侧的 Phase 2 功能全部关闭在配置之后：`schema_version = 1` 的配置包让新二进制严格按 Phase 1 运行（D-66）。下一步是所有者按 [规格 §19](phase2-spec.md#19-所有者运维手册代码之外) 逐步启用。
+**分支**：每个工作包一个 PR，合入 `master`（PR #19–#40 已合入）；本文件由 WP-D2 的 PR #40 添加，之后的小 PR 补记了 WP-L2 的合入。
+**状态**：规格、契约落地、阶段 1（7 个 WP）与阶段 2（E2a → E2b → E2c）已合入；阶段 3 的 Validation Lab 场景与近线端到端（WP-L2，PR #39）已合入，设计文档勘误（WP-D2，PR #40）已合入。代码侧的 Phase 2 功能全部关闭在配置之后：`schema_version = 1` 的配置包让新二进制严格按 Phase 1 运行（D-66）。下一步是所有者按 [规格 §19](phase2-spec.md#19-所有者运维手册代码之外) 逐步启用。
 
 ## 0. 给所有者的摘要
 
@@ -38,8 +38,8 @@
 | 阶段 1 | 7 个并行 WP：R4、R5、C5、C6、G4、N1、W2（见 §2） | 完成 | #22–#30 |
 | 阶段 2 | E2a → E2b → E2c 依次合入 `mg-edge`（见 §2） | 完成 | #32–#37 |
 | 裁决 | I-43..I-47（契约落地）、I-48..I-54（阶段 1）、I-55..I-57（阶段 2） | 完成 | #21、#31、#38 |
-| 阶段 3 | WP-L2：Validation Lab 的 Phase 2 场景与近线端到端 | 进行中（PR 已开，尚未合入） | #39 |
-| 阶段 3 | WP-D2：设计文档勘误、威胁模型 v1、ADR-0011、隐私说明模板、本文件 | 随本 PR 提交 | #40 |
+| 阶段 3 | WP-L2：Validation Lab 的 Phase 2 场景与近线端到端 | 完成 | #39 |
+| 阶段 3 | WP-D2：设计文档勘误、威胁模型 v1、ADR-0011、隐私说明模板、本文件 | 完成 | #40 |
 | 所有者运行步骤 | 规格 §19 第 0–11 步 | 未开始 | — |
 
 每个 PR 都在 `master` 规则集要求的全部检查通过后合入。
@@ -58,7 +58,7 @@
 | E2a mg-edge 交互式 | 配置包 schema 1 / 2、交互式签发与挑战页 v2 / JSON 挑战、`/__mg/c` v2、`/__mg/c/renew`、失败升级、`mg.ix.issue` / `mg.c.renew` / `mg.a11y.issue`、`/__mg/v?min=interactive`、SDK 目录 v1 / v2 与 `/__mg/s/mg.js`；manifest v2 切换（SDK 0.3.0、mg-edge 0.2.0）；cargo-fuzz `mg_proof`、`submission_v2`、`renew`、`ix_telemetry` | #32 |
 | E2b mg-edge 证明与观测 | 路由上的 `MG-Proof` 与 `jti`、就地恢复、D-61 Cookie 删除、`force_monitor`（D-60）、`/__mg/r`、`/__mg/t`、`mg:ev` v2 接线、Phase 2 事件与指标、I-35 复审、关闭时的刷写、Edge ACL、告警规则与每日检查脚本；cargo-fuzz `refresh`、`telemetry` | #33、#34、#35 |
 | E2c mg-edge Turnstile | Provider 接线、国家判定、CSP、token 重放、后台服务 `mg-outbound`、熔断与自动禁用、`turnstile_keys` 凭证、`[outbound]` 与 `MG_EDGE_TEST_OUTBOUND`；cargo-fuzz `siteverify_response`、`turnstile_keys`；`MgTurnstileDisabled` 告警 | #36、#37 |
-| L2 Validation Lab | Phase 2 的否定性场景（交互式挑战页不引用第三方源、`denied_countries` 中的国家不得到 Turnstile、重放 / 篡改 / 未提供的 Provider 一律失败、外部 `CF-Worker` 403）与 `lab-e2e` 中的近线端到端 | 进行中（#39，尚未合入） |
+| L2 Validation Lab | Phase 2 的否定性场景（交互式挑战页不引用第三方源、`denied_countries` 中的国家不得到 Turnstile、重放 / 篡改 / 未提供的 Provider 一律失败、外部 `CF-Worker` 403）与 `lab-e2e` 中的近线端到端：同一个回环 Edge 上另有一个 `schema_version = 2` 的站点（交互式与 Turnstile，siteverify 为记录每次调用的回环 mock，`deny_countries: [CN]`）；场景 `phase2-challenge-page`、`phase2-submissions`、`phase2-nearline-baits` / `-after`；`mglab events providers` 与 `nearline` | #39 |
 | D2 文档 | 01–10 与 ADR-0005 / 0006 / 0007 / 0008 / 0010 的 Phase 2 勘误（2026-10-12）、威胁模型 v1、ADR-0011、隐私说明模板、07 进度表、README 与 CLAUDE.md | #40 |
 
 ## 3. 集成者裁决
@@ -87,19 +87,19 @@ WP-D2 的偏离：没有改变契约。两处写法需要说明：
 
 | 验收项（[规格 §20](phase2-spec.md#20-验收映射)） | 状态 | 谁 |
 |---|---|---|
-| 重放、拼接、篡改的 C 100% 拒绝 | `edge/tests/interactive_flow.rs` 通过；Lab 否定性场景随 WP-L2 | WP-E2a（完成）、WP-L2 |
+| 重放、拼接、篡改的 C 100% 拒绝 | `edge/tests/interactive_flow.rs` 通过；Lab `make lab-e2e` 的 `phase2-submissions` 场景通过（录制的提交重放两次、篡改与截断的 C、未提供的 Provider 一律失败，没有 Cookie、跳转或新 C） | WP-E2a、WP-L2（完成） |
 | 跨客户端提交 100% 拒绝（只对已绑定的 C 声明） | `edge/tests/interactive_flow.rs::replay_splice_tamper_and_cross_client` 通过；同一 ASN 内换 /24 只记软结果（D-41 的已知边界） | WP-E2a（完成） |
 | 并发双提交恰好一个进入签发 | 对真实 Valkey 的并发测试通过 | WP-C5、WP-E2a（完成） |
 | Turnstile 绑定失败 100% 拒绝；故障时回退且不放行；通过、失败、重复 token 三条路径在 CI 中覆盖 | mock siteverify 用例与 SDK 回退测试通过 | WP-C6、WP-E2c、WP-W2（完成） |
-| `denied_countries` 中的国家从不得到 Turnstile；大陆访客的 Turnstile 失败时回退且不计失败 | 选择函数真值表、Edge 与 SDK 测试通过；Lab 场景随 WP-L2 | WP-R4、WP-E2c、WP-W2（完成）、WP-L2 |
+| `denied_countries` 中的国家从不得到 Turnstile；大陆访客的 Turnstile 失败时回退且不计失败 | 选择函数真值表、Edge 与 SDK 测试通过；Lab `phase2-challenge-page` 通过（CN、未知、`XX`、`T1` 与格式错误的国家在页面、JSON 挑战与 `/__mg/v` 上都不得到 Turnstile，US / DE 作正向对照；siteverify mock 没有收到调用） | WP-R4、WP-E2c、WP-W2、WP-L2（完成） |
 | 人类被要求交互式挑战的比例 < 0.1% | 指标已提供（`mg_nl_interactive_visitor_share`、`mg_nl_interactive_abandon_share`、`mg_navigations_total`），待 shadow 数据 | 所有者 |
 | 按住中位 < 4 s；`pow_a11y` 中位 < 10 s | `kind=feedback` 的 `ix.act_ms` 已提供，待真实设备数据 | 所有者 |
 | 只用键盘、用读屏软件都能完成 | SDK 的结构、播报与焦点测试通过；辅助技术实测待所有者 | WP-W2（完成）、所有者 |
 | 页面打开 30 分钟后仍能完成，不显示倒计时 | 续期链测试通过；手工验证待所有者 | WP-E2a（完成）、所有者 |
-| `self_hold` 页面零第三方请求 | 模板与 CSP 测试通过；Lab 场景随 WP-L2；浏览器网络面板核对待所有者 | WP-W2（完成）、WP-L2、所有者 |
+| `self_hold` 页面零第三方请求 | 模板与 CSP 测试通过；Lab `phase2-challenge-page` 通过；浏览器网络面板核对待所有者 | WP-W2、WP-L2（完成）、所有者 |
 | 挑战页与 `/__mg/*` 为 `no-store, private` | Edge 测试通过 | WP-E2a（完成） |
 | 遥测 ≤ 2 KB，没有原始坐标与按键值 | SDK 与解析器测试、共享样例通过 | WP-W2、WP-C5（完成） |
-| 近线事件到 verdict 的 p95 < 10 s | 待 `lab-e2e`（WP-L2）与生产 `mg_nl_lag_seconds` | WP-N1（完成）、WP-L2、所有者 |
+| 近线事件到 verdict 的 p95 < 10 s | `lab-e2e` 中 shadow 与 enforce 的 verdict 都在触发请求后 ≤ 10 s 出现，enforce 的 verdict 让下一个请求被挑战而不是阻断；生产按 `mg_nl_lag_seconds` 与 `mg_nl_backlog` 待所有者 | WP-N1、WP-L2（完成）、所有者 |
 | 附加延迟 p99 < 5 ms（含证明校验） | 待生产或 staging 数据 | 所有者 |
 | 升级二进制不改变线上行为 | `schema_version = 1` 的 Edge 测试通过；升级前后比较待所有者（§19 第 3a 步） | WP-E2a、WP-E2b（完成）、所有者 |
 
