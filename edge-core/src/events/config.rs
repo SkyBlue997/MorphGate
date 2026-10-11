@@ -39,6 +39,18 @@ pub struct EventsConfig {
     pub queue_sampled: usize,
     /// `XADD mg:ev MAXLEN ~ <stream_maxlen>`.
     pub stream_maxlen: u64,
+    /// Phase 2 (docs/impl/phase2-spec.md §9.7, §10.1): how long the flusher
+    /// keeps accepting and delivering events after the shutdown signal,
+    /// before the Phase 1 final flush. `None` (absent): mg-edge computes
+    /// `min(2000, max(0, grace_period_seconds * 1000 - 1000))` and checks a
+    /// set value against `[server]` (`EdgeConfig::validate`, WP-E2b);
+    /// [`EventsConfig::validate`] only checks `0..=10000`. The flusher uses
+    /// [`EventsConfig::shutdown_drain`].
+    pub shutdown_drain_ms: Option<u64>,
+    /// Phase 2 (§9.4, §10.1): capacity of the `kind=telemetry` queue of
+    /// `POST /__mg/t` ([`super::EventClass::Telemetry`]); when it is full
+    /// only telemetry is dropped.
+    pub queue_telemetry: usize,
 }
 
 impl Default for EventsConfig {
@@ -54,6 +66,8 @@ impl Default for EventsConfig {
             queue_access: 16384,
             queue_sampled: 8192,
             stream_maxlen: 300_000,
+            shutdown_drain_ms: None,
+            queue_telemetry: 2048,
         }
     }
 }
@@ -65,10 +79,28 @@ const BATCH_LINES: (usize, usize) = (1, 100_000);
 const BATCH_BYTES: (usize, usize) = (1024, 64 * 1024 * 1024);
 const QUEUE_CAPACITY: (usize, usize) = (1, 1 << 20);
 const STREAM_MAXLEN: (u64, u64) = (1, 100_000_000);
+/// Phase 2 spec §10.1.
+const SHUTDOWN_DRAIN_MS: (u64, u64) = (0, 10_000);
+/// Phase 2 spec §10.1.
+const QUEUE_TELEMETRY: (usize, usize) = (64, 65_536);
 
 impl EventsConfig {
+    /// The shutdown drain the flusher applies: `shutdown_drain_ms`, or zero
+    /// (the Phase 1 behaviour) while it is absent, i.e. until mg-edge has
+    /// resolved its default from the grace period (Phase 2 spec §10.1).
+    /// Clamped to the `0..=10000` range.
+    pub fn shutdown_drain(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            self.shutdown_drain_ms.unwrap_or(0).min(SHUTDOWN_DRAIN_MS.1),
+        )
+    }
+
     /// Checks every value; the error names the first offending key.
     pub fn validate(&self) -> Result<(), EventsError> {
+        if let Some(ms) = self.shutdown_drain_ms {
+            in_range("shutdown_drain_ms", ms, SHUTDOWN_DRAIN_MS)?;
+        }
+        in_range("queue_telemetry", self.queue_telemetry, QUEUE_TELEMETRY)?;
         in_range(
             "flush_interval_ms",
             self.flush_interval_ms,
@@ -143,7 +175,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_out_of_range_values() {
-        let cases: [(&str, Mutation); 8] = [
+        let cases: [(&str, Mutation); 11] = [
+            ("shutdown_drain_ms", |c| c.shutdown_drain_ms = Some(10_001)),
+            ("queue_telemetry", |c| c.queue_telemetry = 63),
+            ("queue_telemetry", |c| c.queue_telemetry = 65_537),
             ("flush_interval_ms", |c| c.flush_interval_ms = 0),
             ("max_batch_lines", |c| c.max_batch_lines = 0),
             ("max_batch_bytes", |c| c.max_batch_bytes = 10),
@@ -158,6 +193,43 @@ mod tests {
             mutate(&mut cfg);
             let err = cfg.validate().unwrap_err().to_string();
             assert!(err.contains(key), "{key}: {err}");
+        }
+    }
+
+    /// Phase 2 §10.1: the new keys, their defaults and bounds.
+    #[test]
+    fn phase2_keys() {
+        let cfg = EventsConfig::default();
+        assert_eq!(cfg.shutdown_drain_ms, None);
+        assert_eq!(cfg.queue_telemetry, 2048);
+        assert_eq!(cfg.shutdown_drain(), std::time::Duration::ZERO);
+        let cfg: EventsConfig =
+            serde_json::from_str(r#"{"shutdown_drain_ms": 0, "queue_telemetry": 64}"#).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.shutdown_drain_ms, Some(0));
+        for (ms, ok) in [(0, true), (1500, true), (10_000, true), (10_001, false)] {
+            let cfg = EventsConfig {
+                shutdown_drain_ms: Some(ms),
+                ..EventsConfig::default()
+            };
+            assert_eq!(cfg.validate().is_ok(), ok, "{ms}");
+        }
+        let cfg = EventsConfig {
+            shutdown_drain_ms: Some(1500),
+            ..EventsConfig::default()
+        };
+        assert_eq!(cfg.shutdown_drain(), std::time::Duration::from_millis(1500));
+        let cfg = EventsConfig {
+            shutdown_drain_ms: Some(u64::MAX),
+            ..EventsConfig::default()
+        };
+        assert_eq!(cfg.shutdown_drain(), std::time::Duration::from_secs(10));
+        for (n, ok) in [(63, false), (64, true), (65_536, true), (65_537, false)] {
+            let cfg = EventsConfig {
+                queue_telemetry: n,
+                ..EventsConfig::default()
+            };
+            assert_eq!(cfg.validate().is_ok(), ok, "{n}");
         }
     }
 

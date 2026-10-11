@@ -13,8 +13,8 @@
 use crate::bundle::{OwnerKeys, signing_input};
 use mg_proto::v1::{
     ChallengeConfig, Channel, ClearanceConfig, CloudflareSiteConfig, CrawlerPolicy, Environment,
-    EventConfig, OriginHeaderConfig, Route, RouteSensitivity, ScoringConfig, SignedBundle,
-    SiteBundle, UpstreamProfile, UpstreamProfileKind, challenge_config::PowBits,
+    EventConfig, InteractiveConfig, OriginHeaderConfig, Route, RouteSensitivity, ScoringConfig,
+    SignedBundle, SiteBundle, UpstreamProfile, UpstreamProfileKind, challenge_config::PowBits,
 };
 use prost::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -165,6 +165,60 @@ pub fn test_site_bundle(site_id: &str, hosts: &[&str], version: u64) -> SiteBund
         hosts,
         ..Default::default()
     }
+}
+
+/// [`test_site_bundle`] as a `schema_version = 2` bundle (Phase 2 spec
+/// §3.2, §10.2): every Phase 2 field at the site YAML default, interactive
+/// challenges disabled, no provider.
+pub fn test_site_bundle_v2(site_id: &str, hosts: &[&str], version: u64) -> SiteBundle {
+    let mut b = test_site_bundle(site_id, hosts, version);
+    b.schema_version = 2;
+    if let Some(c) = b.challenge.as_mut() {
+        c.default_lang = "zh-CN".into();
+        c.help_path = "/".into();
+        c.privacy_path = "/".into();
+        c.interactive = Some(InteractiveConfig {
+            enabled: false,
+            pow_bits: Some(PowBits {
+                low: 14,
+                medium: 16,
+                high: 18,
+                very_high: 19,
+            }),
+            pow_k: 8,
+            a11y_bits: 17,
+            escalate_after: 2,
+            scoring_mode: "shadow".into(),
+            t_pass: 0.0,
+            t_block: 0.0,
+            min_pow_ms: 0,
+            issue_rate: 30,
+            issue_period_s: 600,
+            issue_burst: 20,
+            a11y_issue_per_ip: 6,
+            a11y_issue_period_s: 3600,
+            a11y_min_ms: 2000,
+            renew_rate: 30,
+            renew_period_s: 600,
+            renew_burst: 10,
+            a11y_issue_per_ipp: 120,
+        });
+    }
+    if let Some(c) = b.clearance.as_mut() {
+        c.ttl_interactive_s = 1800;
+        c.ttl_interactive_a11y_s = 900;
+        c.ttl_interactive_ext_s = 1800;
+        c.refresh = false;
+        c.refresh_max_interactive_s = 14_400;
+        c.refresh_max_ext_s = 7200;
+        c.refresh_max_pow_s = 3600;
+    }
+    if let Some(e) = b.events.as_mut() {
+        e.telemetry_behavior = false;
+        e.scanner_baits_builtin = true;
+        e.scanner_baits = Vec::new();
+    }
+    b
 }
 
 /// Lower-case hex SHA-256.

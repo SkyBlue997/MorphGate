@@ -22,6 +22,12 @@
 //! | [`StateHandle::record_failure`] | async `EVALSHA mg_gcra` by one consumer | local GCRA table |
 //! | [`StateHandle::xadd_batch`] | one pipeline of `XADD mg:ev MAXLEN ~ n *` | error (the caller counts a drop) |
 //! | [`StateHandle::local_check`] | never | local GCRA table (`scope = local`) |
+//! | [`StateHandle::round_trip1_v2`] (Phase 2) | as `round_trip1`, plus `EVALSHA mg_jti` after the local `jti` check | as `round_trip1`; the local `jti` verdict only under the §9.2 conditions |
+//! | [`StateHandle::nonce_issue_v2`] (Phase 2) | `EVALSHA mg_nonce_issue` v2 after the local nonce and token checks | local nonce and token sets + local GCRA table (all-or-nothing) |
+//!
+//! Phase 2 (docs/impl/phase2-spec.md §9.2, §14; WP-C5) adds the second pair
+//! as new entry points; the Phase 1 calls keep their behaviour until the
+//! stage 2 switch (§2.3). The Edge loads all four scripts at connect time.
 //!
 //! # Circuit breaker
 //!
@@ -80,11 +86,20 @@ pub use service::{StateHandle, StateService, StateStatus};
 pub const MG_GCRA_LUA: &str = include_str!("state/lua/mg_gcra.lua");
 /// `mg_nonce_issue` v1 (spec §9.7, D-37), byte-for-byte as specified.
 pub const MG_NONCE_ISSUE_LUA: &str = include_str!("state/lua/mg_nonce_issue.lua");
+/// `mg_nonce_issue` v2 (Phase 2 spec §14.2), byte-for-byte as specified:
+/// the nonce, then at most one provider-token replay key, then the issuance
+/// quotas (all-or-nothing).
+pub const MG_NONCE_ISSUE_V2_LUA: &str = include_str!("state/lua/mg_nonce_issue_v2.lua");
+/// `mg_jti` v1 (Phase 2 spec §9.2, §14.2), byte-for-byte as specified.
+pub const MG_JTI_LUA: &str = include_str!("state/lua/mg_jti.lua");
 
 /// HMAC domain of entity keys (`mg:v:*` verdict keys, `mg:ev` `ipk` / `pfk`).
 pub const ENTITY_DOMAIN: &str = "mg-ent-v1";
 /// HMAC domain of limiter keys (`mg:rl:*`).
 pub const LIMITER_DOMAIN: &str = "mg-rl-v1";
+/// HMAC domain of the per-key part `kj` of `mg:jti:*` / `mg:jc:*` (Phase 2
+/// spec §9.2): `kj = kh("mg-jti-v1", "jkt", jkt)`.
+pub const JTI_DOMAIN: &str = "mg-jti-v1";
 /// Value of an unknown `ip` / `ip_prefix` / `asn` dimension: one shared
 /// fallback bucket, never skipped (D-23).
 pub const UNKNOWN_DIM: &str = "?";
@@ -115,6 +130,23 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 10;
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 500;
 pub const DEFAULT_LOCAL_LIMITER_CAPACITY: usize = 200_000;
 pub const DEFAULT_LOCAL_NONCE_CAPACITY: usize = 200_000;
+/// `[valkey] local_jti_capacity` default (Phase 2 spec §10.1).
+pub const DEFAULT_LOCAL_JTI_CAPACITY: usize = 100_000;
+/// `[valkey] local_rp_capacity` default (Phase 2 spec §10.1).
+pub const DEFAULT_LOCAL_RP_CAPACITY: usize = 10_000;
+
+/// `mg:jti:*` lifetime (Phase 2 spec §9.2): `SET … NX EX 40`.
+pub const JTI_TTL_S: u64 = 40;
+/// Window of the per-key `jti` counter `mg:jc:*` (Phase 2 spec §9.2).
+pub const JTI_COUNTER_WINDOW_MS: u64 = 60_000;
+/// `jti`s per session key and counter window; beyond it every proof of that
+/// key counts as a replay of that key (Phase 2 spec §9.2).
+pub const JTI_PER_KEY_LIMIT: u32 = 600;
+/// A proof's `iat` may be at most this far ahead of `now` (Phase 2 spec
+/// §6.7); the local `jti` verdict uses it in its start-time rule (§9.2).
+pub const JTI_IAT_SKEW_S: i64 = 5;
+/// Lifetime of a provider-token replay key `mg:rp:*` (Phase 2 spec §14.1).
+pub const TOKEN_REPLAY_TTL_MS: u64 = 300_000;
 
 /// `kh(domain, type, value) = lower_hex(HMAC-SHA256(K_pseudo, domain ‖ 0x00 ‖
 /// type ‖ 0x00 ‖ value))[0..32]` (spec §9.7; KAT `kat.json` `entity_key`).
@@ -145,6 +177,36 @@ pub fn verdict_key(site: &str, typ: &str, key: &str) -> String {
 /// `mg:n:{site}:{nonce_hex}`.
 pub fn nonce_key(site: &str, nonce: &[u8; 16]) -> String {
     format!("mg:n:{site}:{}", lower_hex(nonce))
+}
+
+/// `kj = kh("mg-jti-v1", "jkt", jkt)` of a session key's 43-character JWK
+/// thumbprint (Phase 2 spec §9.2). The thumbprint itself never appears in a
+/// key, a log line or `Debug` output (§2.4 item 10).
+pub fn jti_key_hash(k_pseudo: &[u8; 32], jkt: &str) -> String {
+    kh(k_pseudo, JTI_DOMAIN, "jkt", jkt)
+}
+
+/// `mg:jti:{site}:{kj}:{jti}` (Phase 2 spec §14.1).
+pub fn jti_key(site: &str, kj: &str, jti: &str) -> String {
+    format!("mg:jti:{site}:{kj}:{jti}")
+}
+
+/// `mg:jc:{site}:{kj}`: the per-key `jti` counter (Phase 2 spec §14.1).
+pub fn jti_count_key(site: &str, kj: &str) -> String {
+    format!("mg:jc:{site}:{kj}")
+}
+
+/// `th = lower_hex(SHA-256(token))[0..32]` of a provider token (Phase 2 spec
+/// §14.1).
+pub fn token_hash(token: &str) -> String {
+    use sha2::Digest as _;
+    lower_hex(&Sha256::digest(token.as_bytes())[..16])
+}
+
+/// `mg:rp:{site}:{provider}:{th}` (Phase 2 spec §14.1); `th` from
+/// [`token_hash`].
+pub fn replay_key(site: &str, provider: &str, th: &str) -> String {
+    format!("mg:rp:{site}:{provider}:{th}")
 }
 
 /// Limiter `dims`: `name=value` pairs in the limiter's declared key order,
@@ -328,6 +390,201 @@ pub enum NonceResult {
     },
 }
 
+/// A provider token's replay key in `mg_nonce_issue` v2 (Phase 2 spec
+/// §14.1, §14.2): `mg:rp:{site}:{provider}:{th}`, kept for
+/// [`TOKEN_REPLAY_TTL_MS`]. Only the token's hash is held.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TokenReplay {
+    /// Provider id (`turnstile`).
+    pub provider: String,
+    /// [`token_hash`] of the token.
+    pub token_hash: String,
+}
+
+impl TokenReplay {
+    /// The replay key of `token` (never stored itself).
+    pub fn new(provider: impl Into<String>, token: &str) -> Self {
+        Self {
+            provider: provider.into(),
+            token_hash: token_hash(token),
+        }
+    }
+}
+
+impl fmt::Debug for TokenReplay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenReplay")
+            .field("provider", &self.provider)
+            .field("token_hash", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Round trip 2 of `POST /__mg/c` v2 and `POST /__mg/c/renew` (Phase 2 spec
+/// §14.2, §14.3): the sealed challenge's nonce, the provider token's replay
+/// key (`p = turnstile`) and the issuance quotas. A renewal sends only the
+/// nonce (`replay: None`, no limits).
+#[derive(Clone, PartialEq, Eq)]
+pub struct NonceIssueV2 {
+    pub site: String,
+    pub nonce: [u8; 16],
+    /// `exp_ms − now_ms + 60000`; clamped to `1..=MAX_NONCE_TTL_MS`.
+    pub ttl_ms: u64,
+    pub replay: Option<TokenReplay>,
+    pub limits: Vec<LimitCheck>,
+}
+
+impl fmt::Debug for NonceIssueV2 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NonceIssueV2")
+            .field("site", &self.site)
+            .field("nonce", &"<redacted>")
+            .field("ttl_ms", &self.ttl_ms)
+            .field("replay", &self.replay)
+            .field("limits", &self.limits)
+            .finish()
+    }
+}
+
+/// Outcome of [`StateHandle::nonce_issue_v2`] (Phase 2 spec §14.2, §14.4).
+///
+/// As [`NonceResult`], plus [`NonceResultV2::TokenReused`]: the provider
+/// token was presented before (`ic.ts_dup`); the nonce **is** consumed, no
+/// quota is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NonceResultV2 {
+    /// The nonce was used before (`ic.nonce_reused`); nothing else changed.
+    Reused,
+    /// The provider token was used before; the nonce is consumed.
+    TokenReused,
+    Fresh {
+        limits: Vec<GcraOutcome>,
+    },
+    /// No authoritative replay check (Phase 1 spec §9.7 rules 3-4).
+    Unavailable {
+        limits: Vec<GcraOutcome>,
+    },
+}
+
+/// The `MG-Proof` replay check of a request (Phase 2 spec §9.2), part of
+/// [`RoundTrip1V2`]. Only for proofs that passed §6.7.
+#[derive(Clone, PartialEq, Eq)]
+pub struct JtiCheck {
+    pub site: String,
+    /// [`jti_key_hash`] of the proof key's thumbprint.
+    pub kj: String,
+    /// The proof's 22-character `jti`, verbatim.
+    pub jti: String,
+    /// The proof's `iat` (Unix seconds).
+    pub iat_s: i64,
+}
+
+impl JtiCheck {
+    /// Computes `kj` from the thumbprint `jkt`.
+    pub fn new(
+        site: impl Into<String>,
+        k_pseudo: &[u8; 32],
+        jkt: &str,
+        jti: impl Into<String>,
+        iat_s: i64,
+    ) -> Self {
+        Self {
+            site: site.into(),
+            kj: jti_key_hash(k_pseudo, jkt),
+            jti: jti.into(),
+            iat_s,
+        }
+    }
+
+    /// `mg:jti:{site}:{kj}:{jti}`.
+    pub fn key(&self) -> String {
+        jti_key(&self.site, &self.kj, &self.jti)
+    }
+
+    /// `mg:jc:{site}:{kj}`.
+    pub fn count_key(&self) -> String {
+        jti_count_key(&self.site, &self.kj)
+    }
+}
+
+impl fmt::Debug for JtiCheck {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JtiCheck")
+            .field("site", &self.site)
+            .field("kj", &"<redacted>")
+            .field("jti", &"<redacted>")
+            .field("iat_s", &self.iat_s)
+            .finish()
+    }
+}
+
+/// Result of a [`JtiCheck`] (Phase 2 spec §9.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JtiOutcome {
+    /// First use of this `jti`.
+    Fresh,
+    /// `proof.replay`: the `jti` was used before.
+    Replayed,
+    /// The key exceeded [`JTI_PER_KEY_LIMIT`] proofs per window; treated as
+    /// a replay of this key only (not a global overflow).
+    KeyQuota,
+    /// No authoritative answer: "replay store unavailable".
+    Unavailable,
+}
+
+impl JtiOutcome {
+    /// [`JtiOutcome::Replayed`] or [`JtiOutcome::KeyQuota`].
+    pub fn is_replay(self) -> bool {
+        matches!(self, Self::Replayed | Self::KeyQuota)
+    }
+}
+
+/// Round trip 1 of a Phase 2 request (Phase 2 spec §14.3): as
+/// [`RoundTrip1`], plus `EVALSHA mg_jti` in the same pipeline when the
+/// request carries a valid proof.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct RoundTrip1V2 {
+    pub verdict_keys: Vec<String>,
+    pub limits: Vec<LimitCheck>,
+    pub jti: Option<JtiCheck>,
+}
+
+impl fmt::Debug for RoundTrip1V2 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RoundTrip1V2")
+            .field("verdict_keys", &self.verdict_keys.len())
+            .field("limits", &self.limits)
+            .field("jti", &self.jti)
+            .finish()
+    }
+}
+
+/// Result of [`StateHandle::round_trip1_v2`].
+#[derive(Clone, PartialEq, Eq)]
+pub struct RoundTrip1V2Result {
+    /// As [`RoundTrip1Result::verdicts`].
+    pub verdicts: Vec<Option<String>>,
+    /// As [`RoundTrip1Result::limits`].
+    pub limits: Vec<GcraOutcome>,
+    /// Where the limiter outcomes came from.
+    pub mode: StateMode,
+    /// `Some` iff [`RoundTrip1V2::jti`] was set.
+    pub jti: Option<JtiOutcome>,
+}
+
+impl fmt::Debug for RoundTrip1V2Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let present = self.verdicts.iter().filter(|v| v.is_some()).count();
+        f.debug_struct("RoundTrip1V2Result")
+            .field("verdicts_present", &present)
+            .field("verdicts", &self.verdicts.len())
+            .field("limits", &self.limits)
+            .field("mode", &self.mode)
+            .field("jti", &self.jti)
+            .finish()
+    }
+}
+
 /// Configured mode (`edge.toml` `[valkey] mode`), and the source of a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StateMode {
@@ -383,6 +640,12 @@ pub struct StateConfig {
     pub local_replay_authoritative: bool,
     pub local_limiter_capacity: usize,
     pub local_nonce_capacity: usize,
+    /// `[valkey] local_jti_capacity` (Phase 2 spec §9.2, §10.1): the
+    /// in-process `MG-Proof` `jti` set and its per-key counters.
+    pub local_jti_capacity: usize,
+    /// `[valkey] local_rp_capacity` (Phase 2 spec §14.4): the in-process
+    /// provider-token replay set.
+    pub local_rp_capacity: usize,
     /// `K_pseudo` (`pseudo.key.json`, §12.7).
     pub k_pseudo: [u8; 32],
     /// Unix ms at which this process started: sealed challenges issued
@@ -403,6 +666,8 @@ impl StateConfig {
             local_replay_authoritative: false,
             local_limiter_capacity: DEFAULT_LOCAL_LIMITER_CAPACITY,
             local_nonce_capacity: DEFAULT_LOCAL_NONCE_CAPACITY,
+            local_jti_capacity: DEFAULT_LOCAL_JTI_CAPACITY,
+            local_rp_capacity: DEFAULT_LOCAL_RP_CAPACITY,
             k_pseudo,
             process_start_ms: unix_now_ms(),
             breaker: BreakerConfig::default(),
@@ -425,7 +690,11 @@ impl StateConfig {
         if self.timeout_ms == 0 || self.connect_timeout_ms == 0 {
             return Err(StateError::Config("timeouts must be >= 1 ms".into()));
         }
-        if self.local_limiter_capacity == 0 || self.local_nonce_capacity == 0 {
+        if self.local_limiter_capacity == 0
+            || self.local_nonce_capacity == 0
+            || self.local_jti_capacity == 0
+            || self.local_rp_capacity == 0
+        {
             return Err(StateError::Config("local capacities must be >= 1".into()));
         }
         let b = &self.breaker;
@@ -456,6 +725,8 @@ impl fmt::Debug for StateConfig {
             )
             .field("local_limiter_capacity", &self.local_limiter_capacity)
             .field("local_nonce_capacity", &self.local_nonce_capacity)
+            .field("local_jti_capacity", &self.local_jti_capacity)
+            .field("local_rp_capacity", &self.local_rp_capacity)
             .field("k_pseudo", &"<redacted>")
             .field("process_start_ms", &self.process_start_ms)
             .field("breaker", &self.breaker)

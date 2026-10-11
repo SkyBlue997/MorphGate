@@ -3,7 +3,7 @@
 use super::keys::OwnerKeys;
 use super::util::{hex_lower, sha256};
 use super::{
-    BundleError, MAX_BUNDLE_BYTES, MAX_SIGNED_BUNDLE_BYTES, SCHEMA_VERSION, SIGNING_DOMAIN,
+    BundleError, MAX_BUNDLE_BYTES, MAX_SIGNED_BUNDLE_BYTES, SCHEMA_VERSIONS, SIGNING_DOMAIN,
 };
 use mg_proto::v1::{SignedBundle, SiteBundle};
 use prost::Message as _;
@@ -87,7 +87,7 @@ pub fn verify_bundle(
         what: "SiteBundle",
         detail: e.to_string(),
     })?;
-    if bundle.schema_version != SCHEMA_VERSION {
+    if !SCHEMA_VERSIONS.contains(&bundle.schema_version) {
         return Err(BundleError::SchemaVersion(bundle.schema_version));
     }
     if bundle.site_id != site_id {

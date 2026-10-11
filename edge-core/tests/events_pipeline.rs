@@ -55,9 +55,9 @@ fn record(class: EventClass, seq: usize) -> EventRecord {
     let kind = match class {
         EventClass::Priority => "decision",
         EventClass::Access => "access",
-        EventClass::Sampled => "telemetry",
+        EventClass::Sampled | EventClass::Telemetry => "telemetry",
     };
-    let target = if class == EventClass::Sampled {
+    let target = if matches!(class, EventClass::Sampled | EventClass::Telemetry) {
         Sink::Short
     } else {
         Sink::Main
@@ -1112,7 +1112,7 @@ fn metrics_register_with_all_label_combinations() {
     labels.sort();
     let mut want = Vec::new();
     for sink in ["buffer", "file", "stream", "victorialogs"] {
-        for class in ["access", "priority", "sampled"] {
+        for class in ["access", "priority", "sampled", "telemetry"] {
             want.push((sink.to_owned(), class.to_owned()));
         }
     }

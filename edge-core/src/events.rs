@@ -42,6 +42,19 @@
 //!   the records. `StateHandle` implements [`StreamWriter`] (one pipelined
 //!   `XADD` batch on the `mg-state` runtime).
 //!
+//! # Phase 2 (docs/impl/phase2-spec.md; WP-C5)
+//!
+//! * `mg:ev` v2 entries: [`StreamEntry::decision_v2`] /
+//!   [`StreamEntry::feedback_v2`] with [`path_hash`] (§13.1). The v1
+//!   constructors stay until the stage 2 switch (§2.3).
+//! * The single telemetry decoder (§15.2): [`ChallengeTelemetry`] (`t` with
+//!   `env`, `auto` and `ix` as [`mg_core::IxTelemetry`]),
+//!   [`BehaviorSummary`] (§12.8) and [`parse_reports`] (`POST /__mg/t`,
+//!   §9.4).
+//! * [`EventClass::Telemetry`]: the `queue_telemetry` queue of `/__mg/t`
+//!   rows (§9.4), and the shutdown drain [`EventsConfig::shutdown_drain_ms`]
+//!   / [`Flusher::with_shutdown_drain`] (§9.7).
+//!
 //! # Privacy (D-31, §2.4)
 //!
 //! Event lines carry request data (the decision context), so neither
@@ -54,6 +67,7 @@ mod output;
 mod queue;
 mod stream;
 mod telemetry;
+mod telemetry_v2;
 mod vl;
 
 use std::fmt;
@@ -65,12 +79,22 @@ pub use encode::{
 };
 pub use queue::{DropSink, EventMetrics, EventQueues, FINAL_FLUSH_BUDGET, Flusher};
 pub use stream::{
-    DecisionEntry, FeedbackEntry, STREAM_ENTRY_VERSION, STREAM_KEY, StreamEntry, StreamWriter,
+    ContentClass, DecisionEntry, DecisionEntryV2, FeedbackEntry, FeedbackEntryV2, FeedbackOutcome,
+    IpFamily, PATH_HASH_DOMAIN, ProofResult, STREAM_ENTRY_VERSION, STREAM_ENTRY_VERSION_V2,
+    STREAM_KEY, STREAM_METHOD_MAX_BYTES, STREAM_UA_FAMILY_MAX_BYTES, StreamEntry, StreamWriter,
+    path_hash,
 };
 pub use telemetry::{
     AUTOMATION_SCHEMA_VERSION, Brand, ENV_SCHEMA_VERSION, TELEMETRY_MAX_ARRAY_ITEMS,
     TELEMETRY_MAX_INPUT_BYTES, TELEMETRY_MAX_STRING_BYTES, TelemetryAuto, TelemetryEnv,
     TelemetryScreen, TelemetryStorage, TelemetryTouch, TelemetryUa, TelemetryViewport,
+};
+pub use telemetry_v2::{
+    BEHAVIOR_MAX_BYTES, BEHAVIOR_SCHEMA_VERSION, BehaviorForm, BehaviorKeys, BehaviorPtr,
+    BehaviorScroll, BehaviorSummary, BehaviorTouch, ChallengeTelemetry, KeyUnavailableReason,
+    MAX_REPORTS, MAX_UPSTREAM_COUNT, REPORT_BODY_MAX_BYTES, REPORT_PATH_MAX_BYTES, ReportEntry,
+    ReportKind, T_MAX_BYTES, TELEMETRY_MAX_DEPTH, TelemetryError, TelemetryReport, UpstreamScope,
+    ix_from_value, ix_to_value, parse_reports, strict_json,
 };
 pub use vl::{
     JSONLINE_CONTENT_TYPE, JSONLINE_PATH, JSONLINE_QUERY, PostOutcome, REQUEST_TIMEOUT,
@@ -87,13 +111,18 @@ pub enum EventClass {
     Priority,
     /// P1: `kind=access` records.
     Access,
-    /// P2: sampled allow decisions, `kind=telemetry`.
+    /// P2: sampled allow decisions, `kind=telemetry` of `/__mg/c`.
     Sampled,
+    /// Phase 2 (docs/impl/phase2-spec.md §9.4): `kind=telemetry` rows of
+    /// `POST /__mg/t` (`source = "sdk"`), in their own queue of
+    /// `queue_telemetry` records, drained last. A flood of reports only ever
+    /// drops reports (`class="telemetry"`).
+    Telemetry,
 }
 
 impl EventClass {
-    /// Every class in drain order (P0, P1, P2).
-    pub const ALL: [EventClass; 3] = [Self::Priority, Self::Access, Self::Sampled];
+    /// Every class in drain order (P0, P1, P2, telemetry).
+    pub const ALL: [EventClass; 4] = [Self::Priority, Self::Access, Self::Sampled, Self::Telemetry];
 
     /// The `class` label of `mg_event_dropped_total`.
     pub const fn as_str(self) -> &'static str {
@@ -101,6 +130,7 @@ impl EventClass {
             Self::Priority => "priority",
             Self::Access => "access",
             Self::Sampled => "sampled",
+            Self::Telemetry => "telemetry",
         }
     }
 
@@ -109,9 +139,13 @@ impl EventClass {
             Self::Priority => 0,
             Self::Access => 1,
             Self::Sampled => 2,
+            Self::Telemetry => 3,
         }
     }
 }
+
+/// Number of [`EventClass`]es.
+pub(crate) const CLASSES: usize = EventClass::ALL.len();
 
 impl fmt::Display for EventClass {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

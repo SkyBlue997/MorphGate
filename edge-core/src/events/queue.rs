@@ -4,7 +4,7 @@
 use super::output::{Item, Lane, Limits, Output};
 use super::stream::StreamWriter;
 use super::vl::VlClient;
-use super::{EventClass, EventRecord, EventSink, EventsConfig, Sink};
+use super::{CLASSES, EventClass, EventRecord, EventSink, EventsConfig, Sink};
 use prometheus::{IntCounter, IntCounterVec, Opts, Registry};
 use std::fmt;
 use std::path::PathBuf;
@@ -72,7 +72,7 @@ impl DropSink {
 #[derive(Clone)]
 pub struct EventMetrics {
     vec: IntCounterVec,
-    counters: Arc<[[IntCounter; 3]; 4]>,
+    counters: Arc<[[IntCounter; CLASSES]; 4]>,
 }
 
 impl EventMetrics {
@@ -139,7 +139,7 @@ impl fmt::Debug for EventMetrics {
 }
 
 /// Records per class.
-pub(super) type Counts = [u64; 3];
+pub(super) type Counts = [u64; CLASSES];
 
 /// State shared by the request-path handles and the flusher.
 struct Shared {
@@ -170,7 +170,7 @@ impl Shared {
 /// Pingora daemonizes and shared by every proxy service (§9.1.1).
 #[derive(Clone)]
 pub struct EventQueues {
-    tx: [mpsc::Sender<EventRecord>; 3],
+    tx: [mpsc::Sender<EventRecord>; CLASSES],
     shared: Arc<Shared>,
 }
 
@@ -200,17 +200,19 @@ impl EventQueues {
             capacity(cfg.queue_priority),
             capacity(cfg.queue_access),
             capacity(cfg.queue_sampled),
+            capacity(cfg.queue_telemetry),
         ];
         let (tx0, rx0) = mpsc::channel(capacities[0]);
         let (tx1, rx1) = mpsc::channel(capacities[1]);
         let (tx2, rx2) = mpsc::channel(capacities[2]);
+        let (tx3, rx3) = mpsc::channel(capacities[3]);
         let shared = Arc::new(Shared {
             pending_items: AtomicUsize::new(0),
             pending_bytes: AtomicUsize::new(0),
             metrics,
         });
         let flusher = Flusher {
-            rx: [rx0, rx1, rx2],
+            rx: [rx0, rx1, rx2, rx3],
             shared: Arc::clone(&shared),
             limits: Limits {
                 max_items: cfg.max_batch_lines.max(1),
@@ -219,10 +221,11 @@ impl EventQueues {
                 interval: Duration::from_millis(cfg.flush_interval_ms.max(1)),
             },
             stream_maxlen: cfg.stream_maxlen,
+            shutdown_drain: cfg.shutdown_drain(),
         };
         (
             Self {
-                tx: [tx0, tx1, tx2],
+                tx: [tx0, tx1, tx2, tx3],
                 shared,
             },
             flusher,
@@ -272,10 +275,12 @@ impl EventSink for EventQueues {
 
 /// Drains the queues into the outputs; see [`Flusher::run`].
 pub struct Flusher {
-    rx: [mpsc::Receiver<EventRecord>; 3],
+    rx: [mpsc::Receiver<EventRecord>; CLASSES],
     shared: Arc<Shared>,
     limits: Limits,
     stream_maxlen: u64,
+    /// Phase 2 shutdown drain (§9.7); zero = the Phase 1 behaviour.
+    shutdown_drain: Duration,
 }
 
 impl fmt::Debug for Flusher {
@@ -283,9 +288,13 @@ impl fmt::Debug for Flusher {
         f.debug_struct("Flusher")
             .field("flush_interval", &self.limits.interval)
             .field("stream_maxlen", &self.stream_maxlen)
+            .field("shutdown_drain", &self.shutdown_drain)
             .finish_non_exhaustive()
     }
 }
+
+/// How often the shutdown drain checks whether everything was delivered.
+const DRAIN_POLL: Duration = Duration::from_millis(5);
 
 /// The configured outputs of one flusher run.
 struct Lanes {
@@ -328,9 +337,40 @@ impl Lanes {
             lane.push(Item::line(class, target, text));
         }
     }
+
+    fn all(&self) -> impl Iterator<Item = &Lane> {
+        [&self.vl_main, &self.vl_short, &self.file, &self.stream]
+            .into_iter()
+            .flatten()
+    }
+
+    fn start_draining(&self) {
+        self.all().for_each(Lane::start_draining);
+    }
+
+    /// Every output delivered (or counted) everything it was handed.
+    fn idle(&self) -> bool {
+        self.all().all(Lane::is_idle)
+    }
 }
 
 impl Flusher {
+    /// Sets the Phase 2 shutdown drain (docs/impl/phase2-spec.md §9.7,
+    /// §10.1): mg-edge passes the resolved `[events] shutdown_drain_ms`
+    /// (its default comes from the grace period). [`EventQueues::new`]
+    /// takes [`EventsConfig::shutdown_drain`], which is zero while the key
+    /// is absent. Values above 10 s are clamped.
+    #[must_use]
+    pub fn with_shutdown_drain(mut self, drain: Duration) -> Self {
+        self.shutdown_drain = drain.min(Duration::from_secs(10));
+        self
+    }
+
+    /// The shutdown drain in effect.
+    pub fn shutdown_drain(&self) -> Duration {
+        self.shutdown_drain
+    }
+
     /// Runs until `shutdown` becomes true (or its sender is dropped).
     ///
     /// Ruling I-25: each configured VictoriaLogs instance (`vl`'s `vl_main`
@@ -360,6 +400,13 @@ impl Flusher {
     ///   `0600`).
     ///   Stream: one `XADD` batch with `MAXLEN ~ stream_maxlen`, never
     ///   retried.
+    /// * Phase 2 shutdown drain (§9.7 item 2): with a non-zero
+    ///   [`Flusher::with_shutdown_drain`], the shutdown signal does not stop
+    ///   anything at first. The queues stay open, records offered meanwhile
+    ///   are dispatched as usual, and every output sends what it holds at
+    ///   once. This lasts until everything offered so far is delivered (or
+    ///   counted as lost by its output) or the drain time has passed,
+    ///   whichever comes first; then the Phase 1 shutdown below follows.
     /// * On shutdown the dispatcher moves whatever is still queued into the
     ///   backlogs and closes the queues (later `try_send` calls fail fast and
     ///   count `buffer`). Each output then abandons its in-flight batch
@@ -408,7 +455,7 @@ impl Flusher {
         let (stop_tx, stop_rx) = watch::channel(false);
         let (rx, shared) = (&mut self.rx, &*self.shared);
         tokio::join!(
-            dispatch(rx, shared, &lanes, shutdown, stop_tx),
+            dispatch(rx, shared, &lanes, shutdown, stop_tx, self.shutdown_drain),
             run_lane(lanes.vl_main.as_ref(), stop_rx.clone()),
             run_lane(lanes.vl_short.as_ref(), stop_rx.clone()),
             run_lane(lanes.file.as_ref(), stop_rx.clone()),
@@ -425,17 +472,19 @@ async fn run_lane(lane: Option<&Lane>, stop: watch::Receiver<bool>) {
 }
 
 /// Moves records from the request queues (P0 first when several are ready)
-/// to the outputs until shutdown; then moves what is left, closes the
-/// queues and tells the outputs to finish.
+/// to the outputs until shutdown; then, during the shutdown drain, until
+/// everything is delivered or the drain time has passed; then moves what is
+/// left, closes the queues and tells the outputs to finish.
 async fn dispatch(
-    rx: &mut [mpsc::Receiver<EventRecord>; 3],
+    rx: &mut [mpsc::Receiver<EventRecord>; CLASSES],
     shared: &Shared,
     lanes: &Lanes,
     mut shutdown: watch::Receiver<bool>,
     stop: watch::Sender<bool>,
+    drain: Duration,
 ) {
-    let [rx0, rx1, rx2] = rx;
-    let mut open = [true; 3];
+    let [rx0, rx1, rx2, rx3] = rx;
+    let mut open = [true; CLASSES];
     loop {
         let record = tokio::select! {
             biased;
@@ -443,6 +492,7 @@ async fn dispatch(
             r = rx0.recv(), if open[0] => r.or_else(|| { open[0] = false; None }),
             r = rx1.recv(), if open[1] => r.or_else(|| { open[1] = false; None }),
             r = rx2.recv(), if open[2] => r.or_else(|| { open[2] = false; None }),
+            r = rx3.recv(), if open[3] => r.or_else(|| { open[3] = false; None }),
             else => {
                 // Every request-path handle is gone: nothing can arrive.
                 shutdown_signal(&mut shutdown).await;
@@ -454,7 +504,31 @@ async fn dispatch(
             lanes.dispatch(record);
         }
     }
-    for rx in [rx0, rx1, rx2] {
+    if !drain.is_zero() {
+        let deadline = tokio::time::Instant::now() + drain;
+        lanes.start_draining();
+        loop {
+            let record = tokio::select! {
+                biased;
+                () = tokio::time::sleep_until(deadline) => break,
+                r = rx0.recv(), if open[0] => r.or_else(|| { open[0] = false; None }),
+                r = rx1.recv(), if open[1] => r.or_else(|| { open[1] = false; None }),
+                r = rx2.recv(), if open[2] => r.or_else(|| { open[2] = false; None }),
+                r = rx3.recv(), if open[3] => r.or_else(|| { open[3] = false; None }),
+                () = tokio::time::sleep(DRAIN_POLL) => {
+                    if shared.pending_items.load(Ordering::Relaxed) == 0 && lanes.idle() {
+                        break;
+                    }
+                    None
+                }
+            };
+            if let Some(record) = record {
+                shared.release(record.wire_len());
+                lanes.dispatch(record);
+            }
+        }
+    }
+    for rx in [rx0, rx1, rx2, rx3] {
         rx.close();
         while let Ok(record) = rx.try_recv() {
             shared.release(record.wire_len());

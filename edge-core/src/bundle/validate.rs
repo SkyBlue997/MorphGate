@@ -21,12 +21,19 @@ use super::util::{
 use super::verify::printable;
 use super::{BundleError, artifact_limit};
 use mg_core::gcra::GcraParams;
+use mg_proto::v1::expr::Kind as ExprKind;
 use mg_proto::v1::{
     Action, ChallengeConfig, ChallengeType, Channel, ClearanceConfig, CompiledRule, CrawlerPolicy,
-    Environment, EventConfig, RateLimit, Route, RouteSensitivity, ScoringConfig, SiteBundle,
-    UpstreamProfileKind,
+    Environment, EventConfig, Expr, InteractiveConfig, PolicyExpr, ProofMode, ProviderConfig,
+    RateLimit, Route, RouteSensitivity, ScoringConfig, SiteBundle, UpstreamProfileKind,
 };
+use prost::Message as _;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// `SiteBundle.schema_version` of a Phase 1 bundle (Phase 2 spec D-66).
+const PHASE1_SCHEMA: u32 = super::SCHEMA_VERSION;
+/// `SiteBundle.schema_version` of a bundle with Phase 2 fields (§3.2).
+const PHASE2_SCHEMA: u32 = super::SCHEMA_VERSION_PHASE2;
 
 /// Environment names (§8.2).
 const ENVIRONMENT_NAMES: &[&str] = &["production", "staging", "test", "dev"];
@@ -77,6 +84,13 @@ fn ensure(ok: bool, field: impl FnOnce() -> String, reason: &str) -> Result {
 
 /// Every rule of this module, in field order.
 pub(crate) fn check_bounds(b: &SiteBundle) -> Result {
+    // Phase 2 spec §3.2 / D-66: schema 1 is the Phase 1 bundle (every Phase 2
+    // field zero), schema 2 carries every Phase 2 message, in range.
+    match b.schema_version {
+        PHASE1_SCHEMA => check_phase1_only(b)?,
+        PHASE2_SCHEMA => check_phase2(b)?,
+        _ => return fail("schema_version", "must be 1 or 2"),
+    }
     ensure(b.version >= 1, || "version".into(), "must be >= 1")?;
     ensure(
         b.not_before_ms >= 0,
@@ -191,7 +205,7 @@ fn check_environments(b: &SiteBundle) -> Result {
                 "host belongs to more than one environment",
             )?;
         }
-        check_env(env, b.case_insensitive_paths, &at)?;
+        check_env(env, b.case_insensitive_paths, b.schema_version, &at)?;
         for (j, rl) in env.rate_limits.iter().enumerate() {
             ensure(
                 limiter_ids.insert(rl.id.as_str()),
@@ -207,7 +221,12 @@ fn check_environments(b: &SiteBundle) -> Result {
     )
 }
 
-fn check_env(env: &Environment, case_insensitive: bool, at: &dyn Fn(&str) -> String) -> Result {
+fn check_env(
+    env: &Environment,
+    case_insensitive: bool,
+    schema: u32,
+    at: &dyn Fn(&str) -> String,
+) -> Result {
     let env_hosts: BTreeSet<&str> = env.hosts.iter().map(String::as_str).collect();
     let declared = match env.routes.last() {
         Some(last) if env.routes.len() == MAX_ROUTES + 1 && is_builder_default(last) => MAX_ROUTES,
@@ -223,6 +242,7 @@ fn check_env(env: &Environment, case_insensitive: bool, at: &dyn Fn(&str) -> Str
     for (j, route) in env.routes.iter().enumerate() {
         let at = |f: &str| at(&format!("routes[{j}].{f}"));
         check_route(route, &env_hosts, case_insensitive, &at)?;
+        check_route_phase2(route, schema, &at)?;
         ensure(
             route_names.insert(route.name.as_str()),
             || at("name"),
@@ -239,7 +259,7 @@ fn check_env(env: &Environment, case_insensitive: bool, at: &dyn Fn(&str) -> Str
     let mut limiter_ids = BTreeSet::new();
     for (j, rl) in env.rate_limits.iter().enumerate() {
         let at = |f: &str| at(&format!("rate_limits[{j}].{f}"));
-        check_rate_limit(rl, &route_ids, &at)?;
+        check_rate_limit(rl, &route_ids, schema, &at)?;
         ensure(limiter_ids.insert(rl.id.as_str()), || at("id"), "duplicate")?;
     }
 
@@ -370,8 +390,19 @@ fn check_gcra(rate: u32, period_s: u32, burst: u32) -> std::result::Result<(), &
 fn check_rate_limit(
     rl: &RateLimit,
     route_ids: &BTreeSet<&str>,
+    schema: u32,
     at: &dyn Fn(&str) -> String,
 ) -> Result {
+    // Phase 2 spec §3.2: INTERACTIVE only in schema 2 (in schema 1 not even
+    // on a limiter that does not challenge).
+    let challenge_type = ChallengeType::try_from(rl.challenge_type);
+    if schema == PHASE1_SCHEMA {
+        ensure(
+            challenge_type != Ok(ChallengeType::Interactive),
+            || at("challenge_type"),
+            "interactive requires schema_version 2",
+        )?;
+    }
     ensure(
         is_limiter_id(&rl.id) && !rl.id.starts_with("mg."),
         || at("id"),
@@ -422,9 +453,17 @@ fn check_rate_limit(
             || at("signal_weight"),
             "must be in (0, 2]",
         ),
+        "challenge" if schema == PHASE2_SCHEMA => ensure(
+            matches!(
+                challenge_type,
+                Ok(ChallengeType::Invisible | ChallengeType::Pow | ChallengeType::Interactive)
+            ),
+            || at("challenge_type"),
+            "must be invisible, pow or interactive",
+        ),
         "challenge" => ensure(
             matches!(
-                ChallengeType::try_from(rl.challenge_type),
+                challenge_type,
                 Ok(ChallengeType::Invisible | ChallengeType::Pow)
             ),
             || at("challenge_type"),
@@ -471,7 +510,53 @@ fn check_rule(r: &CompiledRule, at: &dyn Fn(&str) -> String) -> Result {
             "only type, label, limiter and retry_after_s are allowed",
         )?;
     }
+    // Phase 2 spec §4.2, §10.2: `http.navigation` is client-controlled, so
+    // an allow rule must not depend on it. (IR that does not decode is the
+    // caller's to reject, §9.10.)
+    if Action::try_from(r.action) == Ok(Action::Allow)
+        && let Ok(ir) = PolicyExpr::decode(r.expr_ir.as_slice())
+        && ir
+            .root
+            .as_ref()
+            .is_some_and(|e| reads_field(e, NAVIGATION_FIELD))
+    {
+        return fail(
+            at("expr_ir"),
+            "an allow rule must not depend on http.navigation",
+        );
+    }
     Ok(())
+}
+
+/// The client-controlled navigation flag (Phase 2 spec §4.1).
+const NAVIGATION_FIELD: &str = "http.navigation";
+
+/// Whether `e` reads or `has()`-tests `field` (or a path under it).
+fn reads_field(e: &Expr, field: &str) -> bool {
+    let matches = |path: &str| {
+        path == field
+            || path
+                .strip_prefix(field)
+                .is_some_and(|rest| rest.starts_with('.'))
+    };
+    let sub = |e: &Option<Box<Expr>>| e.as_deref().is_some_and(|e| reads_field(e, field));
+    let Some(kind) = &e.kind else {
+        return false;
+    };
+    match kind {
+        ExprKind::Field(p) | ExprKind::Has(p) => matches(p),
+        ExprKind::Literal(_) | ExprKind::NamedList(_) => false,
+        ExprKind::List(l) => l.elements.iter().any(|e| reads_field(e, field)),
+        ExprKind::Not(u) | ExprKind::Size(u) => sub(&u.arg),
+        ExprKind::And(n) | ExprKind::Or(n) => n.args.iter().any(|e| reads_field(e, field)),
+        ExprKind::Cond(c) => sub(&c.cond) || sub(&c.then_expr) || sub(&c.else_expr),
+        ExprKind::Compare(c) => sub(&c.lhs) || sub(&c.rhs),
+        ExprKind::InList(b) | ExprKind::InMap(b) | ExprKind::IndexMap(b) | ExprKind::IpIn(b) => {
+            sub(&b.lhs) || sub(&b.rhs)
+        }
+        ExprKind::StringCall(s) => sub(&s.target) || sub(&s.arg),
+        ExprKind::Glob(g) => sub(&g.subject),
+    }
 }
 
 fn check_challenge(c: &ChallengeConfig) -> Result {
@@ -694,6 +779,345 @@ fn check_artifacts(b: &SiteBundle) -> Result {
             a.size <= limit,
             || at("size"),
             "larger than the artifact kind's limit",
+        )?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 (docs/impl/phase2-spec.md §3.2, §8.2, §10.2; WP-C5)
+
+/// Most `events.scanner_baits` entries (Phase 2 spec §3.2).
+const MAX_SCANNER_BAITS: usize = 64;
+/// `ProviderConfig.id` values of Phase 2 (§8.2).
+const PROVIDER_TURNSTILE: &str = "turnstile";
+/// Page languages (§3.2 `default_lang`).
+const PAGE_LANGUAGES: &[&str] = &["zh-CN", "en"];
+
+/// Route fields of Phase 2: valid enum values in both schemas, zero in
+/// schema 1, and never together with `never_challenge` (§10.2: a beacon
+/// can neither carry a proof nor go through a challenge).
+fn check_route_phase2(r: &Route, schema: u32, at: &dyn Fn(&str) -> String) -> Result {
+    let proof = ProofMode::try_from(r.proof);
+    ensure(proof.is_ok(), || at("proof"), "must be off or required")?;
+    let min_level = ChallengeType::try_from(r.min_level);
+    ensure(
+        matches!(
+            min_level,
+            Ok(ChallengeType::Unspecified
+                | ChallengeType::Invisible
+                | ChallengeType::Pow
+                | ChallengeType::Interactive)
+        ),
+        || at("min_level"),
+        "must be invisible, pow or interactive",
+    )?;
+    if schema == PHASE1_SCHEMA {
+        ensure(r.proof == 0, || at("proof"), "requires schema_version 2")?;
+        ensure(
+            r.min_level == 0,
+            || at("min_level"),
+            "requires schema_version 2",
+        )?;
+    }
+    if r.never_challenge {
+        ensure(
+            proof != Ok(ProofMode::Required),
+            || at("proof"),
+            "proof: required cannot be combined with never_challenge",
+        )?;
+        ensure(
+            r.min_level == 0,
+            || at("min_level"),
+            "min_level cannot be combined with never_challenge",
+        )?;
+    }
+    Ok(())
+}
+
+/// D-66: a schema 1 bundle leaves every Phase 2 field at its zero value
+/// (the route fields and the limiters' `challenge_type` are checked with
+/// the environments).
+fn check_phase1_only(b: &SiteBundle) -> Result {
+    let phase2 = |field: &str| {
+        fail(
+            field.to_owned(),
+            "is a Phase 2 field: requires schema_version 2",
+        )
+    };
+    if let Some(c) = &b.challenge {
+        if c.interactive.is_some() {
+            return phase2("challenge.interactive");
+        }
+        for (name, v) in [
+            ("challenge.default_lang", &c.default_lang),
+            ("challenge.help_path", &c.help_path),
+            ("challenge.privacy_path", &c.privacy_path),
+        ] {
+            if !v.is_empty() {
+                return phase2(name);
+            }
+        }
+    }
+    if let Some(c) = &b.clearance {
+        for (name, v) in [
+            ("clearance.ttl_interactive_s", c.ttl_interactive_s),
+            ("clearance.ttl_interactive_a11y_s", c.ttl_interactive_a11y_s),
+            ("clearance.ttl_interactive_ext_s", c.ttl_interactive_ext_s),
+            (
+                "clearance.refresh_max_interactive_s",
+                c.refresh_max_interactive_s,
+            ),
+            ("clearance.refresh_max_ext_s", c.refresh_max_ext_s),
+            ("clearance.refresh_max_pow_s", c.refresh_max_pow_s),
+        ] {
+            if v != 0 {
+                return phase2(name);
+            }
+        }
+        if c.refresh {
+            return phase2("clearance.refresh");
+        }
+    }
+    if let Some(e) = &b.events {
+        if e.telemetry_behavior {
+            return phase2("events.telemetry_behavior");
+        }
+        if e.scanner_baits_builtin {
+            return phase2("events.scanner_baits_builtin");
+        }
+        if !e.scanner_baits.is_empty() {
+            return phase2("events.scanner_baits");
+        }
+    }
+    if !b.providers.is_empty() {
+        return phase2("providers");
+    }
+    Ok(())
+}
+
+/// §3.2 schema 2: `challenge`, `challenge.interactive`, `clearance` and
+/// `events` are present and every Phase 2 field is in its §10.2 range,
+/// whether or not the feature is enabled; the providers follow §8.2. The
+/// Phase 1 fields of these messages are checked by the Phase 1 rules.
+fn check_phase2(b: &SiteBundle) -> Result {
+    let Some(c) = &b.challenge else {
+        return fail("challenge", "required with schema_version 2");
+    };
+    let Some(ix) = &c.interactive else {
+        return fail("challenge.interactive", "required with schema_version 2");
+    };
+    let Some(clr) = &b.clearance else {
+        return fail("clearance", "required with schema_version 2");
+    };
+    let Some(ev) = &b.events else {
+        return fail("events", "required with schema_version 2");
+    };
+    ensure(
+        PAGE_LANGUAGES.contains(&c.default_lang.as_str()),
+        || "challenge.default_lang".into(),
+        "must be zh-CN or en",
+    )?;
+    check_ret(&c.help_path).or_else(|reason| fail("challenge.help_path", reason))?;
+    check_ret(&c.privacy_path).or_else(|reason| fail("challenge.privacy_path", reason))?;
+    check_interactive(ix)?;
+    check_clearance_phase2(clr)?;
+    check_events_phase2(ev)?;
+    check_providers(b)
+}
+
+fn in_range(field: &str, value: u32, min: u32, max: u32) -> Result {
+    ensure(
+        (min..=max).contains(&value),
+        || field.to_owned(),
+        &format!("must be {min}..={max}"),
+    )
+}
+
+fn check_interactive(ix: &InteractiveConfig) -> Result {
+    let at = |f: &str| format!("challenge.interactive.{f}");
+    let Some(bits) = &ix.pow_bits else {
+        return fail(at("pow_bits"), "missing");
+    };
+    let bands = [
+        ("low", bits.low),
+        ("medium", bits.medium),
+        ("high", bits.high),
+        ("very_high", bits.very_high),
+    ];
+    for (name, v) in bands {
+        in_range(&at(&format!("pow_bits.{name}")), v, 8, 22)?;
+    }
+    ensure(
+        bands.windows(2).all(|w| w[0].1 <= w[1].1),
+        || at("pow_bits"),
+        "must not decrease with the risk band",
+    )?;
+    in_range(&at("pow_k"), ix.pow_k, 1, 8)?;
+    in_range(&at("a11y_bits"), ix.a11y_bits, 12, 24)?;
+    in_range(&at("escalate_after"), ix.escalate_after, 1, 5)?;
+    let finite = ix.t_pass.is_finite() && ix.t_block.is_finite();
+    match ix.scoring_mode.as_str() {
+        "shadow" => ensure(
+            finite && (0.0..=1.0).contains(&ix.t_pass) && (0.0..=1.0).contains(&ix.t_block),
+            || at("t_pass"),
+            "t_pass and t_block must be in [0, 1]",
+        )?,
+        "enforce" => ensure(
+            finite && 0.0 < ix.t_pass && ix.t_pass < ix.t_block && ix.t_block <= 1.0,
+            || at("t_pass"),
+            "enforce requires 0 < t_pass < t_block <= 1",
+        )?,
+        _ => return fail(at("scoring_mode"), "must be shadow or enforce"),
+    }
+    in_range(&at("min_pow_ms"), ix.min_pow_ms, 0, 5_000)?;
+    in_range(&at("a11y_min_ms"), ix.a11y_min_ms, 0, 10_000)?;
+    // The built-in limiters (§7.9): the ip entity's numbers and the 4x ipp
+    // tier must both be valid GCRA parameters.
+    for (name, rate, period, burst) in [
+        ("issue", ix.issue_rate, ix.issue_period_s, ix.issue_burst),
+        ("renew", ix.renew_rate, ix.renew_period_s, ix.renew_burst),
+    ] {
+        check_gcra(rate, period, burst).or_else(|reason| fail(at(name), reason))?;
+        check_gcra(rate.saturating_mul(4), period, burst.saturating_mul(4))
+            .or_else(|reason| fail(at(name), reason))?;
+    }
+    let (per_ip, per_ipp, period) = (
+        ix.a11y_issue_per_ip,
+        ix.a11y_issue_per_ipp,
+        ix.a11y_issue_period_s,
+    );
+    check_gcra(per_ip, period, per_ip).or_else(|reason| fail(at("a11y_issue_per_ip"), reason))?;
+    check_gcra(per_ipp, period, per_ipp)
+        .or_else(|reason| fail(at("a11y_issue_per_ipp"), reason))?;
+    ensure(
+        per_ipp >= per_ip,
+        || at("a11y_issue_per_ipp"),
+        "must be >= a11y_issue_per_ip",
+    )
+}
+
+fn check_clearance_phase2(c: &ClearanceConfig) -> Result {
+    let at = |f: &str| format!("clearance.{f}");
+    in_range(&at("ttl_interactive_s"), c.ttl_interactive_s, 300, 7_200)?;
+    in_range(
+        &at("ttl_interactive_a11y_s"),
+        c.ttl_interactive_a11y_s,
+        300,
+        3_600,
+    )?;
+    in_range(
+        &at("ttl_interactive_ext_s"),
+        c.ttl_interactive_ext_s,
+        300,
+        7_200,
+    )?;
+    in_range(
+        &at("refresh_max_interactive_s"),
+        c.refresh_max_interactive_s,
+        900,
+        86_400,
+    )?;
+    in_range(&at("refresh_max_ext_s"), c.refresh_max_ext_s, 900, 86_400)?;
+    in_range(&at("refresh_max_pow_s"), c.refresh_max_pow_s, 0, 86_400)
+}
+
+fn check_events_phase2(e: &EventConfig) -> Result {
+    ensure(
+        e.scanner_baits.len() <= MAX_SCANNER_BAITS,
+        || "events.scanner_baits".into(),
+        "more than 64 entries",
+    )?;
+    for (i, p) in e.scanner_baits.iter().enumerate() {
+        check_pattern(p).or_else(|reason| fail(format!("events.scanner_baits[{i}]"), reason))?;
+    }
+    Ok(())
+}
+
+/// §8.2: at most one provider, Turnstile, public configuration only.
+fn check_providers(b: &SiteBundle) -> Result {
+    ensure(
+        b.providers.len() <= 1,
+        || "providers".into(),
+        "at most one provider (turnstile)",
+    )?;
+    let hosts: BTreeSet<&str> = b.hosts.iter().map(String::as_str).collect();
+    let routes: BTreeSet<&str> = b
+        .environments
+        .iter()
+        .flat_map(|e| e.routes.iter().map(|r| r.id.as_str()))
+        .collect();
+    for (i, p) in b.providers.iter().enumerate() {
+        check_provider(p, &hosts, &routes, &|f: &str| format!("providers[{i}].{f}"))?;
+    }
+    Ok(())
+}
+
+fn check_provider(
+    p: &ProviderConfig,
+    hosts: &BTreeSet<&str>,
+    routes: &BTreeSet<&str>,
+    at: &dyn Fn(&str) -> String,
+) -> Result {
+    ensure(p.id == PROVIDER_TURNSTILE, || at("id"), "must be turnstile")?;
+    ensure(
+        (1..=64).contains(&p.sitekey.len())
+            && p.sitekey
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'),
+        || at("sitekey"),
+        "must match [0-9A-Za-z_-]{1,64}",
+    )?;
+    ensure(
+        p.secret_refs.is_empty(),
+        || at("secret_refs"),
+        "must be empty: the secret is in edge.toml (D-51)",
+    )?;
+    ensure(
+        p.allowed_countries.is_empty(),
+        || at("allowed_countries"),
+        "must be empty",
+    )?;
+    for c in &p.denied_countries {
+        ensure(
+            c.len() == 2 && c.bytes().all(|b| b.is_ascii_uppercase()),
+            || at("denied_countries"),
+            "must be upper-case ISO 3166-1 alpha-2 codes",
+        )?;
+    }
+    for r in &p.route_ids {
+        ensure(
+            routes.contains(r.as_str()),
+            || at("route_ids"),
+            "names a route that does not exist",
+        )?;
+    }
+    in_range(&at("timeout_ms"), p.timeout_ms, 1_000, 5_000)?;
+    ensure(
+        p.fallback == "self_hold",
+        || at("fallback"),
+        "must be self_hold (D-51)",
+    )?;
+    ensure(
+        matches!(p.mode.as_str(), "shadow" | "enforce"),
+        || at("mode"),
+        "must be shadow or enforce",
+    )?;
+    ensure(
+        matches!(p.selection.as_str(), "first" | "escalate_after_fail"),
+        || at("selection"),
+        "must be first or escalate_after_fail",
+    )?;
+    ensure(
+        !p.hostnames.is_empty(),
+        || at("hostnames"),
+        "must not be empty",
+    )?;
+    for h in &p.hostnames {
+        ensure(
+            hosts.contains(h.as_str()),
+            || at("hostnames"),
+            "must be one of the site's hosts",
         )?;
     }
     Ok(())

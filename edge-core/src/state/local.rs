@@ -278,16 +278,19 @@ pub(crate) struct NonceSet {
     capacity: usize,
     /// Latest `now_ms` at which an insert failed (i64::MIN: never).
     last_overflow_ms: AtomicI64,
+    /// `table` label of `mg_state_local_overflow_total` (`nonce`, `jti`, `rp`).
+    table: &'static str,
 }
 
 impl NonceSet {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize, table: &'static str) -> Self {
         Self {
             shards: (0..SHARDS).map(|_| Mutex::default()).collect(),
             hasher: RandomState::new(),
             len: AtomicUsize::new(0),
             capacity: capacity.max(1),
             last_overflow_ms: AtomicI64::new(i64::MIN),
+            table,
         }
     }
 
@@ -341,7 +344,7 @@ impl NonceSet {
             }
         }
         self.last_overflow_ms.fetch_max(now_ms, Ordering::AcqRel);
-        metrics::get().overflow("nonce");
+        metrics::get().overflow(self.table);
         NonceInsert::Full
     }
 
@@ -360,6 +363,146 @@ impl NonceSet {
     pub fn last_overflow_ms(&self) -> Option<i64> {
         let v = self.last_overflow_ms.load(Ordering::Acquire);
         (v != i64::MIN).then_some(v)
+    }
+}
+
+/// Result of [`JtiTable::check`], the in-process form of `mg_jti` v1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalJti {
+    /// Counted and recorded.
+    Fresh,
+    /// A live entry exists: the `jti` was used before.
+    Replay,
+    /// The key used more than its per-window quota.
+    KeyQuota,
+    /// Counted (or not: the counter table was full) but not recorded: the
+    /// table is full of live entries.
+    Full,
+}
+
+/// One session key's `jti` counter: count and end of its window (ms).
+#[derive(Clone, Copy)]
+struct JtiCounter {
+    count: u32,
+    window_end_ms: i64,
+}
+
+/// The in-process `jti` set (Phase 2 spec §9.2, §14.4): a TTL set that never
+/// evicts a live entry (D-35), and a per-key counter of the same capacity
+/// with the rules of `mg_jti` v1 (the counter is incremented first; above
+/// the limit nothing is recorded).
+pub(crate) struct JtiTable {
+    set: NonceSet,
+    counters: Mutex<HashMap<String, JtiCounter>>,
+    capacity: usize,
+    limit: u32,
+    window_ms: i64,
+    ttl_ms: i64,
+    /// Latest `now_ms` at which the counter table was full (i64::MIN: never).
+    counters_overflow_ms: AtomicI64,
+    /// Last on-demand sweep of a full counter table.
+    counters_sweep_ms: AtomicI64,
+}
+
+/// On-demand sweeps of a full `jti` counter table run at most this often.
+const COUNTER_SWEEP_MIN_INTERVAL_MS: i64 = 1_000;
+
+impl JtiTable {
+    pub fn new(capacity: usize, limit: u32, window_ms: u64, ttl_ms: u64) -> Self {
+        Self {
+            set: NonceSet::new(capacity, "jti"),
+            counters: Mutex::default(),
+            capacity: capacity.max(1),
+            limit,
+            window_ms: i64::try_from(window_ms).unwrap_or(i64::MAX),
+            ttl_ms: i64::try_from(ttl_ms).unwrap_or(i64::MAX),
+            counters_overflow_ms: AtomicI64::new(i64::MIN),
+            counters_sweep_ms: AtomicI64::new(i64::MIN),
+        }
+    }
+
+    /// `count_key` = `mg:jc:{site}:{kj}`, `key` = `mg:jti:{site}:{kj}:{jti}`.
+    pub fn check(&self, count_key: &str, key: &str, now_ms: i64) -> LocalJti {
+        let counted = {
+            let mut counters = lock(&self.counters);
+            match counters.get_mut(count_key) {
+                Some(c) if c.window_end_ms > now_ms => {
+                    if c.count >= self.limit {
+                        return LocalJti::KeyQuota;
+                    }
+                    c.count += 1;
+                    true
+                }
+                Some(c) => {
+                    // Expired window: a fresh count, as after the key's PX.
+                    *c = JtiCounter {
+                        count: 1,
+                        window_end_ms: now_ms.saturating_add(self.window_ms),
+                    };
+                    true
+                }
+                None => {
+                    // A full table is swept at most once a second (the sweep
+                    // is O(capacity) under the lock).
+                    let last = self.counters_sweep_ms.load(Ordering::Acquire);
+                    if counters.len() >= self.capacity
+                        && now_ms.saturating_sub(last) >= COUNTER_SWEEP_MIN_INTERVAL_MS
+                    {
+                        self.counters_sweep_ms.store(now_ms, Ordering::Release);
+                        counters.retain(|_, c| c.window_end_ms > now_ms);
+                    }
+                    if counters.len() < self.capacity {
+                        counters.insert(
+                            count_key.to_owned(),
+                            JtiCounter {
+                                count: 1,
+                                window_end_ms: now_ms.saturating_add(self.window_ms),
+                            },
+                        );
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
+        };
+        if !counted {
+            // D-35: never evict a live counter; this key is simply not
+            // counted, and the table is not authoritative until `iat`s
+            // after this moment.
+            self.counters_overflow_ms
+                .fetch_max(now_ms, Ordering::AcqRel);
+            metrics::get().overflow("jti");
+        }
+        match self
+            .set
+            .insert(key, now_ms.saturating_add(self.ttl_ms), now_ms)
+        {
+            NonceInsert::Exists => LocalJti::Replay,
+            NonceInsert::Inserted if counted => LocalJti::Fresh,
+            NonceInsert::Inserted | NonceInsert::Full => LocalJti::Full,
+        }
+    }
+
+    /// Latest time the set or the counter table was full.
+    pub fn last_overflow_ms(&self) -> Option<i64> {
+        let c = self.counters_overflow_ms.load(Ordering::Acquire);
+        let c = (c != i64::MIN).then_some(c);
+        match (self.set.last_overflow_ms(), c) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Drops expired entries and counters.
+    pub fn expire_all(&self, now_ms: i64) {
+        self.set.expire_all(now_ms);
+        lock(&self.counters).retain(|_, c| c.window_end_ms > now_ms);
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.set.len()
     }
 }
 
@@ -481,7 +624,7 @@ mod tests {
 
     #[test]
     fn nonce_set_never_evicts_live_entries() {
-        let s = NonceSet::new(2);
+        let s = NonceSet::new(2, "nonce");
         assert_eq!(s.insert("a", 1_000, 0), NonceInsert::Inserted);
         assert_eq!(s.insert("a", 1_000, 10), NonceInsert::Exists);
         assert_eq!(s.insert("b", 2_000, 10), NonceInsert::Inserted);
@@ -501,7 +644,7 @@ mod tests {
 
     #[test]
     fn concurrent_nonce_inserts_admit_each_nonce_once() {
-        let s = Arc::new(NonceSet::new(10_000));
+        let s = Arc::new(NonceSet::new(10_000, "nonce"));
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 let s = Arc::clone(&s);
@@ -515,5 +658,43 @@ mod tests {
         let total: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
         assert_eq!(total, 1000);
         assert_eq!(s.len(), 1000);
+    }
+
+    /// Phase 2 §9.2: the local form of `mg_jti` v1.
+    #[test]
+    fn jti_table_counts_per_key_and_detects_replays() {
+        let t = JtiTable::new(100, 3, 60_000, 40_000);
+        assert_eq!(t.check("c:a", "j:a:1", 0), LocalJti::Fresh);
+        assert_eq!(t.check("c:a", "j:a:1", 10), LocalJti::Replay);
+        assert_eq!(t.check("c:a", "j:a:2", 20), LocalJti::Fresh);
+        // The replay counted too (the script increments first): the fourth
+        // proof of the key exceeds the quota of 3, whatever its jti.
+        assert_eq!(t.check("c:a", "j:a:3", 30), LocalJti::KeyQuota);
+        assert_eq!(t.check("c:a", "j:a:1", 30), LocalJti::KeyQuota);
+        // Another key is unaffected.
+        assert_eq!(t.check("c:b", "j:b:1", 30), LocalJti::Fresh);
+        // A new window starts after 60 s; the jti entries lived 40 s.
+        assert_eq!(t.check("c:a", "j:a:1", 60_001), LocalJti::Fresh);
+        t.expire_all(60_001);
+        assert_eq!(t.len(), 1, "only the renewed j:a:1 is live");
+        assert!(t.last_overflow_ms().is_none());
+    }
+
+    #[test]
+    fn jti_table_full_is_never_authoritative() {
+        let t = JtiTable::new(2, 600, 60_000, 40_000);
+        assert_eq!(t.check("c:a", "j:1", 0), LocalJti::Fresh);
+        assert_eq!(t.check("c:a", "j:2", 0), LocalJti::Fresh);
+        // Set full: counted but not recorded.
+        assert_eq!(t.check("c:a", "j:3", 5), LocalJti::Full);
+        assert_eq!(t.last_overflow_ms(), Some(5));
+        // Live entries are kept.
+        assert_eq!(t.check("c:a", "j:1", 6), LocalJti::Replay);
+        // Counter table full (2 keys): a third key is not counted.
+        assert_eq!(t.check("c:b", "j:b", 40_001), LocalJti::Fresh);
+        assert_eq!(t.check("c:c", "j:c", 40_002), LocalJti::Full);
+        assert_eq!(t.last_overflow_ms(), Some(40_002));
+        // After the windows end, the sweep frees the counters.
+        assert_eq!(t.check("c:d", "j:d", 200_000), LocalJti::Fresh);
     }
 }
