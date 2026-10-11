@@ -108,9 +108,7 @@ use crate::metrics::metrics;
 use crate::pages::{self, Page, PageState};
 use crate::sdk::SdkDir;
 use crate::sites::{BundleRuntime, EnvRuntime, RouteRuntime, select_route};
-use crate::submission::{
-    self, AutomationSummary, EnvSummary, MAX_BODY, MediaKind, Submission, media_kind,
-};
+use crate::submission::{self, MAX_BODY, MediaKind, Submission, media_kind};
 use async_trait::async_trait;
 use bytes::Bytes;
 use mg_challenge::{
@@ -392,8 +390,8 @@ pub async fn read_body(src: &mut dyn BodySource, max: usize, deadline: Duration)
 pub struct Telemetry {
     pub build: String,
     pub solve_ms: Option<u32>,
-    pub env: Option<EnvSummary>,
-    pub auto: Option<AutomationSummary>,
+    pub env: Option<mg_edge_core::events::TelemetryEnv>,
+    pub auto: Option<mg_edge_core::events::TelemetryAuto>,
     /// `t.ix` of a v2 submission (§7.6).
     pub ix: Option<IxTelemetry>,
 }
@@ -815,8 +813,8 @@ impl<'s> Flow<'_, 's> {
         self.record.telemetry = Some(Telemetry {
             build: parsed.build.clone(),
             solve_ms: None,
-            env: parsed.env.as_ref().map(EnvSummary::for_telemetry),
-            auto: parsed.auto,
+            env: parsed.env.clone(),
+            auto: parsed.auto.clone(),
             ix: parsed.v2.as_ref().and_then(|v| v.ix.clone()),
         });
         self.sub = Some(parsed);
@@ -977,11 +975,11 @@ impl<'s> Flow<'_, 's> {
         }
 
         // 11. Basic environment, then (interactive) the hard checks of §7.7.
-        if sub.auto.is_some_and(|a| a.webdriver == Some(true)) {
+        if sub.auto.as_ref().is_some_and(|a| a.webdriver == Some(true)) {
             return fail(reason::AUTOMATION_FLAG);
         }
         let request_ua = context::header(headers, "user-agent").unwrap_or("");
-        if let Some(ua) = sub.env.as_ref().and_then(EnvSummary::user_agent)
+        if let Some(ua) = sub.env.as_ref().and_then(|e| e.user_agent())
             && !ua.is_empty()
             && !request_ua.starts_with(ua)
         {

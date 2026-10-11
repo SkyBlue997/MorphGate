@@ -128,6 +128,7 @@ pub fn build(startup: Startup, run: RunOptions) -> Server {
         stream_output: startup.state.mode == StateMode::Valkey,
         sdk: Arc::clone(&startup.sdk),
         rdns: Arc::new(rdns),
+        telemetry_dedup: crate::telemetry::Dedup::default(),
     });
 
     for l in &startup.listeners {

@@ -117,3 +117,17 @@ path = "fuzz_targets/ix_telemetry.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "refresh"
+path = "fuzz_targets/refresh.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "telemetry"
+path = "fuzz_targets/telemetry.rs"
+test = false
+doc = false
+bench = false

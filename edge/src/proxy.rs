@@ -104,6 +104,9 @@ pub struct Shared {
     pub sdk: Arc<SdkDir>,
     /// rDNS job submission to `mg-rdns` (§9.6).
     pub rdns: Arc<RdnsDispatcher>,
+    /// The once-per-10-minutes table of the `/__mg/t` alert metrics
+    /// (Phase 2 spec §9.4).
+    pub telemetry_dedup: crate::telemetry::Dedup,
 }
 
 impl std::fmt::Debug for Shared {
@@ -275,6 +278,8 @@ pub struct EdgeCtx {
     pub redact_as: Option<String>,
     /// ASN and country of a `/__mg/c` request (its context is not kept).
     pub submit_net: Option<AccessNet>,
+    /// A `POST /__mg/r` (Phase 2 spec §9.3): its `kind=refresh` event.
+    pub refresh: Option<Box<crate::refresh::RefreshRecord>>,
     /// The Edge's own time and the origin connect time (§13.7).
     pub timing: Timing,
 }
@@ -336,6 +341,7 @@ impl EdgeCtx {
             access_route: None,
             redact_as: None,
             submit_net: None,
+            refresh: None,
             timing: Timing::default(),
         }
     }
@@ -662,6 +668,20 @@ impl EdgeProxy {
                 ctx.target = target;
                 return self
                     .renew(session, ctx, &site, serving, &method, &raw, &removed)
+                    .await;
+            }
+            RouteKind::Refresh => {
+                ctx.access_route = Some(ev::ROUTE_EDGE);
+                ctx.target = target;
+                return self
+                    .refresh(session, ctx, &site, serving, &method, &raw, &removed)
+                    .await;
+            }
+            RouteKind::Telemetry => {
+                ctx.access_route = Some(ev::ROUTE_EDGE);
+                ctx.target = target;
+                return self
+                    .telemetry(session, ctx, &site, serving, &method, &raw, &removed)
                     .await;
             }
             RouteKind::Verify => {
@@ -1256,6 +1276,194 @@ impl EdgeProxy {
         self.answer(session, renewed.response).await
     }
 
+    /// `/__mg/r` (Phase 2 spec §9.3, §11.1): 404 without a schema 2 bundle
+    /// (D-66), 405 for other methods, otherwise `crate::refresh::refresh`
+    /// with route R = `select_route(env, GET, "/")`.
+    #[allow(clippy::too_many_arguments)]
+    async fn refresh(
+        &self,
+        session: &mut Session,
+        ctx: &mut EdgeCtx,
+        site: &Site,
+        serving: Serving<'_>,
+        method: &str,
+        raw: &[(String, Vec<u8>)],
+        removed: &BTreeSet<String>,
+    ) -> Result<bool> {
+        let bundle = match serving {
+            Serving::Active(b) if b.phase2() => b,
+            _ => return self.answer(session, EdgeResponse::not_found()).await,
+        };
+        if method != "POST" {
+            let resp = EdgeResponse::method_not_allowed(crate::refresh::REFRESH_ALLOW);
+            return self.answer(session, resp).await;
+        }
+        let site_id = site.settings.id.as_str();
+        let Some(env) = bundle.env_for_host(&ctx.host) else {
+            return self.no_environment(session, ctx, site_id).await;
+        };
+        let (built, bind) =
+            self.endpoint_context(session, ctx, site_id, bundle, env, method, raw, removed);
+        // Route R and the request as a page view of it (§9.3 step 8).
+        let rm = select_route(
+            env,
+            &ctx.host,
+            "GET",
+            "/",
+            bundle.case_insensitive_paths,
+            &FALLBACK_ROUTE,
+        );
+        let route = RouteInfo {
+            id: rm.route.id.clone(),
+            name: rm.route.name.clone(),
+            env: env.name.clone(),
+            channel: rm.route.channel,
+            sensitivity: rm.route.sensitivity,
+            require_clearance: rm.require_clearance,
+            fail_closed: rm.fail_closed,
+            proof_required: rm.proof_required,
+            min_level: rm.min_level,
+        };
+        let root = Target {
+            path: "/".into(),
+            ..Target::default()
+        };
+        let ssl_version: Option<String> = session
+            .digest()
+            .and_then(|d| d.ssl_digest.as_ref())
+            .map(|s| s.version.to_string());
+        let http_version = http_version_str(session.req_header().version);
+        let mut facts = self.facts(
+            ctx,
+            ssl_version.as_deref(),
+            http_version,
+            site_id,
+            &route,
+            rm.monitor(bundle.monitor_only),
+            bundle,
+            "GET",
+            &root,
+            raw,
+            removed,
+        );
+        facts.never_challenge = rm.never_challenge;
+        facts.all_routes_web = rm.all_web;
+        let services = Services {
+            state: &self.shared.state,
+            k_pseudo: &self.shared.k_pseudo,
+            rdns: &self.shared.rdns,
+        };
+        let r = crate::refresh::Refresh {
+            request_id: &ctx.request_id,
+            now_ms: unix_now_ms(),
+            site_id,
+            bundle,
+            env,
+            host: &ctx.host,
+            method,
+            https: facts.visitor_https(),
+            client_ip: built.ctx.net.ip,
+            early_data: built.ctx.http.early_data,
+            content_encoding: crate::context::received(raw, "content-encoding"),
+            headers: &built.headers,
+            cookies: &built.cookies,
+            bind: &bind,
+            proof: crate::proof::header(raw),
+            facts_r: &facts,
+            r_fail_closed: rm.fail_closed,
+        };
+        let out = crate::refresh::refresh(services, &OsRng, &r, &mut SessionBody(session)).await;
+        log::debug!(
+            "request_id={} refresh result={} reason={}",
+            ctx.request_id,
+            out.result,
+            out.reason.as_deref().unwrap_or("-")
+        );
+        ctx.submit_net = Some(AccessNet {
+            asn: built.ctx.net.asn,
+            country: built.ctx.net.country.clone(),
+        });
+        let (response, record) = out.split();
+        ctx.refresh = Some(Box::new(record));
+        self.answer(session, response).await
+    }
+
+    /// `/__mg/t` (Phase 2 spec §9.4, §11.1): 404 without a schema 2 bundle
+    /// (D-66), 405 for other methods, otherwise
+    /// `crate::telemetry::report`; its `kind=telemetry` lines go straight
+    /// to the telemetry queue.
+    #[allow(clippy::too_many_arguments)]
+    async fn telemetry(
+        &self,
+        session: &mut Session,
+        ctx: &mut EdgeCtx,
+        site: &Site,
+        serving: Serving<'_>,
+        method: &str,
+        raw: &[(String, Vec<u8>)],
+        removed: &BTreeSet<String>,
+    ) -> Result<bool> {
+        let bundle = match serving {
+            Serving::Active(b) if b.phase2() => b,
+            _ => return self.answer(session, EdgeResponse::not_found()).await,
+        };
+        if method != "POST" {
+            let resp = EdgeResponse::method_not_allowed(crate::telemetry::TELEMETRY_ALLOW);
+            return self.answer(session, resp).await;
+        }
+        let site_id = site.settings.id.as_str();
+        let Some(env) = bundle.env_for_host(&ctx.host) else {
+            return self.no_environment(session, ctx, site_id).await;
+        };
+        let (built, bind) =
+            self.endpoint_context(session, ctx, site_id, bundle, env, method, raw, removed);
+        let https = match self.listener.profile {
+            ListenerProfile::Cloudflare => ctx.visitor_https,
+            ListenerProfile::DirectTls => true,
+        };
+        let r = crate::telemetry::Reports {
+            request_id: &ctx.request_id,
+            now_ms: unix_now_ms(),
+            site_id,
+            bundle,
+            env,
+            host: &ctx.host,
+            method,
+            https,
+            client_ip: built.ctx.net.ip,
+            early_data: built.ctx.http.early_data,
+            content_encoding: crate::context::received(raw, "content-encoding"),
+            headers: &built.headers,
+            cookies: &built.cookies,
+            bind: &bind,
+            proof: crate::proof::header(raw),
+        };
+        let out = crate::telemetry::report(
+            &self.shared.state,
+            &self.shared.k_pseudo,
+            &self.shared.telemetry_dedup,
+            &r,
+            &mut SessionBody(session),
+        )
+        .await;
+        log::debug!(
+            "request_id={} telemetry status={} reports={} signed={}",
+            ctx.request_id,
+            out.response.status,
+            out.records.len(),
+            out.signed
+        );
+        for record in out.records {
+            // A full telemetry queue counts the drop itself.
+            let _ = self.shared.events.try_send(record);
+        }
+        ctx.submit_net = Some(AccessNet {
+            asn: built.ctx.net.asn,
+            country: built.ctx.net.country.clone(),
+        });
+        self.answer(session, out.response).await
+    }
+
     /// `upstream_request_filter`: the origin-form target, the §9.9 origin
     /// headers and, with `origin_keys`, `MG-Origin-Auth` (I-38).
     fn origin_request(&self, upstream_request: &mut RequestHeader, ctx: &EdgeCtx) -> Result<()> {
@@ -1418,6 +1626,9 @@ impl EdgeProxy {
             if let Some(sub) = ctx.submission.as_deref() {
                 let asn = ctx.submit_net.as_ref().and_then(|n| n.asn);
                 records.extend(ev::submission(&f, sub, asn));
+            }
+            if let Some(r) = ctx.refresh.as_deref() {
+                records.extend(ev::refresh(&f, r));
             }
             let net = ctx.submit_net.clone().unwrap_or_default();
             records.extend(ev::access(&f, route, None, redact, &net));

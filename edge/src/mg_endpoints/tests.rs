@@ -631,9 +631,9 @@ fn fetch_submission_succeeds() {
     assert!(rec.feedback.solve_ms.is_some());
     let t = rec.telemetry.as_ref().unwrap();
     assert_eq!(t.build, BUILD);
-    let tenv = serde_json::to_value(t.env.as_ref().unwrap()).unwrap();
+    let tenv = t.env.as_ref().unwrap().to_value();
     assert!(tenv["ua"].get("userAgent").is_none(), "{tenv}");
-    assert_eq!(t.auto.unwrap().webdriver, Some(false));
+    assert_eq!(t.auto.as_ref().unwrap().webdriver, Some(false));
     // Nothing secret in Debug.
     let text = format!("{out:?}");
     assert!(!text.contains(&c) && !text.contains(cookie), "{text}");

@@ -449,6 +449,32 @@ pub async fn evaluate(
     env: &EnvRuntime,
     facts: &Facts<'_>,
 ) -> DecisionRecord {
+    evaluate_with(svc, bundle, env, facts, Mode::Request).await
+}
+
+/// How [`evaluate_with`] treats identity and limiters.
+#[derive(Debug)]
+pub enum Mode {
+    /// A request bound for the origin (or `/__mg/v`).
+    Request,
+    /// `POST /__mg/r` (Phase 2 spec §9.3 steps 7-8): the clearance and the
+    /// proof were verified by the refresh flow; the request is decided with
+    /// route R (`facts.route`), the route's global limiters are only read
+    /// (`write = 0`), and the proof's `jti` rides on the same round trip.
+    Refresh {
+        clearance: Box<identity::Clearance>,
+        proof: proof::ProofCheck,
+    },
+}
+
+/// [`evaluate`] in a [`Mode`].
+pub async fn evaluate_with(
+    svc: Services<'_>,
+    bundle: &BundleRuntime,
+    env: &EnvRuntime,
+    facts: &Facts<'_>,
+    mode: Mode,
+) -> DecisionRecord {
     let site = facts.site_id;
     let mut built = context::build(facts, &bundle.intel);
     // Phase 2 spec §9.1: is the proof verified on this request?
@@ -458,12 +484,17 @@ pub async fn evaluate(
         facts.all_routes_web,
         &built.headers,
     );
-    let proof_verified = proof_verification_needed(
-        bundle.schema_version,
-        proof_exempt,
-        facts.route.proof_required,
-        env.reads_proof,
-    );
+    let (given, write_limits) = match mode {
+        Mode::Request => (None, true),
+        Mode::Refresh { clearance, proof } => (Some((*clearance, proof)), false),
+    };
+    let proof_verified = given.is_some()
+        || proof_verification_needed(
+            bundle.schema_version,
+            proof_exempt,
+            facts.route.proof_required,
+            env.reads_proof,
+        );
     if proof_verified {
         built.missing = context::without_missing(&built.missing, "identity.proof");
     }
@@ -477,32 +508,38 @@ pub async fn evaluate(
         bundle.clearance.ctp_shadow,
     );
     let cookies: Vec<&str> = built.cookies.iter().map(String::as_str).collect();
-    // A token issued without a replay check is no clearance on a
-    // fail_closed route (I-30).
-    let clearance = identity::verify_clearance(
-        &bundle.token_keys,
-        site,
-        &facts.route.env,
-        &cookies,
-        &bind,
-        facts.ts_ms.div_euclid(1000),
-        identity::Acceptance::for_route(facts.route.fail_closed),
-    );
-    let token_replay_unchecked = clearance.replay_unchecked;
     let proof_header = proof::header(facts.raw_headers);
-    let proof_check = proof_verified.then(|| {
-        proof::verify(
-            proof_header,
-            &proof::Request {
-                method: facts.method,
-                https: facts.visitor_https(),
-                host: facts.host,
-                path: facts.path,
-                now_s: facts.ts_ms.div_euclid(1000),
-            },
-            clearance.cnf_jkt.as_deref(),
-        )
-    });
+    let (clearance, proof_check) = match given {
+        Some((clearance, check)) => (clearance, Some(check)),
+        None => {
+            // A token issued without a replay check is no clearance on a
+            // fail_closed route (I-30).
+            let clearance = identity::verify_clearance(
+                &bundle.token_keys,
+                site,
+                &facts.route.env,
+                &cookies,
+                &bind,
+                facts.ts_ms.div_euclid(1000),
+                identity::Acceptance::for_route(facts.route.fail_closed),
+            );
+            let check = proof_verified.then(|| {
+                proof::verify(
+                    proof_header,
+                    &proof::Request {
+                        method: facts.method,
+                        https: facts.visitor_https(),
+                        host: facts.host,
+                        path: facts.path,
+                        now_s: facts.ts_ms.div_euclid(1000),
+                    },
+                    clearance.cnf_jkt.as_deref(),
+                )
+            });
+            (clearance, check)
+        }
+    };
+    let token_replay_unchecked = clearance.replay_unchecked;
     let jti = proof_check.as_ref().and_then(|c| c.jti(site, svc.k_pseudo));
     ctx.identity.token = clearance.token;
     ctx.session_id = clearance.session;
@@ -541,6 +578,7 @@ pub async fn evaluate(
             share_ip_verdicts: bundle.share_ip_verdicts,
             now_us,
             jti: jti.as_ref(),
+            write: write_limits,
         },
     )
     .await;

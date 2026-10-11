@@ -7,9 +7,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use mg_edge::submission::{
-    AutomationSummary, EnvSummary, decode_form, media_kind, parse_submission, strict_json,
-};
+use mg_edge::submission::{decode_form, media_kind, parse_submission, strict_json};
+use mg_edge_core::events::{TelemetryAuto, TelemetryEnv};
 
 fuzz_target!(|data: &[u8]| {
     let (content_type, body) = match data.iter().position(|&b| b == b'\n') {
@@ -25,8 +24,10 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(text) = std::str::from_utf8(body) {
         let _ = parse_submission(text);
         if let Ok(v) = strict_json(text) {
-            let _ = EnvSummary::from_value(v.clone());
-            let _ = AutomationSummary::from_value(v);
+            if let Some(env) = TelemetryEnv::from_value(&v) {
+                let _ = env.to_value();
+            }
+            let _ = TelemetryAuto::from_value(&v);
         }
     }
 });

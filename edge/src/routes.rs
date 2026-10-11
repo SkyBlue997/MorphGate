@@ -32,6 +32,10 @@ pub const RENEW_PATH: &str = "/__mg/c/renew";
 pub const SDK_PREFIX: &str = "/__mg/s/";
 /// Verify entry for challenged fetches (§10.5, I-39): `/__mg/v?ret=<path>`.
 pub const VERIFY_PATH: &str = "/__mg/v";
+/// Silent clearance refresh (Phase 2 spec §9.3).
+pub const REFRESH_PATH: &str = "/__mg/r";
+/// SDK telemetry reports (Phase 2 spec §9.4).
+pub const TELEMETRY_PATH: &str = "/__mg/t";
 
 /// Who answers a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -47,6 +51,10 @@ pub enum RouteKind {
     Renew,
     /// `GET /__mg/v`: the verify entry (§10.5, I-39).
     Verify,
+    /// `POST /__mg/r`: clearance refresh (Phase 2 spec §9.3).
+    Refresh,
+    /// `POST /__mg/t`: SDK telemetry (Phase 2 spec §9.4).
+    Telemetry,
     /// Any other path under `/__mg`: reserved, answered 404.
     EdgeReserved,
     /// Everything else: proxied to the origin.
@@ -59,9 +67,13 @@ impl RouteKind {
     pub const fn metric_label(self) -> &'static str {
         match self {
             Self::Healthz => "healthz",
-            Self::SdkFile | Self::Submit | Self::Renew | Self::Verify | Self::EdgeReserved => {
-                "edge"
-            }
+            Self::SdkFile
+            | Self::Submit
+            | Self::Renew
+            | Self::Verify
+            | Self::Refresh
+            | Self::Telemetry
+            | Self::EdgeReserved => "edge",
             Self::Origin => "origin",
         }
     }
@@ -70,7 +82,7 @@ impl RouteKind {
 /// Classifies a request path (without query string).
 ///
 /// Only the exact raw paths are endpoints: `/__mg/healthz`, `/__mg/c`,
-/// `/__mg/c/renew`, `/__mg/v` and `/__mg/s/<file>` (the file name is checked against the SDK manifest by
+/// `/__mg/c/renew`, `/__mg/v`, `/__mg/r`, `/__mg/t` and `/__mg/s/<file>` (the file name is checked against the SDK manifest by
 /// [`crate::mg_endpoints::sdk_file`]). A path is in the reserved namespace if
 /// its raw form, its RFC 3986 form or its Cloudflare form (see
 /// [`rfc3986_view`], [`cloudflare_view`]) is `/__mg` or starts with `/__mg/`
@@ -84,6 +96,10 @@ pub fn classify(path: &str) -> RouteKind {
         RouteKind::Renew
     } else if path == VERIFY_PATH {
         RouteKind::Verify
+    } else if path == REFRESH_PATH {
+        RouteKind::Refresh
+    } else if path == TELEMETRY_PATH {
+        RouteKind::Telemetry
     } else if path.starts_with(SDK_PREFIX) {
         RouteKind::SdkFile
     } else if mg_core::paths::is_reserved(path) {
@@ -107,10 +123,12 @@ mod tests {
         assert_eq!(classify("/__mg/c/renew"), RouteKind::Renew);
         assert_eq!(classify("/__mg/c/renew/"), RouteKind::EdgeReserved);
         assert_eq!(classify("/__mg/c/Renew"), RouteKind::EdgeReserved);
-        assert_eq!(classify("/__mg/r"), RouteKind::EdgeReserved);
+        assert_eq!(classify("/__mg/r"), RouteKind::Refresh);
+        assert_eq!(classify("/__mg/r/"), RouteKind::EdgeReserved);
         assert_eq!(classify("/__mg/v"), RouteKind::Verify);
         assert_eq!(classify("/__mg/v/"), RouteKind::EdgeReserved);
-        assert_eq!(classify("/__mg/t"), RouteKind::EdgeReserved);
+        assert_eq!(classify("/__mg/t"), RouteKind::Telemetry);
+        assert_eq!(classify("/__mg/T"), RouteKind::EdgeReserved);
         assert_eq!(
             classify("/__mg/s/mg.0123456789abcdef.js"),
             RouteKind::SdkFile
