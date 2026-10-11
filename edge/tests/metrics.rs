@@ -34,6 +34,11 @@ const FAMILIES: &[(&str, &[&str])] = &[
     // Phase 2 (WP-E2b, spec §15.5).
     ("mg_proof_verify_total", &["result"]),
     ("mg_site_forced_monitor", &["site"]),
+    ("mg_token_refresh_total", &["result"]),
+    ("mg_telemetry_reports_total", &["kind", "result"]),
+    ("mg_double_challenge_total", &["site", "route"]),
+    ("mg_endpoint_cache_hit_reports_total", &["site"]),
+    ("mg_sw_intercept_reports_total", &["site"]),
     (
         "mg_upstream_auth_failures_total",
         &["listener", "profile", "reason"],
@@ -257,6 +262,11 @@ fn every_family_is_served_with_its_labels() {
         "mg_proof_verify_total{result=\"missing\"}",
         "mg_proof_verify_total{result=\"unchecked\"}",
         "mg_site_forced_monitor{site=\"blog\"}",
+        "mg_token_refresh_total{result=\"ok\"}",
+        "mg_telemetry_reports_total{kind=\"upstream_challenge\",result=\"accepted\"}",
+        "mg_double_challenge_total{route=\"default\",site=\"blog\"}",
+        "mg_endpoint_cache_hit_reports_total{site=\"blog\"}",
+        "mg_sw_intercept_reports_total{site=\"blog\"}",
     ] {
         assert_eq!(common::metric_value(&text, series), Some(0.0), "{series}");
     }

@@ -22,7 +22,9 @@
 #        - GET /__mg/s/<sdk file> serves the SDK build from the [sdk] dir
 #          (immutable, byte for byte), and an unknown name there is 404;
 #          the alias /__mg/s/mg.js serves the same bytes (300 s, ETag, 304);
-#        - POST /__mg/c/renew is 404 under the schema 1 bundle (D-66);
+#        - /__mg/c/renew, /__mg/r and /__mg/t are 404 under the schema 1
+#          bundle (D-66; the 405 / 425 answers of a schema 2 bundle are
+#          covered by edge/tests);
 #        - GET /smoke/marker.txt (Host example.com) is proxied: 200 with the
 #          origin's bytes, and the origin received MG-Client-IP;
 #        - the origin's 404 passes through;
@@ -327,10 +329,15 @@ code="$(site_get /__mg/s/mg.js alias304 -H "If-None-Match: $etag")"
 [[ "$code" == 304 ]] || fail "GET /__mg/s/mg.js with If-None-Match returned $code, want 304"
 log "ok: /__mg/s/mg.js alias (max-age=300, ETag $etag, 304)"
 
-# /__mg/c/renew (Phase 2 spec §11.1, D-66): 404 for this schema 1 bundle.
-code="$(site_get /__mg/c/renew renew -X POST -H 'Content-Type: application/json' --data '{"v":2}')"
-[[ "$code" == 404 ]] || fail "POST /__mg/c/renew returned $code, want 404 for a schema 1 bundle"
-log "ok: /__mg/c/renew -> 404 under a schema 1 bundle"
+# /__mg/c/renew, /__mg/r, /__mg/t (Phase 2 spec §11.1, D-66): 404 for this
+# schema 1 bundle, whatever the method.
+for ep in /__mg/c/renew /__mg/r /__mg/t; do
+  code="$(site_get "$ep" ep404 -X POST -H 'Content-Type: application/json' --data '{"v":2}')"
+  [[ "$code" == 404 ]] || fail "POST $ep returned $code, want 404 for a schema 1 bundle"
+  code="$(site_get "$ep" ep404get)"
+  [[ "$code" == 404 ]] || fail "GET $ep returned $code, want 404 for a schema 1 bundle"
+done
+log "ok: /__mg/c/renew, /__mg/r and /__mg/t -> 404 under a schema 1 bundle"
 
 code="$(site_get /smoke/marker.txt proxied)"
 [[ "$code" == 200 ]] || fail "GET /smoke/marker.txt via mg-edge returned $code, want 200"

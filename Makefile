@@ -118,7 +118,7 @@ FUZZ_TOOLCHAIN := nightly-2026-10-11
 CARGO_FUZZ_VERSION := 0.13.2
 FUZZ_SECONDS := 60
 FUZZ_TARGETS := cf_headers request_limits bundle_verify paths_ret sealed_open clearance_token client_hello submission \
-  mg_proof submission_v2 renew ix_telemetry
+  mg_proof submission_v2 renew ix_telemetry refresh telemetry
 
 fuzz-lock-check: ## fuzz/Cargo.lock pins the same versions as Cargo.lock (plus the fuzzing crates)
 	scripts/check-fuzz-lock.sh

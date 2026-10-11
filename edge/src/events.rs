@@ -441,13 +441,14 @@ pub fn submission(f: &Finished<'_>, sub: &SubmitRecord, asn: Option<u32>) -> Vec
         }));
     }
     let mut out = vec![feedback];
-    // I-32: a telemetry line exists only with the submission's `env`; one
-    // without it (or whose `env` did not parse) writes none.
-    let telemetry = sub.telemetry.as_ref().and_then(|t| {
-        let env = serde_json::to_value(t.env.as_ref()?).ok()?;
-        Some((t, env))
-    });
-    if let Some((t, env)) = telemetry {
+    // I-32, Phase 2 spec §15.2: a telemetry line exists only when the
+    // submission carried at least one of `env`, `auto` and `ix` that parsed
+    // (edge-core's single implementation, without `ua.userAgent`).
+    let telemetry = sub
+        .telemetry
+        .as_ref()
+        .filter(|t| t.env.is_some() || t.auto.is_some() || t.ix.is_some());
+    if let Some(t) = telemetry {
         let mut body = Map::new();
         body.insert("source".into(), "challenge".into());
         body.insert("request_id".into(), f.request_id.into());
@@ -455,9 +456,14 @@ pub fn submission(f: &Finished<'_>, sub: &SubmitRecord, asn: Option<u32>) -> Vec
         if let Some(ms) = t.solve_ms {
             body.insert("solve_ms".into(), ms.into());
         }
-        body.insert("env".into(), env);
-        if let Some(auto) = t.auto.as_ref().and_then(|a| serde_json::to_value(a).ok()) {
-            body.insert("auto".into(), auto);
+        if let Some(env) = &t.env {
+            body.insert("env".into(), env.to_value());
+        }
+        if let Some(auto) = &t.auto {
+            body.insert("auto".into(), auto.to_value());
+        }
+        if let Some(ix) = &t.ix {
+            body.insert("ix".into(), mg_edge_core::events::ix_to_value(ix));
         }
         let line = envelope(
             "telemetry",
@@ -471,12 +477,52 @@ pub fn submission(f: &Finished<'_>, sub: &SubmitRecord, asn: Option<u32>) -> Vec
     out
 }
 
+/// The records of one `POST /__mg/r` (Phase 2 spec §15.3, §15.2): the
+/// `kind=refresh` event (vl-main) and, with `events.telemetry_behavior`, its
+/// `t` as `kind=telemetry` with `source = "refresh"` (vl-short). Neither a
+/// decision event nor an `mg:ev` entry (§9.3).
+pub fn refresh(f: &Finished<'_>, r: &crate::refresh::RefreshRecord) -> Vec<EventRecord> {
+    let lvl = r.lvl.map(|l| l.to_string());
+    let msg = format!("refresh {} lvl={}", r.result, lvl.as_deref().unwrap_or("-"));
+    let mut body = Map::new();
+    body.insert("request_id".into(), f.request_id.into());
+    body.insert("result".into(), r.result.into());
+    if let Some(reason) = &r.reason {
+        body.insert("reason".into(), reason.as_str().into());
+    }
+    if let Some(lvl) = lvl {
+        body.insert("lvl".into(), lvl.into());
+    }
+    if let Some(age) = r.level_age_s {
+        body.insert("level_age_s".into(), age.into());
+    }
+    body.insert("bound".into(), r.bound.into());
+    let line = envelope("refresh", f.site, f.ts_ms, &msg, Value::Object(body));
+    let mut out = vec![EventRecord::new(EventClass::Priority, Sink::Main, line)];
+    if let Some(t) = &r.telemetry {
+        let mut body = match t.to_value() {
+            Value::Object(o) => o,
+            _ => Map::new(),
+        };
+        body.insert("source".into(), "refresh".into());
+        body.insert("request_id".into(), f.request_id.into());
+        let line = envelope(
+            "telemetry",
+            f.site,
+            f.ts_ms,
+            "refresh t",
+            Value::Object(body),
+        );
+        out.push(EventRecord::new(EventClass::Sampled, Sink::Short, line));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::decide::Enforcement;
     use crate::mg_endpoints::Telemetry;
-    use crate::submission::{AutomationSummary, EnvSummary, UaSummary};
     use mg_challenge::BindInputs;
     use mg_core::{
         BotClass, ChallengeResult, ChallengeType, Channel, RouteInfo, RuleHit, Score, TokenLevel,
@@ -935,23 +981,12 @@ mod tests {
             telemetry: telemetry.then(|| Telemetry {
                 build: "0123456789abcdef".into(),
                 solve_ms: Some(312),
-                env: Some(
-                    EnvSummary {
-                        v: 1,
-                        ua: Some(UaSummary {
-                            user_agent: Some("Mozilla/5.0 secret-ua".into()),
-                            mobile: Some(false),
-                            ..UaSummary::default()
-                        }),
-                        languages: Some(vec!["zh-CN".into()]),
-                        ..EnvSummary::default()
-                    }
-                    .for_telemetry(),
+                env: mg_edge_core::events::TelemetryEnv::from_value(&json!({"v": 1,
+                    "ua": {"userAgent": "Mozilla/5.0 secret-ua", "mobile": false},
+                    "languages": ["zh-CN"]})),
+                auto: mg_edge_core::events::TelemetryAuto::from_value(
+                    &json!({"v": 1, "webdriver": false}),
                 ),
-                auto: Some(AutomationSummary {
-                    v: 1,
-                    webdriver: Some(false),
-                }),
                 ix: None,
             }),
             reissued: None,
@@ -1002,10 +1037,18 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out[0].stream.is_none());
 
-        // A parsed body without `env` (or whose `env` did not parse): no
-        // telemetry either (§10.3).
+        // Phase 2 spec §15.2: `auto` alone is enough for a line; with no
+        // `env`, `auto` or `ix` there is none (I-32).
         let mut no_env = submit_record(true);
         no_env.telemetry.as_mut().unwrap().env = None;
+        let out = submission(&f, &no_env, None);
+        assert_eq!(out.len(), 2);
+        let v = json(&out[1].line);
+        assert!(
+            v.get("env").is_none() && v["auto"]["webdriver"] == false,
+            "{v}"
+        );
+        no_env.telemetry.as_mut().unwrap().auto = None;
         let out = submission(&f, &no_env, None);
         assert_eq!(out.len(), 1, "feedback only");
         assert!(json(&out[0].line)["kind"] == "feedback");

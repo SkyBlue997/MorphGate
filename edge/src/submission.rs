@@ -43,9 +43,8 @@
 
 use mg_challenge::{SessionKey, SubmissionFields, renew_message, submission_message};
 use mg_core::{ChallengeType, IxTelemetry};
-use mg_edge_core::events::{ChallengeTelemetry, T_MAX_BYTES};
+use mg_edge_core::events::{ChallengeTelemetry, T_MAX_BYTES, TelemetryAuto, TelemetryEnv};
 use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -68,10 +67,6 @@ pub const MAX_T: usize = T_MAX_BYTES;
 pub const MAX_SIG: usize = 256;
 /// Largest `ts` of a v2 submission or a renewal (exclusive): `2^53`.
 pub const MAX_TS: u64 = 1 << 53;
-/// String cap of the typed `env` (§9.11).
-pub const MAX_ENV_STRING: usize = 256;
-/// Array cap of the typed `env` (§9.11).
-pub const MAX_ENV_ITEMS: usize = 16;
 
 /// How the body is encoded: a form navigation or a fetch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,9 +313,10 @@ pub struct Submission {
     /// Client clock (ms); a feature only (v2: an integer, signed).
     pub ts: f64,
     pub build: String,
-    /// v1: the top-level `env` / `auto`; v2: those of `t`.
-    pub env: Option<EnvSummary>,
-    pub auto: Option<AutomationSummary>,
+    /// v1: the top-level `env` / `auto`; v2: those of `t`. Parsed by
+    /// edge-core's single telemetry implementation (Phase 2 spec §15.2).
+    pub env: Option<TelemetryEnv>,
+    pub auto: Option<TelemetryAuto>,
     /// v2 only (empty in v1).
     pub v2: Option<SubmissionV2>,
 }
@@ -435,8 +431,10 @@ pub fn parse_submission(text: &str) -> Result<Submission, BodyError> {
         _ => return Err(field("build")),
     };
     if v == 1 {
-        let env = top.remove("env").and_then(EnvSummary::from_value);
-        let auto = top.remove("auto").and_then(AutomationSummary::from_value);
+        let env = top.remove("env").and_then(|v| TelemetryEnv::from_value(&v));
+        let auto = top
+            .remove("auto")
+            .and_then(|v| TelemetryAuto::from_value(&v));
         return Ok(Submission {
             v,
             ty,
@@ -480,15 +478,7 @@ pub fn parse_submission(text: &str) -> Result<Submission, BodyError> {
         (None, None, None, false)
     } else {
         let tel = ChallengeTelemetry::parse(&t).map_err(|_| field("t"))?;
-        let Value::Object(mut parts) = strict_json(&t).map_err(|_| field("t"))? else {
-            return Err(field("t"));
-        };
-        (
-            parts.remove("env").and_then(EnvSummary::from_value),
-            parts.remove("auto").and_then(AutomationSummary::from_value),
-            tel.ix,
-            tel.ix_rejected,
-        )
+        (tel.env, tel.auto, tel.ix, tel.ix_rejected)
     };
     Ok(Submission {
         v,
@@ -592,212 +582,6 @@ pub fn parse_renew(text: &str) -> Result<Renewal, BodyError> {
         _ => return Err(field("sig")),
     };
     Ok(Renewal { c, jwk, ts, sig })
-}
-
-// ---------------------------------------------------------------------------
-// env / auto (the SDK schema, v = 1)
-
-/// Cuts `s` to at most `max` bytes on a char boundary.
-fn cut(s: &mut String, max: usize) {
-    if s.len() > max {
-        let mut end = max;
-        while !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        s.truncate(end);
-    }
-}
-
-fn cut_opt(s: &mut Option<String>) {
-    if let Some(s) = s {
-        cut(s, MAX_ENV_STRING);
-    }
-}
-
-/// A finite number (JSON has no other).
-fn finite(v: &mut Option<f64>) {
-    if v.is_some_and(|x| !x.is_finite()) {
-        *v = None;
-    }
-}
-
-/// `{brand, version}` of the low-entropy UA Client Hints.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Brand {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brand: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-}
-
-/// `env.ua`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct UaSummary {
-    /// `navigator.userAgent` (truncated by the SDK); compared with the
-    /// `User-Agent` header (§10.3 step 8), never written to telemetry.
-    #[serde(rename = "userAgent", default, skip_serializing_if = "Option::is_none")]
-    pub user_agent: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brands: Option<Vec<Brand>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mobile: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub platform: Option<String>,
-}
-
-/// `env.screen`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Screen {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub width: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub height: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub avail_width: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub avail_height: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_depth: Option<f64>,
-}
-
-/// `env.viewport`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Viewport {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub width: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub height: Option<f64>,
-}
-
-/// `env.touch`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Touch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_touch_points: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub coarse_pointer: Option<bool>,
-}
-
-/// `env.storage`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Storage {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cookies: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub indexed_db: Option<bool>,
-}
-
-/// The SDK's `EnvSummary` (`sdk/web/src/env.ts`, `v = 1`). Every probe may
-/// be `null` (I-28); `graphics` (always `null` in Phase 1) and unknown
-/// fields are dropped. Serialized for `kind=telemetry` (§13.5) through
-/// [`EnvSummary::for_telemetry`].
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EnvSummary {
-    pub v: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ua: Option<UaSummary>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub languages: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub time_zone: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub utc_offset_min: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub screen: Option<Screen>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub viewport: Option<Viewport>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dpr: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cores: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_gb: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub touch: Option<Touch>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage: Option<Storage>,
-}
-
-impl EnvSummary {
-    /// The typed summary of an `env` value; `None` when it does not fit the
-    /// schema or `v != 1` (the submission then has no `env`).
-    pub fn from_value(v: Value) -> Option<Self> {
-        let mut env: Self = serde_json::from_value(v).ok()?;
-        (env.v == 1).then_some(())?;
-        env.bound();
-        Some(env)
-    }
-
-    /// Applies the §9.11 caps: strings ≤ 256 bytes, arrays ≤ 16 items.
-    fn bound(&mut self) {
-        if let Some(ua) = &mut self.ua {
-            cut_opt(&mut ua.user_agent);
-            cut_opt(&mut ua.platform);
-            if let Some(brands) = &mut ua.brands {
-                brands.truncate(MAX_ENV_ITEMS);
-                for b in brands {
-                    cut_opt(&mut b.brand);
-                    cut_opt(&mut b.version);
-                }
-            }
-        }
-        if let Some(langs) = &mut self.languages {
-            langs.truncate(MAX_ENV_ITEMS);
-            for l in langs {
-                cut(l, MAX_ENV_STRING);
-            }
-        }
-        cut_opt(&mut self.time_zone);
-        for n in [
-            &mut self.utc_offset_min,
-            &mut self.dpr,
-            &mut self.cores,
-            &mut self.memory_gb,
-        ] {
-            finite(n);
-        }
-    }
-
-    /// The submitted `navigator.userAgent`, if any.
-    pub fn user_agent(&self) -> Option<&str> {
-        self.ua.as_ref()?.user_agent.as_deref()
-    }
-
-    /// The summary as `kind=telemetry` carries it: without `ua.userAgent`
-    /// (§13.5; the header is already in the decision events).
-    pub fn for_telemetry(&self) -> Self {
-        let mut env = self.clone();
-        if let Some(ua) = &mut env.ua {
-            ua.user_agent = None;
-        }
-        env
-    }
-}
-
-/// The SDK's `AutomationSummary` (`sdk/web/src/automation.ts`, `v = 1`);
-/// `webdriver` is `null` when the property is missing.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AutomationSummary {
-    pub v: u32,
-    #[serde(default)]
-    pub webdriver: Option<bool>,
-}
-
-impl AutomationSummary {
-    /// The typed summary of an `auto` value; `None` when it does not fit
-    /// the schema or `v != 1`.
-    pub fn from_value(v: Value) -> Option<Self> {
-        let auto: Self = serde_json::from_value(v).ok()?;
-        (auto.v == 1).then_some(auto)
-    }
 }
 
 #[cfg(test)]
@@ -974,8 +758,9 @@ mod tests {
         assert_eq!(parse_submission(&deep(500)), Err(BodyError::Depth));
     }
 
-    /// I-28: every probe may be null; unknown fields are dropped; a part
-    /// that does not fit the schema is absent, not a failure.
+    /// I-28: every probe may be null; unknown fields are dropped; a field
+    /// of the wrong type is null, a part that does not fit the schema is
+    /// absent, never a failure (edge-core's single implementation, §15.2).
     #[test]
     fn env_and_auto() {
         let env = r#","env":{"v":1,"ua":{"userAgent":null,"brands":null,"mobile":null,"platform":null},
@@ -986,14 +771,8 @@ mod tests {
         let s = parse_submission(&body(env)).unwrap();
         let e = s.env.unwrap();
         assert_eq!(e.user_agent(), None);
-        assert_eq!(e.storage.unwrap().local, Some(true));
-        assert_eq!(
-            s.auto,
-            Some(AutomationSummary {
-                v: 1,
-                webdriver: None
-            })
-        );
+        assert_eq!(e.storage.local, Some(true));
+        assert_eq!(s.auto.unwrap().webdriver, None);
 
         let full = r#","env":{"v":1,"ua":{"userAgent":"UA","brands":[{"brand":"Chromium","version":"131"}],"mobile":false,"platform":"macOS"},
             "languages":["zh-CN","en"],"timeZone":"Asia/Shanghai","utcOffsetMin":480,
@@ -1005,37 +784,36 @@ mod tests {
         let s = parse_submission(&body(full)).unwrap();
         let e = s.env.unwrap();
         assert_eq!(e.user_agent(), Some("UA"));
-        assert_eq!(e.screen.as_ref().unwrap().avail_width, Some(1510.0));
         assert_eq!(s.auto.unwrap().webdriver, Some(true));
         // Telemetry drops ua.userAgent and keeps the rest.
-        let t = serde_json::to_value(e.for_telemetry()).unwrap();
+        let t = e.to_value();
         assert!(t["ua"].get("userAgent").is_none());
         assert_eq!(t["ua"]["platform"], "macOS");
         assert_eq!(t["timeZone"], "Asia/Shanghai");
+        assert_eq!(t["screen"]["availWidth"], 1510);
 
-        // Schema mismatches make the part absent.
-        for bad in [
-            r#","env":{"v":2}"#,
-            r#","env":{"v":1,"ua":{"userAgent":5}}"#,
-            r#","env":{"v":1,"languages":"zh"}"#,
-            r#","env":"x""#,
-            r#","env":null"#,
-        ] {
+        // A wrong field type is null; a wrong version or shape drops the part.
+        let s = parse_submission(&body(
+            r#","env":{"v":1,"ua":{"userAgent":5},"languages":"zh"}"#,
+        ))
+        .unwrap();
+        let e = s.env.unwrap();
+        assert_eq!((e.user_agent(), e.languages.as_ref()), (None, None));
+        for bad in [r#","env":{"v":2}"#, r#","env":"x""#, r#","env":null"#] {
             let s = parse_submission(&body(bad)).unwrap();
             assert!(s.env.is_none(), "{bad}");
         }
-        for bad in [
-            r#","auto":{"v":1,"webdriver":"yes"}"#,
-            r#","auto":{"v":2,"webdriver":true}"#,
-            r#","auto":[]"#,
-        ] {
+        for bad in [r#","auto":{"v":2,"webdriver":true}"#, r#","auto":[]"#] {
             let s = parse_submission(&body(bad)).unwrap();
             assert!(s.auto.is_none(), "{bad}");
         }
+        let s = parse_submission(&body(r#","auto":{"v":1,"webdriver":"yes"}"#)).unwrap();
+        assert_eq!(s.auto.unwrap().webdriver, None);
     }
 
     #[test]
     fn env_caps() {
+        use mg_edge_core::events::{TELEMETRY_MAX_ARRAY_ITEMS, TELEMETRY_MAX_STRING_BYTES};
         let long = "é".repeat(300);
         let langs: Vec<String> = (0..40).map(|i| format!("\"l{i}\"")).collect();
         let env = format!(
@@ -1044,9 +822,9 @@ mod tests {
         );
         let e = parse_submission(&body(&env)).unwrap().env.unwrap();
         let ua = e.user_agent().unwrap();
-        assert!(ua.len() <= MAX_ENV_STRING && long.starts_with(ua));
-        assert_eq!(e.languages.unwrap().len(), MAX_ENV_ITEMS);
-        assert!(e.time_zone.unwrap().len() <= MAX_ENV_STRING);
+        assert!(ua.len() <= TELEMETRY_MAX_STRING_BYTES && long.starts_with(ua));
+        assert_eq!(e.languages.unwrap().len(), TELEMETRY_MAX_ARRAY_ITEMS);
+        assert!(e.time_zone.unwrap().len() <= TELEMETRY_MAX_STRING_BYTES);
     }
 
     /// §2.4 item 3: the body parsers never panic (10,000 xorshift inputs

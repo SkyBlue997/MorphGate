@@ -87,6 +87,7 @@ pub mod pages;
 pub mod proof;
 pub mod proxy;
 pub mod ratelimit;
+pub mod refresh;
 pub mod renew;
 pub mod rng;
 pub mod routes;
@@ -95,6 +96,7 @@ pub mod server;
 pub mod sites;
 pub mod startup;
 pub mod submission;
+pub mod telemetry;
 pub mod tls;
 
 /// The commit this binary was built from (`edge/build.rs`), or `unknown`.

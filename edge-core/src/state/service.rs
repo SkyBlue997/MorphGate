@@ -703,6 +703,18 @@ impl StateHandle {
         }
     }
 
+    /// The in-process `jti` check alone, without a Valkey round trip
+    /// (Phase 2 spec §9.4 step 5: a `POST /__mg/t` report is signed only when
+    /// its proof's `jti` is not in the local set). Checks and records like
+    /// [`StateHandle::round_trip1_v2`]'s first step; `true` only for a `jti`
+    /// recorded now (first use, the key within its quota, the set not full).
+    pub fn local_jti_fresh(&self, check: &super::JtiCheck, now_ms: i64) -> bool {
+        self.core
+            .jtis
+            .check(&check.count_key(), &check.key(), now_ms)
+            == LocalJti::Fresh
+    }
+
     /// The local `jti` verdict without a Valkey answer (§9.2 "结论").
     fn local_jti_verdict(&self, local: LocalJti, iat_s: i64) -> JtiOutcome {
         let since_ms = iat_s.saturating_sub(JTI_IAT_SKEW_S).saturating_mul(1000);

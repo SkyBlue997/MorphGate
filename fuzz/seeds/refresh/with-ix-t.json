@@ -1,0 +1,1 @@
+{"v":2,"t":"{\"ix\":{\"v\":1,\"mode\":\"single\",\"modality\":\"keyboard\",\"locale\":\"en\",\"ks\":\"local\",\"sv\":\"0.3.0\",\"fallback\":null,\"trusted\":3,\"act_ms\":2000,\"single\":{\"wait_ms\":1880},\"page\":{\"vis\":1,\"vis_during\":0,\"focus\":2,\"frame_mean\":4,\"frame_sd\":1},\"pow\":{\"ms\":9,\"worker\":true,\"impl\":\"wasm\"}}}\n"}

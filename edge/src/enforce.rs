@@ -296,8 +296,9 @@ impl EdgeResponse {
     pub fn header(&self) -> pingora::Result<ResponseHeader> {
         let mut h = ResponseHeader::build(self.status, Some(10 + self.headers.len()))?;
         // A 304 has no content (RFC 9110 §15.4.5): no Content-Type, and no
-        // Content-Length that would differ from the 200's.
-        if self.status != 304 {
+        // Content-Length that would differ from the 200's; a 204 has none
+        // either (§15.3.5).
+        if self.status != 304 && self.status != 204 {
             h.insert_header("Content-Type", self.content_type)?;
             h.insert_header("Content-Length", self.body.len())?;
         }
@@ -323,8 +324,9 @@ impl EdgeResponse {
         if self.close {
             session.set_keepalive(None);
         }
-        let head_only =
-            session.req_header().method == pingora::http::Method::HEAD || self.status == 304;
+        let head_only = session.req_header().method == pingora::http::Method::HEAD
+            || self.status == 304
+            || self.status == 204;
         session
             .write_response_header(Box::new(self.header()?), head_only)
             .await?;

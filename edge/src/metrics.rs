@@ -94,6 +94,8 @@ pub fn latency_kind(route: RouteKind) -> &'static str {
         | RouteKind::Submit
         | RouteKind::Renew
         | RouteKind::Verify
+        | RouteKind::Refresh
+        | RouteKind::Telemetry
         | RouteKind::EdgeReserved => LATENCY_KINDS[1],
     }
 }
@@ -184,6 +186,16 @@ pub struct EdgeMetrics {
     pub proof_verify: IntCounterVec,
     /// `mg_site_forced_monitor{site}` (Phase 2 spec §9.6, D-60).
     pub site_forced_monitor: IntGaugeVec,
+    /// `mg_token_refresh_total{result}` (Phase 2 spec §9.3).
+    pub token_refresh: IntCounterVec,
+    /// `mg_telemetry_reports_total{kind, result}` (Phase 2 spec §9.4).
+    pub telemetry_reports: IntCounterVec,
+    /// `mg_double_challenge_total{site, route}`: trusted reports only (§9.4).
+    pub double_challenge: IntCounterVec,
+    /// `mg_endpoint_cache_hit_reports_total{site}`: trusted reports only.
+    pub endpoint_cache_hit_reports: IntCounterVec,
+    /// `mg_sw_intercept_reports_total{site}` (§9.4).
+    pub sw_intercept_reports: IntCounterVec,
 }
 
 static METRICS: LazyLock<EdgeMetrics> = LazyLock::new(EdgeMetrics::register);
@@ -384,6 +396,31 @@ impl EdgeMetrics {
                 "1 while edge.toml force_monitor puts the whole site in monitor (D-60).",
                 &["site"]
             ),
+            token_refresh: counter!(
+                "mg_token_refresh_total",
+                "POST /__mg/r answers by result.",
+                &["result"]
+            ),
+            telemetry_reports: counter!(
+                "mg_telemetry_reports_total",
+                "POST /__mg/t reports by kind and result (accepted, unsigned, suppressed, invalid, disabled, rate_limited).",
+                &["kind", "result"]
+            ),
+            double_challenge: counter!(
+                "mg_double_challenge_total",
+                "Trusted SDK reports of a Cloudflare challenge in front of a MorphGate-protected request, by the page's route.",
+                &["site", "route"]
+            ),
+            endpoint_cache_hit_reports: counter!(
+                "mg_endpoint_cache_hit_reports_total",
+                "Trusted SDK reports of a cached /__mg/ answer (the Cloudflare bypass rule is not working).",
+                &["site"]
+            ),
+            sw_intercept_reports: counter!(
+                "mg_sw_intercept_reports_total",
+                "SDK reports of a site Service Worker answering /__mg/ requests.",
+                &["site"]
+            ),
         }
     }
 
@@ -404,6 +441,10 @@ impl EdgeMetrics {
         }
         self.interactive_available.with_label_values(&[site]);
         self.site_forced_monitor.with_label_values(&[site]);
+        for c in [&self.endpoint_cache_hit_reports, &self.sw_intercept_reports] {
+            c.with_label_values(&[site]);
+        }
+        self.double_challenge.with_label_values(&[site, "default"]);
         for kind in LATENCY_KINDS {
             self.edge_added_latency.with_label_values(&[site, kind]);
         }
@@ -500,6 +541,15 @@ impl EdgeMetrics {
         }
         for result in crate::proof::RESULTS {
             self.proof_verify.with_label_values(&[result]);
+        }
+        for result in crate::refresh::RESULTS {
+            self.token_refresh.with_label_values(&[result]);
+        }
+        for kind in mg_edge_core::events::ReportKind::ALL {
+            for result in crate::telemetry::RESULTS {
+                self.telemetry_reports
+                    .with_label_values(&[kind.as_str(), result]);
+            }
         }
         for provider in ["self_hold", "pow_a11y"] {
             for mode in ["shadow", "enforce"] {

@@ -161,6 +161,9 @@ pub struct Plan<'a> {
     pub now_us: u64,
     /// The `jti` check of a proof that passed §6.7 (Phase 2 spec §9.2).
     pub jti: Option<&'a JtiCheck>,
+    /// Count the request in the limiters (`false`: only read them, as
+    /// `POST /__mg/r` does with route R's global limiters, Phase 2 spec §9.3).
+    pub write: bool,
 }
 
 /// Runs the request's limiters and reads its verdicts (see the module
@@ -174,6 +177,7 @@ pub async fn run(state: &StateHandle, k_pseudo: &[u8; 32], plan: &Plan<'_>) -> S
         share_ip_verdicts,
         now_us,
         jti,
+        write,
     } = *plan;
     // (limiter, check) in bundle order.
     let planned: Vec<(&LimiterSpec, LimitCheck)> = env
@@ -188,7 +192,7 @@ pub async fn run(state: &StateHandle, k_pseudo: &[u8; 32], plan: &Plan<'_>) -> S
                     key: LimiterKey::new(site, spec.id.as_str(), dims),
                     params: spec.params,
                     cost: 1,
-                    write: true,
+                    write,
                 },
             ))
         })
@@ -449,6 +453,7 @@ mod tests {
                 share_ip_verdicts: false,
                 now_us: unix_now_us(),
                 jti: None,
+                write: true,
             };
             rt.block_on(run(&state, &[3; 32], &plan))
         };
@@ -496,6 +501,7 @@ mod tests {
                 share_ip_verdicts: false,
                 now_us,
                 jti: Some(&check),
+                write: true,
             };
             rt.block_on(run(state, &[3; 32], &plan)).jti
         };

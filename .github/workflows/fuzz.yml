@@ -63,6 +63,8 @@ jobs:
             targets: sealed_open clearance_token client_hello submission
           - group: phase2
             targets: mg_proof submission_v2 renew ix_telemetry
+          - group: phase2-e2b
+            targets: refresh telemetry
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

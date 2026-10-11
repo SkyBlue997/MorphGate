@@ -318,10 +318,12 @@ fn four_kinds_with_envelopes_sampling_and_redaction() {
 /// A change to a submission's JSON.
 type Edit = dyn Fn(&mut Value);
 
-/// I-32 / §10.3: `kind=telemetry` is written only for a submission that
-/// carries `env`. Solved submissions without one, with `env: null`, or with
-/// an `env` that does not fit the SDK schema write their feedback event and
-/// no telemetry line; the last submission (with `env`) writes the only one.
+/// I-32 / §10.3 (Phase 2 spec §15.2: at least one of `env`, `auto`, `ix`):
+/// `kind=telemetry` is written only for a submission that carries one.
+/// Solved submissions without `auto` and without an `env`, with `env: null`,
+/// or with an `env` that does not fit the SDK schema write their feedback
+/// event and no telemetry line; the last submission (with `env`) writes the
+/// only one.
 #[test]
 fn telemetry_only_for_submissions_with_env() {
     let env = TestEnv::new("events-telemetry");
@@ -352,6 +354,8 @@ fn telemetry_only_for_submissions_with_env() {
         assert_eq!(r.status, 403, "{what}: {}", r.head);
         let mut v = solved(&from_page(&r.body), challenge::CHROME);
         edit(&mut v);
+        // `auto` alone would be enough for a line (§15.2).
+        v.as_object_mut().unwrap().remove("auto");
         let r = submit_form(env.listen, ip, &v, "");
         assert_eq!(r.status, 303, "{what}: {}\n{}", r.head, r.body);
     }
