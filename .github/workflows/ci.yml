@@ -287,6 +287,14 @@ jobs:
       - name: make web-check
         run: make web-check
 
+      # The Edge tests serve edge/tests/fixtures/sdk; the rust job has no Node,
+      # so mg-edge's fixture_matches_the_sdk_build test skips there. Compare
+      # the fresh build here instead (spec §16: the fixture is a copy of it).
+      - name: Edge SDK fixture matches the build
+        run: |
+          diff -r sdk/web/dist/sdk edge/tests/fixtures/sdk \
+            || { echo "::error::edge/tests/fixtures/sdk is stale: copy sdk/web/dist/sdk/ into it"; exit 1; }
+
       - name: make adapters-check
         run: make adapters-check
 

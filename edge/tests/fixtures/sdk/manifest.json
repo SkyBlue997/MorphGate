@@ -1,9 +1,9 @@
 {
   "v": 1,
-  "build": "d187682e0f1af024",
-  "sdk": "mg.d187682e0f1af024.js",
+  "build": "7f0af09c6c44bc93",
+  "sdk": "mg.7f0af09c6c44bc93.js",
   "files": {
-    "mg.d187682e0f1af024.js": "d187682e0f1af024bae6f66da70742186cca7dcada5fec4ea7bab7ace9cdf8d7"
+    "mg.7f0af09c6c44bc93.js": "7f0af09c6c44bc939bbdb195494d4ad6afbf01b9d06cdbefcdd3361b0b0055c7"
   },
   "templates": {
     "challenge.html": "c4a273a58befeb565f96ee7d634d014fddb02f0f93c5eb1650b201aec870e4fe"
