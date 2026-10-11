@@ -400,7 +400,8 @@ mod tests {
 
     /// Phase 2 spec §13.1 `bt`: the built-in baits (with
     /// `scanner_baits_builtin`) and the extra globs, case-insensitively on
-    /// the fully decoded path; none in schema 1.
+    /// the fully decoded path. Schema 1 bundles flag the built-in list only
+    /// (§3.2 effective values).
     #[test]
     fn scanner_baits() {
         let mut b = mg_edge_core::testkit::http::test_site_bundle_v2(
@@ -433,7 +434,8 @@ mod tests {
         assert!(!rt.is_bait("/.env") && rt.is_bait("/hidden/x"));
         let b1 =
             mg_edge_core::testkit::http::test_site_bundle("blog", &crate::test_support::HOSTS, 1);
-        assert!(!crate::test_support::runtime(&b1, true).is_bait("/.env"));
+        let rt1 = crate::test_support::runtime(&b1, true);
+        assert!(rt1.is_bait("/.env") && !rt1.is_bait("/hidden/x"));
     }
 
     /// I-17: an in-flight mark outlives the whole rDNS job.

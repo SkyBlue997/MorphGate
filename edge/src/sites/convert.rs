@@ -580,8 +580,16 @@ pub fn build_runtime(
 
     let events = b.events.clone().unwrap_or_else(default_events);
     let mut scanner_baits = Vec::new();
-    if phase2 {
-        let builtin: &[&str] = if events.scanner_baits_builtin {
+    // Phase 2 spec §3.2: a schema 1 bundle has no Phase 2 fields, and its
+    // effective values are `scanner_baits_builtin = true` and no extra globs,
+    // so `mg:ev` v2 still flags the built-in baits for the near-line worker.
+    let (builtin_on, extra): (bool, &[String]) = if phase2 {
+        (events.scanner_baits_builtin, &events.scanner_baits)
+    } else {
+        (true, &[])
+    };
+    {
+        let builtin: &[&str] = if builtin_on {
             &crate::events::BUILTIN_SCANNER_BAITS
         } else {
             &[]
@@ -589,7 +597,7 @@ pub fn build_runtime(
         for p in builtin
             .iter()
             .copied()
-            .chain(events.scanner_baits.iter().map(String::as_str))
+            .chain(extra.iter().map(String::as_str))
         {
             scanner_baits.push(
                 Glob::new(&p.to_lowercase())
