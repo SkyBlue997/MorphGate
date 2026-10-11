@@ -556,6 +556,7 @@ Phase 1 只读写 `mg:v:*`、`mg:rl:*`、`mg:n:*` 与 `mg:ev`（持有证明 jti
 |---|---|
 | `Host`、请求目标 | Phase 1：`Host` 设为 Edge 用于选站点的规范化主机名（小写、去端口与末尾点）；请求目标一律为 origin-form（不转发绝对形式） |
 | `MG-Client-IP` | Edge 解析出的客户端 IP（规范头，源站应以它为准）；客户端 IP 未知时为字面量 `unknown` |
+| `MG-Client-IP-Prefix` | Phase 1 之后（[规格 I-40](impl/phase1-spec.md#集成者裁决2026-09-28优先于正文)）：Edge 计数与绑定所用的客户端实体，IPv4 为 `<地址>/32`，IPv6 为所在 `/64`；源站自己按 IP 限速或封禁时用它与 Edge 口径一致；未知时为 `unknown` |
 | `MG-Request-Id`、`MG-Session` | 请求 ID；假名化会话 ID（有效凭证的 `sub`，站点 `origin_headers.session` 时） |
 | `MG-Bot-Score`、`MG-Bot-Class`、`MG-Verified` | 分数（0–100）、分类（小写 wire 名）、已验证的 Agent / 爬虫 ID（Phase 1 为 `crawler:<operator>`）；站点 `origin_headers.scores` 时 |
 | `MG-Tags` | Phase 1：TAG 规则的标签（逗号分隔，至多 8 个，只来自规则，矩阵的 TAG 不带标签）；monitor 下按记录的决定照样转发 |

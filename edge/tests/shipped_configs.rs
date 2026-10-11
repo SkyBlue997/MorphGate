@@ -307,3 +307,25 @@ fn daemon_flag_without_pid_file_is_rejected() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("pid_file"));
 }
+
+/// `--version` names the commit (`edge/build.rs`), so a deployed binary can
+/// be traced back to its source.
+#[test]
+fn version_names_the_commit() {
+    let out = Command::new(EDGE_BIN).arg("--version").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(stdout, format!("mg-edge {}\n", mg_edge::VERSION));
+    let commit = mg_edge::COMMIT;
+    assert_eq!(
+        mg_edge::VERSION,
+        format!("{} ({commit})", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(
+        !commit.is_empty()
+            && commit
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')),
+        "{commit:?}"
+    );
+}

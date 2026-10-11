@@ -282,7 +282,7 @@ Draft
 | `mg_config_version`、`mg_config_age_seconds` | site | 生效版本（bootstrap 与 lkg_invalid 为 0）；距最近一次成功拉取（含 304）的秒数，在被抓取时计算，拉取循环停住时也会增长（I-16） | |
 | `mg_config_reload_total`、`mg_config_fetch_failures_total`、`mg_artifact_missing` | site、result（applied / rejected / unchanged）；site；site、name | 配置包加载结果；拉取失败；LKG 引用而缓存中没有的工件为 1 | |
 | `mg_cf_ip_filter_active` | listener | AOP 监听器已按 Cloudflare IP 段过滤 TCP 对端时为 1 | |
-| `mg_edge_info`、`mg_edge_requests_total`、`mg_edge_request_duration_seconds`、`mg_edge_request_errors_total` | `mg_edge_info`：version、edge_id | Phase 0 起的进程级指标；随机数失败的 503 计入 `mg_edge_request_errors_total` | |
+| `mg_edge_info`、`mg_edge_requests_total`、`mg_edge_request_duration_seconds`、`mg_edge_request_errors_total` | `mg_edge_info`：version、commit（构建时的提交号，Phase 1 之后加入）、edge_id | Phase 0 起的进程级指标；随机数失败的 503 计入 `mg_edge_request_errors_total` | |
 
 **控制面指标**：`mg_cf_audit_failed_checks`（zone、check）、`mg_cf_ips_sync_age_seconds`、`mg_turnstile_secret_rotation_pending`、`mg_audit_anchor_last_success_timestamp`、`mg_aop_cert_expiry_seconds`、Valkey Stream `mg:ev`（组 `nl`）积压（`XPENDING` / 长度）、事件到 verdict 延迟。模型相关指标（分数分布 PSI、特征漂移、shadow 分歧率）在 Phase 4 引入。Phase 1 没有控制面服务：`mgctl` 以 node_exporter textfile 格式（`--metrics-textfile`）写出 `mg_cf_audit_failed_checks{zone, check}`、`mg_cf_audit_last_run_timestamp_seconds{zone}`、`mg_cf_ips_sync_timestamp_seconds`（告警用 `time() - mg_cf_ips_sync_timestamp_seconds` 得到 `mg_cf_ips_sync_age_seconds`）与 `mg_bundle_published_version{site}`（`bundle publish` 写出，用于配置新鲜度告警）。
 

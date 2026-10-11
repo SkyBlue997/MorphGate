@@ -80,6 +80,12 @@ pub mod startup;
 pub mod submission;
 pub mod tls;
 
+/// The commit this binary was built from (`edge/build.rs`), or `unknown`.
+pub const COMMIT: &str = env!("MG_EDGE_COMMIT");
+
+/// `mg-edge --version`: the package version and [`COMMIT`].
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("MG_EDGE_COMMIT"), ")");
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::path::{Path, PathBuf};
