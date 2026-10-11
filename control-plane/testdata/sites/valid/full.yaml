@@ -74,6 +74,7 @@ environments:
         channel: api
         sensitivity: medium
         mode: monitor
+        never_challenge: true
     rate_limits:
       - id: login-per-ip
         routes: [login]

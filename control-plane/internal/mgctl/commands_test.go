@@ -359,11 +359,13 @@ func TestBundleBuildWithRules(t *testing.T) {
 	// Route mode overrides (I-36) are audited on sign and shown by verify.
 	e.must("keys", "gen", "--kid", "owner-2026", "--out-dir", e.path("keys"), "--insecure-test-key")
 	e.must("bundle", "sign", "--in", e.path("b/blog.sitebundle.pb"), "--key", e.path("keys/owner-2026.key.age"), "--out", e.path("blog.bundle"))
-	if rec := e.lastRecord(); !strings.Contains(string(rec.Diff), `"route_modes":{"production/api":"monitor","production/reset":"enforce"}`) {
+	if rec := e.lastRecord(); !strings.Contains(string(rec.Diff), `"route_modes":{"production/api":"monitor","production/reset":"enforce"}`) ||
+		!strings.Contains(string(rec.Diff), `"never_challenge":["production/api"]`) {
 		t.Errorf("sign record %s", rec.Diff)
 	}
 	out := e.must("bundle", "verify", "--in", e.path("blog.bundle"), "--pub", e.path("keys/owner-2026.pub"))
-	if !strings.Contains(out, "route modes production/api=monitor,production/reset=enforce\n") {
+	if !strings.Contains(out, "route modes production/api=monitor,production/reset=enforce\n") ||
+		!strings.Contains(out, "never challenge production/api\n") {
 		t.Errorf("verify: %q", out)
 	}
 	e.expect(cli.ExitFailed, "is invalid", "site", "check", "--site-config", sitesDir+"/invalid/challenge-ttl.yaml")

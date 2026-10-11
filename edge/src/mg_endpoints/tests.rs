@@ -207,6 +207,7 @@ impl Req {
             site_id: "blog",
             route: &route,
             monitor: false,
+            never_challenge: false,
             profile: ListenerProfile::DirectTls,
             auth_method: "none",
             cf: None,

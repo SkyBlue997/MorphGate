@@ -15,8 +15,9 @@
 //!    `GET` also admits `HEAD`, see [`method_admits`]);
 //! 2. of those, the most sensitive one is selected (ties: declared first);
 //! 3. `require_clearance` and `fail_closed` are the OR over every route found
-//!    in step 1, not only the selected one, and the route mode (I-36) is the
-//!    strictest of theirs.
+//!    in step 1, not only the selected one, the route mode (I-36) is the
+//!    strictest of theirs, and `never_challenge` (I-37) holds only if it
+//!    holds for all of them.
 //!
 //! Route matching does not go through the policy evaluator; the §8.2 caps
 //! (≤ 64 routes, ≤ 16 patterns of ≤ 128 bytes with ≤ 4 wildcards) and the
@@ -36,6 +37,8 @@ pub struct RouteMatch<'a> {
     pub fail_closed: bool,
     /// The strictest mode of every route matched by some candidate.
     pub mode: RouteMode,
+    /// AND over every route matched by some candidate.
+    pub never_challenge: bool,
 }
 
 impl RouteMatch<'_> {
@@ -74,6 +77,7 @@ pub fn select_route<'a>(
     let mut require_clearance = false;
     let mut fail_closed = false;
     let mut mode = RouteMode::Monitor;
+    let mut never_challenge = true;
     for candidate in &candidates {
         let Some((pos, route)) = eligible
             .iter()
@@ -85,6 +89,7 @@ pub fn select_route<'a>(
         require_clearance |= route.require_clearance;
         fail_closed |= route.fail_closed;
         mode = mode.max(route.mode);
+        never_challenge &= route.never_challenge;
         let better = match selected {
             None => true,
             Some((best_pos, best)) => {
@@ -102,6 +107,7 @@ pub fn select_route<'a>(
             require_clearance,
             fail_closed,
             mode,
+            never_challenge,
         },
         None => {
             let route = env
@@ -114,6 +120,7 @@ pub fn select_route<'a>(
                 require_clearance: false,
                 fail_closed: false,
                 mode: route.mode,
+                never_challenge: route.never_challenge,
             }
         }
     }
@@ -149,6 +156,7 @@ mod tests {
             require_clearance: sensitivity == RouteSensitivity::Critical,
             redact_path: false,
             mode: RouteMode::Inherit,
+            never_challenge: false,
             patterns: paths.iter().map(|p| Glob::new(p).unwrap()).collect(),
         }
     }
@@ -337,6 +345,41 @@ mod tests {
         let m = pick(&e, "GET", "/other", false);
         assert_eq!(m.mode, RouteMode::Inherit);
         assert!(m.monitor(true) && !m.monitor(false));
+    }
+
+    /// I-37: never_challenge holds only if every matched route has it.
+    #[test]
+    fn never_challenge_is_anded() {
+        // Every path view must hit an exempt route, the trailing-slash
+        // toggle included, so an exact path lists both forms.
+        let mut beacon = route("beacon", &["/beacon", "/beacon/"], RouteSensitivity::Low);
+        beacon.never_challenge = true;
+        let mut raw = route(
+            "raw",
+            &["/beacon%2Fx", "/beacon%2Fx/"],
+            RouteSensitivity::Low,
+        );
+        raw.never_challenge = true;
+        let e = env(vec![
+            beacon,
+            raw,
+            route("api", &["/beacon/x"], RouteSensitivity::Medium),
+            route("default", &["/**"], RouteSensitivity::Low),
+        ]);
+        assert!(pick(&e, "GET", "/beacon", false).never_challenge);
+        assert!(pick(&e, "GET", "/beacon/", false).never_challenge);
+        // Without the slash form, "/beacon/" also hits the default route.
+        let mut bare = route("beacon", &["/beacon"], RouteSensitivity::Low);
+        bare.never_challenge = true;
+        let e2 = env(vec![
+            bare,
+            route("default", &["/**"], RouteSensitivity::Low),
+        ]);
+        assert!(!pick(&e2, "GET", "/beacon", false).never_challenge);
+        // The decoded view hits a route that may challenge.
+        let m = pick(&e, "GET", "/beacon%2Fx", false);
+        assert!(!m.never_challenge);
+        assert!(!pick(&e, "GET", "/other", false).never_challenge);
     }
 
     #[test]

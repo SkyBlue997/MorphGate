@@ -153,6 +153,9 @@ pub struct EnforceInput<'a> {
     /// Monitor (`SiteBundle.monitor_only` resolved through the route mode,
     /// I-36): record, never enforce.
     pub monitor: bool,
+    /// The route never challenges (I-37): a CHALLENGE is recorded with
+    /// `dry_run` and forwarded.
+    pub never_challenge: bool,
 }
 
 /// The §9.9 execution layer. Returns the decision to record (the engine's,
@@ -164,6 +167,8 @@ pub struct EnforceInput<'a> {
 ///   decision is already a denial and is kept, so the substitution never
 ///   answers more permissively than the engine.
 /// * monitor: `dry_run = true`, forwarded as ALLOW.
+/// * CHALLENGE on a `never_challenge` route (I-37): `dry_run = true`,
+///   forwarded. BLOCK and RATE_LIMIT are executed as usual.
 /// * CHALLENGE with an unknown client IP: 429 without a `C` (D-23); the
 ///   recorded decision is unchanged (§5.4).
 /// * `Early-Data: 1` on a critical route that would be forwarded: 425.
@@ -181,7 +186,7 @@ pub fn enforce(engine: Decision, input: &EnforceInput<'_>) -> (Decision, Enforce
             ..Decision::default()
         };
     }
-    if input.monitor {
+    if input.monitor || (input.never_challenge && d.action == Action::Challenge) {
         d.dry_run = true;
         return (d, Enforcement::Forward);
     }
@@ -386,6 +391,7 @@ pub async fn evaluate(
             client_ip_known: built.ctx.net.ip.is_some(),
             early_data: built.ctx.http.early_data,
             monitor: facts.monitor,
+            never_challenge: facts.never_challenge,
         },
     );
     DecisionRecord {
@@ -428,6 +434,7 @@ mod tests {
             client_ip_known: ip,
             early_data: early,
             monitor,
+            never_challenge: false,
         }
     }
 
@@ -474,6 +481,52 @@ mod tests {
             &input(&r, true, false, false),
         );
         assert_eq!(e, Enforcement::Challenge(ChallengeType::Pow));
+    }
+
+    /// I-37: a never_challenge route records a CHALLENGE (`dry_run`) and
+    /// forwards; denials and the fail_closed substitution still apply.
+    #[test]
+    fn never_challenge_route_records_challenges() {
+        let r = route(RouteSensitivity::Medium, false);
+        let nc = |ip: bool| EnforceInput {
+            never_challenge: true,
+            ..input(&r, ip, false, false)
+        };
+        let engine = Decision::challenge(ChallengeType::Pow);
+        for ip in [true, false] {
+            let (d, e) = enforce(engine.clone(), &nc(ip));
+            assert_eq!(e, Enforcement::Forward, "ip known: {ip}");
+            assert!(d.dry_run && d.action == Action::Challenge);
+        }
+        let (d, e) = enforce(block(), &nc(true));
+        assert_eq!(e, Enforcement::Block);
+        assert!(!d.dry_run);
+        let rl = Decision {
+            action: Action::RateLimit,
+            status: Some(429),
+            retry_after_s: Some(7),
+            ..Decision::default()
+        };
+        let (_, e) = enforce(rl, &nc(true));
+        assert_eq!(e, Enforcement::RateLimit { retry_after_s: 7 });
+        let (d, e) = enforce(Decision::allow(), &nc(true));
+        assert_eq!(e, Enforcement::Forward);
+        assert!(!d.dry_run);
+        // A fail_closed route without a client IP is still 429.
+        let fc = route(RouteSensitivity::Medium, true);
+        let (_, e) = enforce(
+            engine,
+            &EnforceInput {
+                never_challenge: true,
+                ..input(&fc, false, false, false)
+            },
+        );
+        assert_eq!(
+            e,
+            Enforcement::RateLimit {
+                retry_after_s: CLIENT_IP_UNKNOWN_RETRY_S
+            }
+        );
     }
 
     /// D-23: a challenge is never issued for an unknown client IP; the

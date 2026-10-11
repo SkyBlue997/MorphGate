@@ -50,6 +50,7 @@
 | I-34 | 阶段 3 集成，正文未列而实现已有的字段与接口：§13.2 决定事件可有顶层 `upstream_as_org`（Tier 1 `x-mg-cf-as-org`，Phase 1 只记录）、`oversize`（`hard.oversize_skipped` 时超出的上限，取值同 I-2 的 `kind`）与 `token: {"replay_unchecked": true}`（I-30）；`ja4_spike = true` 的 `direct_tls` 监听器上 `ctx.tls.ja4 = {value, source: self, authenticated: true}`（WP-J1），MissingSet 仍含 `tls.ja4`（D-07）；§7.6 `RdnsJob` 另有私有的签发者 id 与序号（I-26），公共接口增加 `RdnsJob::new`（独立作业，`complete` / `abandon` 忽略它）与 `RdnsJob::issued_by`；§14.2 `cli.Env.AuditReady`（I-27 的预检，同时要求审计日志可追加）。接受 WP-J1 的 `Cargo.lock` 一行变化（开发依赖 `reqwest` 已在工作区中，无新 crate） | §7.6、§9.5、§13.2、§14.2 |
 | I-35 | 阶段 3 集成，接受为 Phase 1 的已知限制（Phase 2 复审）：(a) 选中路由之前就应答或不求值转发的请求（外部 Worker 403、监听器 403、站点不可用 503、monitor / bootstrap 下原样转发的超限请求）不做 `redact_path` 改写（10 R-12；bootstrap 与 `lkg_invalid` 时根本没有路由表）；(b) Pingora 关闭信号之后才完成的请求，其事件计为 `mg_event_dropped_total{sink="buffer"}` 丢弃（02 §2.3、10 EVT-03） | §9.11、D-31 |
 | I-36 | 2026-10-11，Phase 1 之后的增补（真实站点 monitor 期的反馈）：路由可设 `mode: monitor \| enforce`，缺省继承站点的 `monitor_only`（配置包 `Route.mode`，枚举 `RouteMode`：`INHERIT = 0`、`MONITOR = 1`、`ENFORCE = 2`；未知值使配置包无效）。它只改变 §9.9 执行层是否只记录：有效 monitor 时决定照常记入事件，`dry_run = true`、决定事件的 `monitor_only = true`，按 ALLOW 转发。§9.4 第 6 步一个请求经不同路径视图命中多条路由时，取其中**最严**的模式（`enforce` > 继承 > `monitor`）再按站点开关解析：换一种路径写法只会更严，不会降级为只记录。选中路由之前的处理（§9.3.1 协议拒绝、外部 Worker、监听器、站点不可用、bootstrap）仍只看站点级 `monitor_only`；例外是超限请求：站点 monitor 而配置包中有任一 `mode: enforce` 路由时，超限请求按 enforce 拒绝（它们跳过路由匹配，否则可以不经求值到达 enforce 路由）。`mgctl bundle verify` 列出覆盖的路由，`bundle.sign` 的审计 `diff` 记 `route_modes`。用途：整站 monitor 时先让一条测试路由 enforce，或在 enforce 站点上把新路由先放在 monitor | §3.2、§8.2、§8.3、§9.4、§9.9、I-2 |
+| I-37 | 2026-10-11，Phase 1 之后的增补（真实站点 monitor 期的反馈）：路由可设 `never_challenge: true`（配置包 `Route.never_challenge`，缺省 false）。用于挑战页会破坏的客户端，例如 `sendBeacon` 上报、只接受 JSON 的接口：这类路由上 §9.9 的 CHALLENGE 决定（规则、评分或限速器 `on_exceed: challenge` 给出的）只记录，`dry_run = true`，按 ALLOW 转发；BLOCK、RATE_LIMIT 照常执行，`fail_closed` 路由客户端 IP 未知时的 429 也不变。只允许用在 `low` / `medium` 且不 `require_clearance` 的路由上：构建器报错，Edge 转换时配置包无效。§9.4 第 6 步取所有命中路由的"与"：任一命中路由不带该标志就照常挑战，所以换一种路径写法只会更严；末尾 `/` 切换后的候选也算，精确路径要同时列出 `/x` 与 `/x/`。限速器 `on_exceed: challenge` 显式列出这样的路由时构建器报错（改用 `rate_limit` 或 `block`），不列 `routes`（覆盖全部路由）时只给警告。`mgctl bundle verify` 列出这些路由，`bundle.sign` 的审计 `diff` 记 `never_challenge` | §3.2、§8.2、§8.3、§9.4、§9.9 |
 
 ## 0. 范围、决定与已落地文件
 
@@ -363,7 +364,7 @@ message Glob { Expr subject = 1; string pattern = 2; }
 | 消息 | 新增 | 说明 |
 |---|---|---|
 | `UpstreamProfile` | — | Phase 1 只用 `kind` 与 `expected_mask`；字段 2–7 留给后续 profile，构建器必须留空 |
-| `Route` | `paths = 9`（repeated glob）、`require_clearance = 10`、`redact_path = 11`、`mode = 12`（`RouteMode`，I-36） | `path_glob` 弃用：构建器只写 `paths`，Edge 把非空的 `path_glob` 当作 `paths` 的一项；`redact_path` 见 D-31 |
+| `Route` | `paths = 9`（repeated glob）、`require_clearance = 10`、`redact_path = 11`、`mode = 12`（`RouteMode`，I-36）、`never_challenge = 13`（I-37） | `path_glob` 弃用：构建器只写 `paths`，Edge 把非空的 `path_glob` 当作 `paths` 的一项；`redact_path` 见 D-31 |
 | `CompiledRule` | — | `params` 在 Phase 1 只允许 `type`、`label`、`limiter`、`retry_after_s` |
 | `RateLimit` | `route_ids = 10`、`scope = 11`、`retry_after_s = 12`、`challenge_type = 13`、`signal_weight = 14` | `route_id` 弃用 |
 | `Environment` | `hosts = 6` | |
@@ -1447,6 +1448,7 @@ environments:
         paths: ["/api/**"]
         channel: api
         sensitivity: medium
+        never_challenge: true         # optional: CHALLENGE is only recorded (low / medium routes, I-37)
     rate_limits:
       - id: login-per-ip
         routes: [login]               # empty = every route of this environment
@@ -1483,7 +1485,7 @@ environments:
 | `created_at_ms` | 构建时间 |
 | `upstream.kind` / `expected_mask` | profile；`cloudflare`：NETWORK \| HTTP \| EDGE_TLS \| IDENTITY \| RATE \| EXTERNAL；`direct_tls`：NETWORK \| TLS \| HTTP \| IDENTITY \| RATE |
 | `case_insensitive_paths` | YAML 同名键，缺省 false |
-| `environments[].routes` | 声明顺序；末尾追加 `{id: "default", name: "default", paths: ["/**"], channel: WEB, sensitivity: LOW}`（除非已有 `paths == ["/**"]` 的路由）；`Route.id = Route.name`；`redact_path` 缺省 false；`mode` 缺省 `ROUTE_MODE_INHERIT`（I-36） |
+| `environments[].routes` | 声明顺序；末尾追加 `{id: "default", name: "default", paths: ["/**"], channel: WEB, sensitivity: LOW}`（除非已有 `paths == ["/**"]` 的路由）；`Route.id = Route.name`；`redact_path` 缺省 false；`mode` 缺省 `ROUTE_MODE_INHERIT`（I-36）；`never_challenge` 缺省 false（I-37） |
 | `environments[].rules` | 该环境所有策略文件的规则，去掉 `mode: disabled` 与已过期的，按 §5.4 排序；`expr_ir` 由 `CheckedRule.Proto()` 填入。**任一规则 `ir_version != 1` 或 `expr_ir` 为空时 `Build` 失败**（错误 `policy IR unavailable`），所以 WP-G1 合入前的构建器不会产生 Edge 无法加载的配置包 |
 | `environments[].rate_limits` | 声明顺序；`algorithm = "gcra"`；`route_ids` 为空表示全部路由 |
 | `token_key_ids` | `[active_kid] + verify_kids` |
@@ -1633,7 +1635,7 @@ Cloudflare 自身的上限（URL 约 16 KiB、请求头合计约 32 KiB）比这
 3. **站点状态**（§9.10）：`lkg_invalid` 或 `bootstrap = "closed"` 的 `bootstrap` → 503 纯文本、`Retry-After: 30`，计 `mg_site_unavailable_total{site}`（`/__mg/healthz` 照常）；`bootstrap = "open"` 继续。
 4. **外部 Worker**：`cloudflare` 且 `CF-Worker` 存在但不属于 `owner_zones` → 403（§9.3.2）。bootstrap 状态下没有 `owner_zones`：任何 `CF-Worker` 都视为外部。
 5. **环境**：`hosts` 含该 Host 的环境。
-6. **路由**（D-25）：去掉查询串后，用 `mg_core::paths::route_candidates(path, site.case_insensitive_paths)` 得到候选串（原始路径、`rfc3986_view`、`cloudflare_view`、`decoded_view`，各自再加切换末尾 `/` 的形式，去重）。对每个候选串，按声明顺序找第一个命中的路由：`hosts` 为空或含该 Host、`methods` 为空或含该方法（不区分大小写，`GET` 同时接受 `HEAD`，I-33）、任一 `paths` 模式（`mg_core::policy::Glob`，§5.3 语义）命中。所有候选串命中的路由中，取**敏感度最高**者为选中路由（相同时取声明在前者）；其 `RouteInfo.require_clearance` 与 `fail_closed` 是所有命中路由对应值的"或"，路由模式取所有命中路由中最严的（I-36）。都不命中时用 `default`。
+6. **路由**（D-25）：去掉查询串后，用 `mg_core::paths::route_candidates(path, site.case_insensitive_paths)` 得到候选串（原始路径、`rfc3986_view`、`cloudflare_view`、`decoded_view`，各自再加切换末尾 `/` 的形式，去重）。对每个候选串，按声明顺序找第一个命中的路由：`hosts` 为空或含该 Host、`methods` 为空或含该方法（不区分大小写，`GET` 同时接受 `HEAD`，I-33）、任一 `paths` 模式（`mg_core::policy::Glob`，§5.3 语义）命中。所有候选串命中的路由中，取**敏感度最高**者为选中路由（相同时取声明在前者）；其 `RouteInfo.require_clearance` 与 `fail_closed` 是所有命中路由对应值的"或"，路由模式取所有命中路由中最严的（I-36），`never_challenge` 是所有命中路由对应值的"与"（I-37）。都不命中时用 `default`。
    - 例：`paths: ["/account/login"]` 的 `critical` 路由同样命中 `/account/login/`、`/account%2Flogin`、`/account/login;jsessionid=1`、`//account/./login`；`case_insensitive_paths` 时还命中 `/Account/Login`。
    - 成本：路由匹配不经过 IR 求值器，不计步数（§5.3）；§8.2 的上限（每环境 ≤ 64 个路由、每个 ≤ 16 个模式、模式 ≤ 128 字节且至多 4 个通配符）加上 8 KiB 路径上限约束了最坏情况；`Glob::matches` 先比较字面前缀，只有前缀命中才运行 DP；相同的候选串只匹配一次。
    - `/__mg/*` 在第 4 步之后、第 5 步之前分派（§10.1）；归属仍按 `mg_core::paths::is_reserved`（原始路径与 Cloudflare 的两种规范化），不用 `decoded_view`。
@@ -1863,6 +1865,7 @@ return out
 | RATE_LIMIT | 429 + `Retry-After`；导航请求返回简短 HTML（中英文"请求过多"+ request_id），否则 `{"error":"mg_rate_limited","retry_after":N,"request_id":"…"}` |
 | BLOCK | 403；导航请求返回通用阻断页（只含 request_id 与"如有疑问请联系站点所有者"），否则 `{"error":"mg_blocked","request_id":"…"}` |
 | monitor（`SiteBundle.monitor_only`，经路由 `mode` 解析，I-36）与 bootstrap-open | 引擎给出的决定原样记入事件，`decision.dry_run = true`、`monitor_only = true`；按 ALLOW 转发（带 `MG-*` 头，`MG-Bot-Class` 等反映评分结果）。§9.3.1 的协议拒绝、§9.4 的外部 Worker 403 与站点不可用 503 不受 monitor 影响 |
+| `never_challenge` 路由（I-37） | 在 `fail_closed` 替换之后：CHALLENGE 决定原样记入事件，`decision.dry_run = true`，按 ALLOW 转发；BLOCK、RATE_LIMIT（含 `hard.client_ip_unknown`）照常执行 |
 | `fail_closed` 路由且客户端 IP 未知 | 决定改为 RATE_LIMIT 429、`Retry-After: 5`、`rule_id = "hard.client_ip_unknown"`（monitor 时同样只记录）；引擎已给出 BLOCK / RATE_LIMIT 时保持原决定（I-33） |
 | `Early-Data: 1` | 任一 `Early-Data` 实例即 `http.early_data = true`：不签发凭证、不消费 nonce；`critical` 路由上本应转发的决定改为 425，BLOCK 与 CHALLENGE 不变（I-33；monitor 时只记录） |
 | 随机数失败 | 生成 `request_id`、C、CSP nonce 或凭证时 `getrandom` 失败 → 503，计 `mg_edge_request_errors_total`，不 panic |
