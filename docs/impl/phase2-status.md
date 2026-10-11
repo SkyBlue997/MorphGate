@@ -1,7 +1,7 @@
 # Phase 2 进度记录
 
 **更新时间**：2026-10-12
-**分支**：每个工作包一个 PR，合入 `master`（PR #19–#38 已合入）；本文件随 WP-D2 的 PR 提交。
+**分支**：每个工作包一个 PR，合入 `master`（PR #19–#38 已合入）；本文件随 WP-D2 的 PR #40 提交。
 **状态**：规格、契约落地、阶段 1（7 个 WP）与阶段 2（E2a → E2b → E2c）已合入；阶段 3 中设计文档勘误（WP-D2）随本文件提交，Validation Lab 的 Phase 2 场景（WP-L2）进行中。代码侧的 Phase 2 功能全部关闭在配置之后：`schema_version = 1` 的配置包让新二进制严格按 Phase 1 运行（D-66）。下一步是所有者按 [规格 §19](phase2-spec.md#19-所有者运维手册代码之外) 逐步启用。
 
 ## 0. 给所有者的摘要
@@ -39,7 +39,7 @@
 | 阶段 2 | E2a → E2b → E2c 依次合入 `mg-edge`（见 §2） | 完成 | #32–#37 |
 | 裁决 | I-43..I-47（契约落地）、I-48..I-54（阶段 1）、I-55..I-57（阶段 2） | 完成 | #21、#31、#38 |
 | 阶段 3 | WP-L2：Validation Lab 的 Phase 2 场景与近线端到端 | 进行中（PR 已开，尚未合入） | #39 |
-| 阶段 3 | WP-D2：设计文档勘误、威胁模型 v1、ADR-0011、隐私说明模板、本文件 | 随本 PR 提交 | — |
+| 阶段 3 | WP-D2：设计文档勘误、威胁模型 v1、ADR-0011、隐私说明模板、本文件 | 随本 PR 提交 | #40 |
 | 所有者运行步骤 | 规格 §19 第 0–11 步 | 未开始 | — |
 
 每个 PR 都在 `master` 规则集要求的全部检查通过后合入。
@@ -59,7 +59,7 @@
 | E2b mg-edge 证明与观测 | 路由上的 `MG-Proof` 与 `jti`、就地恢复、D-61 Cookie 删除、`force_monitor`（D-60）、`/__mg/r`、`/__mg/t`、`mg:ev` v2 接线、Phase 2 事件与指标、I-35 复审、关闭时的刷写、Edge ACL、告警规则与每日检查脚本；cargo-fuzz `refresh`、`telemetry` | #33、#34、#35 |
 | E2c mg-edge Turnstile | Provider 接线、国家判定、CSP、token 重放、后台服务 `mg-outbound`、熔断与自动禁用、`turnstile_keys` 凭证、`[outbound]` 与 `MG_EDGE_TEST_OUTBOUND`；cargo-fuzz `siteverify_response`、`turnstile_keys`；`MgTurnstileDisabled` 告警 | #36、#37 |
 | L2 Validation Lab | Phase 2 的否定性场景（交互式挑战页不引用第三方源、`denied_countries` 中的国家不得到 Turnstile、重放 / 篡改 / 未提供的 Provider 一律失败、外部 `CF-Worker` 403）与 `lab-e2e` 中的近线端到端 | 进行中（#39，尚未合入） |
-| D2 文档 | 01–10 与 ADR-0005 / 0006 / 0007 / 0008 / 0010 的 Phase 2 勘误（2026-10-12）、威胁模型 v1、ADR-0011、隐私说明模板、07 进度表、README 与 CLAUDE.md | 随本 PR 提交 |
+| D2 文档 | 01–10 与 ADR-0005 / 0006 / 0007 / 0008 / 0010 的 Phase 2 勘误（2026-10-12）、威胁模型 v1、ADR-0011、隐私说明模板、07 进度表、README 与 CLAUDE.md | #40 |
 
 ## 3. 集成者裁决
 
