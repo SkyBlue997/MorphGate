@@ -94,8 +94,9 @@ wire_enum! {
 
 /// Network-layer facts about the (trusted) client address.
 ///
-/// `Debug` never prints the client IP (spec §2.4, D-31): application logs
-/// must not carry it; the event JSON (serde) does, by design.
+/// `Debug` never prints the client IP or its prefix (spec §2.4, D-31; Phase 2
+/// spec §22): application logs must not carry them; the event JSON (serde)
+/// does, by design.
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Net {
@@ -138,7 +139,10 @@ impl fmt::Debug for Net {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Net")
             .field("ip", &self.ip.map(|_| crate::REDACTED))
-            .field("ip_prefix", &self.ip_prefix)
+            .field(
+                "ip_prefix",
+                &self.ip_prefix.as_ref().map(|_| crate::REDACTED),
+            )
             .field("ip_source", &self.ip_source)
             .field("asn", &self.asn)
             .field("as_org", &self.as_org)
@@ -815,6 +819,36 @@ mod tests {
         );
     }
 
+    /// Phase 2 spec §3.3: the new fields are omitted at their zero values
+    /// (Phase 1 events keep their shape) and round-trip when set.
+    #[test]
+    fn phase2_fields_json() {
+        let ctx = sample();
+        let v = serde_json::to_value(&ctx).unwrap();
+        assert!(v["http"].get("navigation").is_none());
+        for absent in ["bound", "level_age"] {
+            assert!(v["identity"]["token"].get(absent).is_none(), "{absent}");
+        }
+        assert!(v["identity"]["proof"].get("present").is_none());
+
+        let mut ctx = ctx;
+        ctx.http.navigation = true;
+        ctx.identity.token.bound = true;
+        ctx.identity.token.level_age = 900;
+        ctx.identity.proof = Proof {
+            valid: true,
+            replayed: false,
+            present: true,
+        };
+        let v = serde_json::to_value(&ctx).unwrap();
+        assert_eq!(v["http"]["navigation"], true);
+        assert_eq!(v["identity"]["token"]["bound"], true);
+        assert_eq!(v["identity"]["token"]["level_age"], 900);
+        assert_eq!(v["identity"]["proof"]["present"], true);
+        assert_eq!(v["identity"]["proof"]["valid"], true);
+        assert_eq!(serde_json::from_value::<RequestContext>(v).unwrap(), ctx);
+    }
+
     #[test]
     fn partial_json_fills_defaults() {
         let ctx: RequestContext =
@@ -1001,18 +1035,28 @@ mod tests {
         );
     }
 
-    /// Spec §2.4: Debug output never contains the client IP.
+    /// Spec §2.4: Debug output never contains the client IP, nor (Phase 2
+    /// spec §22) its prefix.
     #[test]
     fn debug_redacts_the_client_ip() {
         let ctx = sample();
         let dbg = format!("{ctx:?}");
         assert!(!dbg.contains("203.0.113.7"), "{dbg}");
-        assert!(dbg.contains("<redacted>"));
+        let net = format!("{:?}", ctx.net);
+        assert!(!net.contains("203.0.113"), "no prefix either: {net}");
+        assert!(net.contains("ip_prefix: Some(\"<redacted>\")"), "{net}");
+        let v6 = format!("{:?}", Net::for_ip("2001:db8:abcd::1".parse().unwrap()));
+        assert!(!v6.contains("2001:db8"), "{v6}");
+        let none = format!("{:?}", Net::default());
         assert!(
-            dbg.contains("203.0.113.0/24"),
-            "the /24 prefix is not the address"
+            none.contains("ip: None") && none.contains("ip_prefix: None"),
+            "{none}"
         );
-        assert!(format!("{:?}", Net::default()).contains("ip: None"));
+        // The event JSON keeps the prefix (serde, by design).
+        assert_eq!(
+            serde_json::to_value(&ctx.net).unwrap()["ip_prefix"],
+            "203.0.113.0/24"
+        );
     }
 
     /// Spec §9.7: the `ip` entity is the address for IPv4 and the /64 for IPv6

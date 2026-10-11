@@ -26,8 +26,14 @@
 //! the family-capped log-odds scorer [`ScorerV1`] with [`derive_bot_class`],
 //! and [`policy`]: the restricted policy IR evaluator (MISSING = UNKNOWN,
 //! static step bound), the rule engine and the default treatment matrix.
-//! [`DecisionCore::phase1`] wires them together. The interactive challenge
-//! providers arrive in Phase 2.
+//! [`DecisionCore::phase1`] wires them together.
+//!
+//! Phase 2 (docs/impl/phase2-spec.md §4, §5): the built-in interactive
+//! providers and the pure functions around them ([`providers`]: provider
+//! selection, interaction assessment, failure escalation, refresh checks),
+//! the route's `min_level` in the matrix and the rule engine, and the
+//! `http.navigation`, `identity.proof.*` and `identity.token.bound` /
+//! `level_age` policy fields.
 //!
 //! ```
 //! use mg_core::policy::{EngineConfig, MissingSet, NamedLists, SitePolicy};
@@ -97,6 +103,12 @@ pub use extras::{LimiterAction, RateObservation, RequestExtras, RouteInfo};
 pub use mask::FamilyMask;
 pub use pipeline::{
     DecisionCore, Detector, Evaluation, PolicyEvaluator, PolicyInput, PolicyOutcome, Scorer,
+};
+pub use providers::{
+    DESKTOP_HASHES_PER_MS, InteractionAssessment, InteractionInput, IxOutcome, PowA11y,
+    RefreshDenied, RefreshInput, RefreshLimits, ScoringMode, Selection, SelectionInput, SelfHold,
+    TurnstileChoice, assess_interaction, min_elapsed_ms, next_challenge_after_failure,
+    refresh_check, select_providers, turnstile_eligible,
 };
 pub use scoring::{FamilyMode, ScorerV1, ScoringConfig};
 pub use sealed::{ChallengeBind, ClaimsError, PowParams, SealedChallengeClaims};

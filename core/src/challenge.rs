@@ -22,8 +22,10 @@
 //! * never fail open: transport errors, timeouts and unknown provider replies
 //!   are [`VerdictOutcome::Unavailable`], never `Pass`;
 //! * a `Pass` counts only if every binding check holds ([`ProviderVerdict::is_pass`]);
-//! * a provider that cannot serve a region (Turnstile: `CN`) says so in
-//!   [`ProviderCaps::denied_regions`] and is never selected there.
+//! * a provider that cannot serve a region says so in
+//!   [`ProviderCaps::denied_regions`] and is never selected there (Turnstile
+//!   has none built in: the owner's `denied_countries` decide, and a failed
+//!   Turnstile falls back to the built-in providers, Phase 2 spec D-70).
 
 use crate::values::{Confidence, RiskBand};
 use serde::{Deserialize, Serialize};
@@ -44,7 +46,8 @@ wire_enum! {
         SelfHold => "self_hold",
         /// Non-interactive accessible PoW; issues `interactive_a11y` tokens.
         PowA11y => "pow_a11y",
-        /// Cloudflare Turnstile (not offered in mainland China).
+        /// Cloudflare Turnstile (optional; never offered in the owner's
+        /// `denied_countries`, Phase 2 spec D-70).
         Turnstile => "turnstile",
         /// Tencent Cloud Captcha (optional, paid).
         Tencent => "tencent",
@@ -90,10 +93,15 @@ wire_enum! {
 wire_enum! {
     /// Accessible alternative a provider offers (WCAG 2.2: 2.5.7, 3.3.8).
     pub enum A11yAlternative {
-        /// Hold Space / Enter instead of the pointer.
+        /// Hold Space / Enter instead of the pointer (superseded by
+        /// `single_activation`, Phase 2 spec D-65).
         KeyboardHold => "keyboard_hold",
-        /// "Can't hold?": press once, then again when prompted.
+        /// "Can't hold?": press once, then again when prompted (superseded by
+        /// `single_activation`, Phase 2 spec D-65).
         PressTwice => "press_twice",
+        /// One Space / Enter press or click; the control completes the hold
+        /// time and the PoW by itself (Phase 2 spec D-65).
+        SingleActivation => "single_activation",
         /// Switch to the `pow_a11y` provider.
         PowA11y => "pow_a11y",
         /// Passkey sign-in (sites with accounts).

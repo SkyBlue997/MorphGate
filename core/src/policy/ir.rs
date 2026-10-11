@@ -27,7 +27,7 @@ pub const MAX_LIST_LITERAL: usize = 1000;
 /// `S(named_list)`: most entries of a named list (§4.1).
 pub const NAMED_LIST_CAP: u64 = 10_000;
 /// `S(req.headers[k])`: largest header value (§4.1).
-const HEADER_VALUE_CAP: u64 = 8192;
+pub(crate) const HEADER_VALUE_CAP: u64 = 8192;
 /// The [`ProgramError::Malformed`] reason for `index_map` on anything but a
 /// map field (ruling I-20: an index or select on a map computed by `?:` is
 /// rejected; `c ? m[k] : m[k]` expresses the same).
@@ -185,6 +185,18 @@ impl Program {
     /// Sorted unique field paths the expression reads or `has()`-tests.
     pub fn fields(&self) -> &[&'static str] {
         &self.fields
+    }
+
+    /// Whether the expression reads or `has()`-tests `path`, a field below
+    /// it, or one of its ancestors (`has(identity.proof)` reads
+    /// `identity.proof.valid`). Paths are compared by dotted segments.
+    pub fn reads(&self, path: &str) -> bool {
+        let below = |outer: &str, inner: &str| {
+            inner
+                .strip_prefix(outer)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        };
+        !path.is_empty() && self.fields.iter().any(|f| below(path, f) || below(f, path))
     }
 
     /// Number of IR nodes.

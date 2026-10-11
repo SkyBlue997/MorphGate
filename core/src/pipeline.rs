@@ -85,6 +85,15 @@ pub struct PolicyOutcome {
 pub trait PolicyEvaluator: Send + Sync {
     /// Decides for one request.
     fn evaluate(&self, input: &PolicyInput<'_>) -> PolicyOutcome;
+
+    /// Whether the policy may read the field at `path` (or a field below or
+    /// above it), so the host must compute it (Phase 2 spec §9.1: the Edge
+    /// verifies `MG-Proof` only when a route requires it or the policy reads
+    /// `identity.proof`). The default is `true`: an evaluator that cannot
+    /// tell is assumed to read everything.
+    fn reads_field(&self, _path: &str) -> bool {
+        true
+    }
 }
 
 /// Result of one pass through the pipeline.
@@ -155,6 +164,11 @@ impl DecisionCore {
     pub fn with_detector(mut self, detector: Box<dyn Detector>) -> Self {
         self.detectors.push(detector);
         self
+    }
+
+    /// [`PolicyEvaluator::reads_field`] of the policy.
+    pub fn reads_field(&self, path: &str) -> bool {
+        self.policy.reads_field(path)
     }
 
     /// Runs every detector, then the scorer, then the policy.
