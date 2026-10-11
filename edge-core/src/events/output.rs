@@ -358,10 +358,26 @@ impl Lane {
                 if batch.is_empty() {
                     break;
                 }
-                let delivered = tokio::select! {
-                    biased;
-                    () = shutdown_signal(&mut stop) => false,
-                    () = self.deliver(&mut batch) => true,
+                let delivered = {
+                    let deliver = self.deliver(&mut batch);
+                    tokio::pin!(deliver);
+                    let done = tokio::select! {
+                        biased;
+                        () = shutdown_signal(&mut stop) => false,
+                        () = &mut deliver => true,
+                    };
+                    // A file write runs on a blocking thread and cannot be
+                    // cancelled: give it the final-flush budget, so its lines
+                    // are on disk (or counted) before `run` returns.
+                    if !done
+                        && matches!(self.output, Output::File(_))
+                        && tokio::time::timeout(FINAL_FLUSH_BUDGET, deliver)
+                            .await
+                            .is_err()
+                    {
+                        log::warn!("events: file write still running at shutdown");
+                    }
+                    done
                 };
                 if !delivered {
                     interrupted = Some(batch);
