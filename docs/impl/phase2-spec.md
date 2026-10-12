@@ -1604,7 +1604,7 @@ environments:
 
 | 层 | 做法 |
 |---|---|
-| IndexedDB | 数据库 `mg-v1`，对象仓库 `keys`，键 `session`。值为 `{pair: CryptoKeyPair, created_ms}`，私钥 `extractable: false`，公钥可导出（WebCrypto 总是如此）。每个操作 1.5 s 超时，超时与 `onblocked` 都按不可用处理 |
+| IndexedDB | 数据库 `mg-v1`，对象仓库 `keys`，键 `session`。值为 `{pair: CryptoKeyPair, created_ms}`，私钥 `extractable: false`，公钥可导出（WebCrypto 总是如此）。每个操作 1.5 s 超时，超时与 `onblocked` 都按不可用处理。SDK 初始化（`ready()`）时就打开数据库，所以每个加载了 SDK 的页面都会建出空的 `mg-v1`；密钥本身在首次需要时才写入。隐私说明按此描述 |
 | 生成 | 在一个 readwrite 事务中：`get`，不存在才 `add`；`add` 抛 `ConstraintError` 时重新 `get` 并使用已存的密钥。`navigator.locks` 可用时，外面再包 `navigator.locks.request("mg-key")`。这样同时打开的两个标签页不会各自持有一把密钥 |
 | 回退 1 | IndexedDB 不可用时，生成可导出的密钥对，以 JWK 存入 localStorage 键 `mg_sk_v1`（各标签页共享），生成规则同上 |
 | 回退 2 | 都不可用时只放在内存中。这时 SDK 不附证明；收到 `mg_proof_required` 时不跳转，把原响应返回给调用方，每个页面上报一次 `key_unavailable`（§9.4）。这类访客无法使用 `proof: required` 的路由（§19） |
@@ -2362,7 +2362,7 @@ Phase 1 规格 §16 的分层全部保留：单元测试、多语言共读的已
 | 1a | **单机改用本机 Valkey**（D-38）。安装 Valkey（≥ 7.2）：只监听回环或 unix socket（`unixsocketperm 770`），`appendonly yes`、`appendfsync everysec`，`maxmemory-policy noeviction`，先设一个宽松的 `maxmemory`。按 §14.5 与 §13.6 的完整规则建 ACL 用户，密码以 systemd credential 交付。`edge.toml` `[valkey] mode = "valkey"`，`local_replay_authoritative = true` 保留；配置包的 `events.stream` 仍为 `false`。在流量低时 reload：进行中的挑战可能失败一次，访客重试即可。确认 `mg_state_mode{mode="valkey"} = 1`，观察 `used_memory` 24 小时 |
 | 1b | 设 `maxmemory = 24 小时峰值 × 2 + stream_maxlen × 400 B`（缺省 `MAXLEN ~ 300000` 约 120 MB），然后在站点 YAML 设 `events.stream: true`。`noeviction` 下内存不足会让 `XADD` 与限速写入失败，所以这一步不能省略 |
 | 2 | **隐私说明**（在任何新的客户端信号上线之前）：会话公钥与证明；交互遥测；刷新时的遥测（若开启 `telemetry_behavior`）；行为摘要（若开启）；Turnstile（若开启：访客 IP 经 siteverify 发给 Cloudflare，大陆访客同样如此，D-70）。说明不能使用 `proof: required` 接口的情形（浏览器禁用存储时，§12.4） |
-| 3a | **换二进制**：部署新的 `mg-edge` 与 `mgctl`，保留 SDK 0.2.x 目录与 `schema_version = 1` 的配置包。确认决策分布与挑战比例同升级前一致（只比较 Phase 1 已有的指标族）。预期的差异：`/__mg/s/mg.js` 别名可用；JSON 应答带 `"v": 2`；`mg:ev` 条目为 v2；新的指标族。`schema_version = 1` 下源站仍收到 MorphGate 的 Cookie（D-61 不生效） |
+| 3a | **换二进制**：先把 `edge.toml` 的 `[sdk] dir` 固定到 SDK 0.2.x 目录（例如按版本命名的路径）并 reload，再部署新的 `mg-edge` 与 `mgctl`：若安装脚本把共用的 SDK 链接改到新构建，正在运行的 Edge 平滑升级时会直接用上 0.3 目录。保留 SDK 0.2.x 目录与 `schema_version = 1` 的配置包。确认决策分布与挑战比例同升级前一致（只比较 Phase 1 已有的指标族）。预期的差异：`/__mg/s/mg.js` 别名可用；JSON 应答带 `"v": 2`；`mg:ev` 条目为 v2；新的指标族。`schema_version = 1` 下源站仍收到 MorphGate 的 Cookie（D-61 不生效） |
 | 3b | **站点模板与接入**：<br>- 模板改用 `<script data-cfasync="false" src="/__mg/s/mg.js" defer></script>`，放在站点自身脚本之前（别名对 v1 目录同样可用）；站点代码按 §12.1 的接入约定调用 `MorphGate`。<br>- 站点 CSP 允许同源脚本与 `worker-src 'self'`（或经 `script-src` 回退），否则就地求解在主线程运行。<br>- **Service Worker**：站点的 Service Worker 不得处理 `/__mg/` 下的任何请求。fetch 处理器对 `new URL(event.request.url).pathname.startsWith('/__mg/')` 直接返回（不调用 `respondWith`）；用 Workbox 时设 `navigateFallbackDenylist: [/^\/__mg\//]`，且不为 `/__mg/` 注册任何缓存路由。核对：Service Worker 生效时打开 `/__mg/v?ret=/`，页面含 `#mg-challenge`；开发者工具中 `/__mg/s/mg.js` 不是 "from ServiceWorker"。`mg_sw_intercept_reports_total` 增加说明仍有截获。<br>- 需要证明或就地解挑战的接口改用 `MorphGate.fetch`（XHR / axios 用 `proofHeader()`）；`proof: required` 的路由不返回跳转 |
 | 3c | **换 SDK 0.3 目录**，并把配置包改为 `schema_version = 2`：在站点 YAML 中显式写出 `clearance.refresh: false`，构建器即写 `schema_version = 2`，功能仍全关（交互式关闭、没有 `proof`）。保留上一个 SDK 目录在主机上，供应急使用（第 10 步）。确认源站不再收到 MorphGate 的 Cookie（D-61） |
 | 4 | **证明**：给选定的接口路由设 `proof: required`，先配 `mode: monitor`（I-36），观察 `mg_proof_verify_total` 与 dry_run 事件数日，再改为 enforce |

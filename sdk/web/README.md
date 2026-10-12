@@ -103,7 +103,18 @@ self.addEventListener("fetch", (event) => {
 });
 ```
 
-With Workbox, set `navigateFallbackDenylist: [/^\/__mg\//]` and register no cache route for `/__mg/`. To check: with the Service Worker active, open `/__mg/v?ret=/`: the page must contain `#mg-challenge`, and in the developer tools `/__mg/s/mg.js` must not come "from ServiceWorker". When the SDK runs on a page under `/__mg/` that has no `#mg-challenge` (a Service Worker answered with a site page), it reports `sw_intercept` to `/__mg/t`, which the Edge counts as `mg_sw_intercept_reports_total`.
+With Workbox, set `navigateFallbackDenylist: [/^\/__mg\//]` and register no route at all for `/__mg/`: a `NetworkOnly` route still calls `respondWith`, so it breaks the rule too. Workbox's routes are fetch listeners, so register this listener before them, for example in a script loaded with `importScripts` at the top of the Service Worker, and stop the event there:
+
+```js
+// First fetch listener of the Service Worker, before any Workbox route.
+self.addEventListener("fetch", (event) => {
+  if (new URL(event.request.url).pathname.startsWith("/__mg/")) {
+    event.stopImmediatePropagation(); // no later listener sees it; no respondWith, so the browser fetches it
+  }
+});
+```
+
+To check: with the Service Worker active, open `/__mg/v?ret=/`: the page must contain `#mg-challenge`, and in the developer tools `/__mg/s/mg.js` must not come "from ServiceWorker". When the SDK runs on a page under `/__mg/` that has no `#mg-challenge` (a Service Worker answered with a site page), it reports `sw_intercept` to `/__mg/t`, which the Edge counts as `mg_sw_intercept_reports_total`.
 
 ## Challenged fetches (phase2-spec §12.5)
 
@@ -130,7 +141,7 @@ The verify entry is guarded: each page path navigates at most once per 60 s (ses
 | Fallback 2 | memory only: no `MG-Proof` (routes with `proof: required` are then unavailable) | `memory` |
 | No WebCrypto | v1 submissions; the interactive challenge cannot complete | `none` |
 
-The key is generated when first needed (the challenge page, or the first request that needs a proof), in one readwrite transaction that keeps a stored key, so tabs share one key (`navigator.locks` `mg-key` wraps it when available). It is replaced after 7 days, and when there is no valid clearance (`__Host-mg_st` missing or expired) and the key is at least 10 minutes old.
+The SDK opens the database when it initializes (`ready()`), so every page that loads the SDK creates an empty `mg-v1` database; the key itself is generated when first needed (the challenge page, or the first request that needs a proof), in one readwrite transaction that keeps a stored key, so tabs share one key (`navigator.locks` `mg-key` wraps it when available). It is replaced after 7 days, and when there is no valid clearance (`__Host-mg_st` missing or expired) and the key is at least 10 minutes old.
 
 ## Interactive challenge (phase2-spec §12.6)
 
