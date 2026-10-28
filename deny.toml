@@ -15,6 +15,12 @@ ignore = [
   # only on purpose) uses; drop this entry with the next Pingora bump that
   # no longer pulls it in.
   { id = "RUSTSEC-2024-0388", reason = "unmaintained proc-macro used only by pinned pingora-core 0.9" },
+  # unsafe-libyaml is unmaintained, with no vulnerability reported. Only
+  # serde_yaml inside pingora-core (pinned =0.9.0) pulls it in, to parse a
+  # Pingora YAML config file; mg-edge builds ServerConf in code and never
+  # passes a config file (edge/src/server.rs), so no YAML is parsed. Drop
+  # this entry with the next Pingora bump that no longer pulls it in.
+  { id = "RUSTSEC-2024-0449", reason = "unmaintained; only pinned pingora-core 0.9's unused YAML config loader" },
 ]
 
 [licenses]
