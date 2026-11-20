@@ -94,13 +94,13 @@ jobs:
           go version
 
       # Pingora 0.x breaks its API on every minor release (docs/adr/0002).
-      - name: Pingora pinned to =0.9.0
+      - name: Pingora pinned to =0.9.1
         run: |
-          grep -Eq '^pingora = \{ *version = "=0\.9\.0"' Cargo.toml \
-            || { echo "::error::Cargo.toml must pin pingora with version = \"=0.9.0\""; exit 1; }
-          drift="$(awk '/^name = "pingora/ { n = $3; next } /^version = / && n { if ($3 != "\"0.9.0\"") print n, $3; n = "" }' Cargo.lock)"
+          grep -Eq '^pingora = \{ *version = "=0\.9\.1"' Cargo.toml \
+            || { echo "::error::Cargo.toml must pin pingora with version = \"=0.9.1\""; exit 1; }
+          drift="$(awk '/^name = "pingora/ { n = $3; next } /^version = / && n { if ($3 != "\"0.9.1\"") print n, $3; n = "" }' Cargo.lock)"
           if [ -n "$drift" ]; then
-            echo "::error::Cargo.lock has pingora crates other than 0.9.0"
+            echo "::error::Cargo.lock has pingora crates other than 0.9.1"
             echo "$drift"
             exit 1
           fi

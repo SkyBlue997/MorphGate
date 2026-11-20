@@ -1,6 +1,6 @@
 //! # mg-edge: the MorphGate Edge
 //!
-//! A Pingora (`=0.9.0`, BoringSSL) reverse proxy between the upstream
+//! A Pingora (`=0.9.1`, BoringSSL) reverse proxy between the upstream
 //! (Cloudflare Tunnel's `cloudflared` on loopback, Cloudflare Authenticated
 //! Origin Pulls, or visitors directly) and the owner's origin.
 //! docs/impl/phase1-spec.md §9 is the contract; this crate wires the

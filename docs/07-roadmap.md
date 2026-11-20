@@ -37,7 +37,7 @@ core/                   Rust  mg-core: pure kernel (signals, scoring, policy IR 
 challenge/              Rust  mg-challenge (Phase 1): sealed challenges, PoW, PASETO clearance tokens
 intel/                  Rust  mg-intel (Phase 1): IP sets, GeoLite2, crawler registry + verification
 edge-core/              Rust  mg-edge-core (Phase 1): Edge components that do not need Pingora
-edge/                   Rust  mg-edge: thin Pingora adapter (pin =0.9.0, BoringSSL), UpstreamProfile
+edge/                   Rust  mg-edge: thin Pingora adapter (pin =0.9.1, BoringSSL), UpstreamProfile
 proto/                        shared protobuf definitions (Rust + Go codegen)
 testdata/                     (Phase 1) cross-language fixtures: KAT vectors, key and artifact
                               samples, policy IR conformance cases
