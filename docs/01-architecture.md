@@ -362,7 +362,7 @@ Phase 2 的降级补充（[规格 §5.1](impl/phase2-spec.md#51-交互式是否�
 
 | 领域 | 建议 | 理由 / 备注 |
 |---|---|---|
-| Edge | **Rust + Pingora**，锁定精确版本 `=0.9.0` | Pingora 仍是 0.x，每个小版本都有破坏性变更；所有 Pingora 相关代码放在薄适配 crate（`edge/`，mg-edge），不依赖 Pingora 的 Edge 组件在 `mg-edge-core`，升级成本可控；Linux 为 tier 1 |
+| Edge | **Rust + Pingora**，锁定精确版本 `=0.9.1` | Pingora 仍是 0.x，每个小版本都有破坏性变更；所有 Pingora 相关代码放在薄适配 crate（`edge/`，mg-edge），不依赖 Pingora 的 Edge 组件在 `mg-edge-core`，升级成本可控；Linux 为 tier 1 |
 | TLS 后端 | **BoringSSL** | 回调面最完整，可取原始 ClientHello；rustls 在 Pingora 中仍标为实验性 |
 | Decision Core | 纯 Rust crate（`core/`，mg-core）：无 I/O，状态走 trait | 可编译到 `wasm32-unknown-unknown`，为以后可能的 Cloudflare Worker 适配保留 |
 | JA4 计算（`direct_tls`） | boring select-certificate 回调取 `ClientHello::as_bytes()` → 计算 JA4（自研零拷贝解析器，按 FoxIO 规范独立实现，未引入 huginn-net-tls）→ ex_data → `handshake_complete_callback` → `SslDigest.extension` → 请求过滤器中读取 | Phase 1 预研（WP-J1）已端到端验证：`direct_tls` 监听器的 `ja4_spike`（缺省关闭）；每握手约 0.5 µs；JA4 只进决定事件，策略仍视为 MISSING（D-07）；会话恢复与 ClientHello 长度会改变 JA4，不宜直接做 `bind.tfp` 硬绑定（[ADR-0002 勘误](adr/0002-edge-pingora-boringssl.md#勘误2026-09-28ja4-预研)） |

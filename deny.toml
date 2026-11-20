@@ -11,28 +11,22 @@ all-features = true
 yanked = "deny"
 ignore = [
   # derivative is unmaintained, with no vulnerability reported. It is a
-  # compile-time proc-macro that only pingora-core (pinned =0.9.0, bumped
+  # compile-time proc-macro that only pingora-core (pinned =0.9.1, bumped
   # only on purpose) uses; drop this entry with the next Pingora bump that
   # no longer pulls it in.
   { id = "RUSTSEC-2024-0388", reason = "unmaintained proc-macro used only by pinned pingora-core 0.9" },
   # unsafe-libyaml is unmaintained, with no vulnerability reported. Only
-  # serde_yaml inside pingora-core (pinned =0.9.0) pulls it in, to parse a
+  # serde_yaml inside pingora-core (pinned =0.9.1) pulls it in, to parse a
   # Pingora YAML config file; mg-edge builds ServerConf in code and never
   # passes a config file (edge/src/server.rs), so no YAML is parsed. Drop
   # this entry with the next Pingora bump that no longer pulls it in.
   { id = "RUSTSEC-2024-0449", reason = "unmaintained; only pinned pingora-core 0.9's unused YAML config loader" },
-  # zstd 0.13 / zstd-safe 7 have no patched release; the fixes are in zstd
-  # 0.14.3 / zstd-safe 8.2. pingora-header-serde 0.9 (pinned Pingora) needs
-  # zstd 0.13, and cargo resolves pingora-core 0.9 onto the same version.
-  # mg-edge reaches none of these paths: pingora-header-serde only serializes
-  # pingora-cache metadata and mg-edge enables no HTTP cache; pingora-core
-  # compresses responses only when a ResponseCompressionCtx level or
-  # decompression is turned on (pingora-proxy starts it at level 0, no
-  # decompression) and mg-edge never does; nothing uses zstd's Seekable API.
-  # Drop these entries with the next Pingora bump that moves to zstd 0.14.3+.
-  { id = "RUSTSEC-2026-0391", reason = "zstd 0.13 context reuse; only pinned Pingora 0.9's unused cache-header and response-compression paths" },
-  { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7 Seekable::decompress; not used anywhere" },
-  { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7 legacy-frame streaming decompression; Pingora 0.9 decompression is never enabled by mg-edge" },
+  # chrono is unmaintained, with no vulnerability reported and no patched
+  # release. Only pingora-core (pinned =0.9.1) pulls it in, to format the
+  # HTTP Date header (protocols/http/date.rs); the workspace's own crates do
+  # not depend on chrono. Drop this entry with the next Pingora bump that no
+  # longer pulls it in.
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained; only pinned pingora-core 0.9's Date header formatting" },
 ]
 
 [licenses]

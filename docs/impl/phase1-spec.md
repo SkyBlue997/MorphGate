@@ -188,7 +188,7 @@ mg-core (pure, wasm32)  <──  mg-proto (prost types + ir.rs conversion)
    |  |  └──── mg-challenge ─────┘  |   (pasetors, chacha20poly1305, hkdf, sha2, hmac, base64)
    |  └─────── mg-intel             |   (maxminddb, sha2)
    └────────── mg-edge-core ────────┘   (tokio, redis, reqwest, ed25519-compact, prometheus; no Pingora)
-mg-edge ──> mg-core, mg-proto, mg-challenge, mg-intel, mg-edge-core, pingora =0.9.0, hickory-resolver, arc-swap
+mg-edge ──> mg-core, mg-proto, mg-challenge, mg-intel, mg-edge-core, pingora =0.9.1, hickory-resolver, arc-swap
 ```
 
 | crate | 第三方依赖（版本已在根 `Cargo.toml` 声明并锁定） | 约束 |
